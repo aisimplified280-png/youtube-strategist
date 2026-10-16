@@ -1,5 +1,6 @@
 """Conversational, approval-gated Groq-first YouTube metadata assistant."""
 
+import html
 import json
 import re
 from copy import deepcopy
@@ -407,11 +408,9 @@ def _apply_error_message(error):
 
 def render_chat(youtube, secrets):
     """Render a clean, chat-first editor with conversational setup and explicit approval."""
-    st.subheader("YouTube Strategist")
     st.caption(
-        "Tell me what you want to change in plain language. Paste your video links directly "
-        "into chat—no setup form or metadata-editing fields. You approve the exact proposal "
-        "before anything changes on YouTube."
+        "Paste your video link once, then ask for a better title, description, or tags. "
+        "A reference video is optional."
     )
 
     groq = secrets.get("groq", {})
@@ -431,26 +430,65 @@ def render_chat(youtube, secrets):
 
     context = st.session_state.get("strategist_target_reference")
     if context:
-        reference_title = context.get("reference_snippet", {}).get("title") or "No reference (optional)"
-        st.caption(
-            f"**Working on:** {context['target_snippet'].get('title', '(untitled)')} "
-            f"· **Reference:** {reference_title}"
-        )
-        with st.popover("Change videos"):
-            st.write("Paste one link to switch your target video, or add a second link to compare with a reference.")
-            if st.button("Clear conversation", key="clear_strategist_conversation"):
-                for key in (
-                    "strategist_target_reference",
-                    "strategist_chat_history",
-                    "strategist_chat_proposal",
-                    "strategist_chat_digest",
+        with st.container(border=True):
+            st.caption("CURRENT VIDEO")
+            video_title = str(context["target_snippet"].get("title", "(untitled)"))
+            st.markdown(
+                '<div style="font-size:1.02rem;font-weight:650;line-height:1.4;'
+                'overflow-wrap:anywhere;">' + html.escape(video_title) + "</div>",
+                unsafe_allow_html=True,
+            )
+            reference_title = (
+                context.get("reference_snippet", {}).get("title") or "None (optional)"
+            )
+            st.caption(f"Reference: {reference_title}")
+            with st.popover("Video options"):
+                if st.button(
+                    "Reload current video",
+                    key="reload_strategist_video",
+                    use_container_width=True,
                 ):
-                    st.session_state.pop(key, None)
-                st.rerun()
+                    try:
+                        context["target_snippet"] = connector.fetch_video_snippet(
+                            youtube, context["target_id"]
+                        )
+                        target_transcript, target_transcript_status = _transcript_text(
+                            context["target_id"]
+                        )
+                        context["target_transcript"] = target_transcript
+                        context["target_transcript_status"] = target_transcript_status
+                        st.session_state["strategist_target_reference"] = context
+                        st.session_state.pop("strategist_chat_proposal", None)
+                        st.session_state.pop("strategist_chat_digest", None)
+                        st.session_state["strategist_reload_notice"] = (
+                            "Current YouTube metadata reloaded. Ask for a fresh proposal."
+                        )
+                    except Exception:
+                        st.session_state["strategist_reload_notice"] = (
+                            "Could not reload this video. Check YouTube authorization and try again."
+                        )
+                    st.rerun()
+                if st.button(
+                    "Clear conversation",
+                    key="clear_strategist_conversation",
+                    use_container_width=True,
+                ):
+                    for key in (
+                        "strategist_target_reference",
+                        "strategist_chat_history",
+                        "strategist_chat_proposal",
+                        "strategist_chat_digest",
+                        "strategist_reload_notice",
+                    ):
+                        st.session_state.pop(key, None)
+                    st.rerun()
+        reload_notice = st.session_state.pop("strategist_reload_notice", None)
+        if reload_notice:
+            st.info(reload_notice)
     else:
         st.info(
-            "Start with **one link to your own YouTube video**. Tell me what to improve "
-            "in the same message. A second, reference-video link is optional."
+            "Start with one link to your YouTube video. Add an instruction in the same "
+            "message; a reference video is optional."
         )
 
     quick_instruction = None
@@ -458,10 +496,10 @@ def render_chat(youtube, secrets):
         st.markdown("**Quick actions**")
         quick_rows = (st.columns(2), st.columns(2))
         quick_buttons = (
-            ("Improve title", "title"),
-            ("Description + hashtags", "description"),
-            ("Improve tags", "tags"),
-            ("Review all metadata", "review"),
+            ("Title", "title"),
+            ("Description", "description"),
+            ("Tags", "tags"),
+            ("Review all", "review"),
         )
         for index, (label, action_key) in enumerate(quick_buttons):
             if quick_rows[index // 2][index % 2].button(
@@ -631,54 +669,87 @@ def render_chat(youtube, secrets):
     proposal = st.session_state.get("strategist_chat_proposal")
     if context and proposal and proposal["target_id"] == context["target_id"]:
         st.divider()
-        st.markdown("### Ready for your review")
-        st.markdown("**Proposed title**")
-        st.write(proposal["proposed"].get("title", ""))
-        st.markdown("**Proposed description**")
-        st.text(proposal["proposed"].get("description", ""))
-        st.markdown("**Proposed tags**")
-        tags = proposal["proposed"].get("tags", [])
-        st.write(", ".join(tags) if tags else "No tags proposed")
+        with st.container(border=True):
+            st.markdown("### Review proposal")
+            st.caption("Check the exact metadata below. Nothing changes until you approve it.")
 
-        with st.expander("Compare with current metadata", expanded=False):
-            st.markdown("**Current title**")
-            st.write(proposal["before"].get("title", ""))
-            st.markdown("**Current description**")
-            st.text(proposal["before"].get("description", ""))
-            st.markdown("**Current tags**")
-            st.write(", ".join(proposal["before"].get("tags", [])))
+            st.markdown("**Title**")
+            st.markdown(
+                '<div class="asl-proposal-field">' +
+                html.escape(str(proposal["proposed"].get("title", ""))) +
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown("**Description**")
+            st.markdown(
+                '<div class="asl-proposal-field">' +
+                html.escape(str(proposal["proposed"].get("description", ""))) +
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown("**Tags**")
+            tags = proposal["proposed"].get("tags", [])
+            st.markdown(
+                '<div class="asl-proposal-field">' +
+                html.escape(", ".join(tags) if tags else "No tags proposed") +
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
-        digest = connector.metadata_proposal_digest(
-            context["target_id"], proposal["before"], proposal["proposed"]
-        )
-        st.session_state["strategist_chat_digest"] = digest
-        st.warning("No YouTube changes happen until you approve this exact proposal.")
-        if st.button(
-            "Approve and apply exact proposal",
-            type="primary",
-            key="approve_strategist_chat_proposal",
-        ):
-            try:
-                def audit_callback(entry):
-                    records = st.session_state.setdefault("session_audit_records", [])
-                    records.insert(0, entry)
-                    del records[20:]
-
-                result = connector.apply_approved_dashboard_proposal(
-                    youtube,
-                    context["target_id"],
-                    proposal["before"],
-                    proposal["proposed"],
-                    digest,
-                    audit_callback=audit_callback,
+            with st.expander("Compare with current metadata"):
+                st.markdown("**Current title**")
+                st.markdown(
+                    '<div class="asl-proposal-field">' +
+                    html.escape(str(proposal["before"].get("title", ""))) +
+                    "</div>",
+                    unsafe_allow_html=True,
                 )
-            except Exception as error:
-                st.error(_apply_error_message(error))
-            else:
-                st.success(f"Verified update: {result['title']}")
-                st.session_state["strategist_target_reference"]["target_snippet"] = deepcopy(
-                    proposal["proposed"]
+                st.markdown("**Current description**")
+                st.markdown(
+                    '<div class="asl-proposal-field">' +
+                    html.escape(str(proposal["before"].get("description", ""))) +
+                    "</div>",
+                    unsafe_allow_html=True,
                 )
-                st.session_state.pop("strategist_chat_proposal", None)
-                st.session_state.pop("strategist_chat_digest", None)
-                st.rerun()
+                st.markdown("**Current tags**")
+                st.markdown(
+                    '<div class="asl-proposal-field">' +
+                    html.escape(", ".join(proposal["before"].get("tags", []))) +
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            digest = connector.metadata_proposal_digest(
+                context["target_id"], proposal["before"], proposal["proposed"]
+            )
+            st.session_state["strategist_chat_digest"] = digest
+            if st.button(
+                "Approve and apply",
+                type="primary",
+                use_container_width=True,
+                key="approve_strategist_chat_proposal",
+            ):
+                try:
+                    def audit_callback(entry):
+                        records = st.session_state.setdefault("session_audit_records", [])
+                        records.insert(0, entry)
+                        del records[20:]
+
+                    result = connector.apply_approved_dashboard_proposal(
+                        youtube,
+                        context["target_id"],
+                        proposal["before"],
+                        proposal["proposed"],
+                        digest,
+                        audit_callback=audit_callback,
+                    )
+                except Exception as error:
+                    st.error(_apply_error_message(error))
+                else:
+                    st.success(f"Verified update: {result['title']}")
+                    st.session_state["strategist_target_reference"]["target_snippet"] = deepcopy(
+                        proposal["proposed"]
+                    )
+                    st.session_state.pop("strategist_chat_proposal", None)
+                    st.session_state.pop("strategist_chat_digest", None)
+                    st.rerun()
