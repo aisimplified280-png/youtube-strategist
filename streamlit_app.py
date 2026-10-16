@@ -902,6 +902,10 @@ def main():
         return
 
     subject = _owner_identity(secrets)
+    pending_workspace = st.session_state.pop("asl_pending_workspace", None)
+    if pending_workspace in {"Strategist", "Find videos", "Analytics"}:
+        st.session_state["asl_workspace"] = pending_workspace
+
     if st.session_state.pop("oauth_connected_message", False):
         st.success("YouTube authorization connected for this session.")
 
@@ -912,7 +916,24 @@ def main():
         st.warning(auth_warning)
 
     with st.sidebar:
+        st.markdown(
+            '<div class="asl-sidebar-brand">✳ AI Simplified Lab</div>',
+            unsafe_allow_html=True,
+        )
         st.caption(f"Signed in as {st.user.email}")
+        if st.button("New chat", key="asl_new_chat", use_container_width=True):
+            for key in (
+                "strategist_target_reference",
+                "strategist_chat_history",
+                "strategist_chat_proposal",
+                "strategist_chat_digest",
+                "strategist_pending_instruction",
+                "channel_analysis_request",
+                "opportunity_auto_run",
+            ):
+                st.session_state.pop(key, None)
+            st.session_state["asl_pending_workspace"] = "Strategist"
+            st.rerun()
         st.button("Sign out", on_click=st.logout)
         if credentials:
             if st.button("Disconnect YouTube for this session"):
@@ -947,18 +968,60 @@ def main():
         st.error("Could not initialize Google's YouTube API clients.")
         return
 
-    page = st.segmented_control(
-        "Workspace",
-        options=["Strategist", "Analytics"],
-        default="Strategist",
-        label_visibility="collapsed",
-        key="primary_workspace",
-    ) or "Strategist"
+    pending_video_url = st.session_state.pop("pending_optimizer_video_url", None)
+    if pending_video_url:
+        try:
+            _, load_message = strategist_chat._load_conversation_videos(
+                youtube, secrets, pending_video_url
+            )
+            if load_message:
+                st.session_state["optimizer_open_error"] = load_message
+            else:
+                st.session_state["strategist_pending_instruction"] = (
+                    "Create a proposal to improve this video's title, description, "
+                    "relevant hashtags, and tags. Use only facts supported by the target "
+                    "transcript and existing metadata. Do not promise CTR or invent chapters. "
+                    "Keep the title and description natural and useful for a viewer."
+                )
+        except Exception:
+            st.session_state["optimizer_open_error"] = (
+                "Could not open this video for optimization. Check YouTube access and try again."
+            )
+        st.session_state["asl_workspace"] = "Strategist"
+
+    with st.sidebar:
+        st.markdown('<div class="asl-sidebar-overline">WORKSPACE</div>', unsafe_allow_html=True)
+        page = st.radio(
+            "Workspace",
+            options=["Strategist", "Find videos", "Analytics"],
+            key="asl_workspace",
+            label_visibility="collapsed",
+        )
+        st.divider()
+        st.caption("Every YouTube change requires your approval.")
+
+    optimizer_error = st.session_state.pop("optimizer_open_error", None)
+    if optimizer_error:
+        st.error(optimizer_error)
 
     if page == "Strategist":
+        st.markdown(
+            '<div class="asl-page-heading"><div class="asl-page-title">'
+            'YouTube Strategist</div><p class="asl-page-subtitle">'
+            'A focused workspace for improving one video at a time.</p></div>',
+            unsafe_allow_html=True,
+        )
         strategist_chat.render_chat(youtube, secrets)
+    elif page == "Find videos":
+        _render_recent_opportunities(youtube, analytics, reporting, credentials)
     else:
-        st.caption("Channel performance and optimization evidence.")
+        st.markdown(
+            '<div class="asl-page-heading"><div class="asl-page-title">'
+            'Channel analytics</div><p class="asl-page-subtitle">'
+            'Measured channel performance and reporting coverage.</p></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Read-only performance reports and optimization evidence.")
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
         with st.container():
