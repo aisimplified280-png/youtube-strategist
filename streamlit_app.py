@@ -25,7 +25,8 @@ import youtube_dashboard
 import strategist_chat
 
 MEMORY_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
+    # Sheets API supports drive.file for the app-created memory spreadsheet.
+    # Avoid the broader spreadsheets scope, which can authorize access to all Sheets.
     "https://www.googleapis.com/auth/drive.file",
 ]
 APP_SCOPES = [*connector.SCOPES, *MEMORY_SCOPES]
