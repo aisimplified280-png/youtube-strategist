@@ -108,7 +108,7 @@ class StrategistChatTests(unittest.TestCase):
         self.assertEqual(post.call_count, 1)
 
     @patch("strategist_chat.requests.post")
-    def test_grok_fallback_on_quota_error(self, post):
+    def test_groq_fallback_on_quota_error(self, post):
         quota_response = Mock(status_code=429)
         success_response = Mock(status_code=200)
         success_response.json.return_value = {
@@ -117,7 +117,7 @@ class StrategistChatTests(unittest.TestCase):
             }}]
         }
         post.side_effect = [quota_response, success_response]
-        result, used_model = strategist_chat._grok_generate(
+        result, used_model = strategist_chat._groq_generate(
             "test-key", "primary-model", "prompt", ["fallback-model"]
         )
         self.assertEqual(used_model, "fallback-model")
@@ -125,15 +125,15 @@ class StrategistChatTests(unittest.TestCase):
         self.assertEqual(post.call_count, 2)
 
     @patch("strategist_chat._gemini_generate")
-    @patch("strategist_chat._grok_generate")
-    def test_provider_switches_from_grok_to_gemini(self, grok, gemini):
-        grok.side_effect = RuntimeError("Grok quota exhausted")
+    @patch("strategist_chat._groq_generate")
+    def test_provider_switches_from_groq_to_gemini(self, grok, gemini):
+        grok.side_effect = RuntimeError("Groq quota exhausted")
         gemini.return_value = (
             {"title": "Backup title", "description": "Text", "tags": []},
             "gemini-backup-model",
         )
         result, provider, model = strategist_chat._generate_with_fallbacks(
-            "xai-key", "grok-main", [], "gemini-key", "gemini-main",
+            "groq-key", "grok-main", [], "gemini-key", "gemini-main",
             ["gemini-backup-model"], "prompt",
         )
         self.assertEqual(provider, "Gemini")
@@ -143,14 +143,14 @@ class StrategistChatTests(unittest.TestCase):
         gemini.assert_called_once()
 
     @patch("strategist_chat._gemini_generate")
-    @patch("strategist_chat._grok_generate")
-    def test_grok_primary_does_not_call_gemini_on_success(self, grok, gemini):
+    @patch("strategist_chat._groq_generate")
+    def test_groq_primary_does_not_call_gemini_on_success(self, grok, gemini):
         grok.return_value = (
             {"title": "Primary title", "description": "Text", "tags": []},
             "grok-main",
         )
         result, provider, model = strategist_chat._generate_with_fallbacks(
-            "xai-key", "grok-main", [], "gemini-key", "gemini-main", [], "prompt",
+            "groq-key", "grok-main", [], "gemini-key", "gemini-main", [], "prompt",
         )
         self.assertEqual(provider, "Grok")
         self.assertEqual(model, "grok-main")
