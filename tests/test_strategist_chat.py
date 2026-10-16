@@ -29,7 +29,7 @@ class StrategistChatTests(unittest.TestCase):
                 Mock(), {}, "Can you improve my SEO?"
             )
         self.assertIsNone(context)
-        self.assertIn("one YouTube video link", message)
+        self.assertIn("your own YouTube video link", message)
         self.assertIn("optional", message)
 
     def test_parse_watch_url(self):
