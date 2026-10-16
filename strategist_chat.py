@@ -13,8 +13,8 @@ import youtube_analytics_connector as connector
 
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-XAI_CHAT_ENDPOINT = "https://api.x.ai/v1/chat/completions"
-DEFAULT_GROK_MODEL = "grok-4.6"
+GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_MODEL = "gemini-3.8-flash"
 MAX_TRANSCRIPT_CHARS = 12000
 MAX_HISTORY_TURNS = 8
@@ -147,23 +147,23 @@ def _gemini_generate(api_key, model, prompt, fallback_models=None):
 
 
 
-def _grok_generate(api_key, model, prompt, fallback_models=None):
-    """Call xAI's OpenAI-compatible chat endpoint, trying configured Grok models in order."""
+def _groq_generate(api_key, model, prompt, fallback_models=None):
+    """Call Groq's OpenAI-compatible chat endpoint, trying configured Grok models in order."""
     if not isinstance(api_key, str) or not api_key.strip():
-        raise ValueError("Add [xai].api_key to Streamlit Secrets to enable Grok.")
+        raise ValueError("Add [groq].api_key to Streamlit Secrets to enable Groq.")
     candidates = []
-    for candidate in [model or DEFAULT_GROK_MODEL, *(fallback_models or [])]:
+    for candidate in [model or DEFAULT_GROQ_MODEL, *(fallback_models or [])]:
         candidate = str(candidate).strip()
         if candidate and re.fullmatch(r"[A-Za-z0-9._-]+", candidate) and candidate not in candidates:
             candidates.append(candidate)
     if not candidates:
-        raise ValueError("Configure at least one valid Grok model name.")
+        raise ValueError("Configure at least one valid Groq model name.")
 
     failures = []
     for candidate in candidates:
         try:
             response = requests.post(
-                XAI_CHAT_ENDPOINT,
+                GROQ_CHAT_ENDPOINT,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "model": candidate,
@@ -195,21 +195,21 @@ def _grok_generate(api_key, model, prompt, fallback_models=None):
             failures.append(f"{candidate}: invalid response")
             continue
 
-    raise RuntimeError("Grok unavailable: " + "; ".join(failures or ["no usable model configured"]))
+    raise RuntimeError("Groq unavailable: " + "; ".join(failures or ["no usable model configured"]))
 
 
-def _generate_with_fallbacks(xai_key, grok_model, grok_fallbacks,
+def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
                              gemini_key, gemini_model, gemini_fallbacks, prompt):
     """Prefer Grok; use Gemini only when Grok cannot produce a valid response."""
     failures = []
-    if isinstance(xai_key, str) and xai_key.strip():
+    if isinstance(groq_key, str) and groq_key.strip():
         try:
-            result, used_model = _grok_generate(xai_key, grok_model, prompt, grok_fallbacks)
-            return result, "Grok", used_model
+            result, used_model = _groq_generate(groq_key, groq_model, prompt, groq_fallbacks)
+            return result, "Groq", used_model
         except (ValueError, RuntimeError, requests.RequestException) as error:
-            failures.append(f"Grok: {error}")
+            failures.append(f"Groq: {error}")
     else:
-        failures.append("Grok: no [xai].api_key configured")
+        failures.append("Groq: no [groq].api_key configured")
 
     if isinstance(gemini_key, str) and gemini_key.strip():
         try:
@@ -275,18 +275,18 @@ def render_chat(youtube, secrets):
     st.caption(
         "Discuss edits naturally, provide a reference video, revise the proposal, "
         "and approve the exact metadata before anything is changed. Video metadata, "
-        "your instructions, and any available reference transcript are sent to Grok first, or Gemini if fallback is needed."
+        "your instructions, and any available reference transcript are sent to Groq first, or Gemini if fallback is needed."
     )
-    xai = secrets.get("xai", {})
+    groq = secrets.get("groq", {})
     gemini = secrets.get("gemini", {})
-    grok_model = xai.get("model", DEFAULT_GROK_MODEL)
-    grok_fallbacks = xai.get("fallback_models", [])
+    groq_model = groq.get("model", DEFAULT_GROQ_MODEL)
+    groq_fallbacks = groq.get("fallback_models", [])
     gemini_model = gemini.get("model", DEFAULT_MODEL)
     gemini_fallbacks = gemini.get("fallback_models", [])
-    if isinstance(grok_fallbacks, str):
-        grok_fallbacks = [item.strip() for item in grok_fallbacks.split(",") if item.strip()]
-    if not isinstance(grok_fallbacks, (list, tuple)):
-        grok_fallbacks = []
+    if isinstance(groq_fallbacks, str):
+        groq_fallbacks = [item.strip() for item in groq_fallbacks.split(",") if item.strip()]
+    if not isinstance(groq_fallbacks, (list, tuple)):
+        groq_fallbacks = []
     if isinstance(gemini_fallbacks, str):
         gemini_fallbacks = [item.strip() for item in gemini_fallbacks.split(",") if item.strip()]
     if not isinstance(gemini_fallbacks, (list, tuple)):
@@ -361,7 +361,7 @@ def render_chat(youtube, secrets):
         with st.chat_message("user"):
             st.markdown(instruction)
         with st.chat_message("assistant"):
-            with st.spinner("Trying Grok first, then Gemini if needed..."):
+            with st.spinner("Trying Groq first, then Gemini if needed..."):
                 try:
                     prompt_source = (
                         existing_proposal["proposed"]
@@ -383,16 +383,16 @@ def render_chat(youtube, secrets):
                         context["transcript_status"], history[:-1], instruction
                     )
                     result, used_provider, used_model = _generate_with_fallbacks(
-                        xai.get("api_key"), grok_model, grok_fallbacks,
+                        groq.get("api_key"), groq_model, groq_fallbacks,
                         gemini.get("api_key"), gemini_model, gemini_fallbacks, prompt
                     )
                     title = result.get("title")
                     description = result.get("description")
                     tags = result.get("tags")
                     if not isinstance(title, str) or not isinstance(description, str):
-                        raise ValueError("Gemini's proposal is missing a title or description.")
+                        raise ValueError("AI provider's proposal is missing a title or description.")
                     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
-                        raise ValueError("Gemini's proposal contains invalid tags.")
+                        raise ValueError("AI provider's proposal contains invalid tags.")
                     proposed = deepcopy(context["target_snippet"])
                     proposed.update({"title": title.strip(), "description": description, "tags": tags})
                     connector._validate_metadata(proposed)
