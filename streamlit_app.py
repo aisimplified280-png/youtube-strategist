@@ -281,6 +281,7 @@ def _handle_youtube_callback(secrets, subject):
                     "YouTube authorization was not completed. Try connecting YouTube again."
                 )
         query.clear()
+        st.rerun()
         return
 
     if not code or not returned_state:
@@ -358,6 +359,7 @@ def _handle_youtube_callback(secrets, subject):
         else:
             st.session_state["youtube_auth_error"] = message
         query.clear()
+        st.rerun()
         return
     except HttpError as error:
         status = getattr(error.resp, "status", "unknown")
@@ -367,6 +369,7 @@ def _handle_youtube_callback(secrets, subject):
             st.session_state["memory_auth_error"] = message
         else:
             st.session_state["youtube_auth_error"] = message
+        st.rerun()
         return
 
     credentials = flow.credentials
@@ -382,6 +385,7 @@ def _handle_youtube_callback(secrets, subject):
                 "Google did not grant all required YouTube Analytics and metadata scopes. "
                 "Reconnect YouTube and approve the requested YouTube permissions."
             )
+        st.rerun()
         return
 
     if purpose == "youtube":
