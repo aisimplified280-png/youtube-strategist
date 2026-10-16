@@ -405,7 +405,7 @@ def _start_youtube_authorization(secrets, subject):
         prompt="consent",
     )
     st.link_button(
-        "Authorize YouTube Analytics and metadata access",
+        "Authorize YouTube and private Strategist Memory",
         authorization_url,
         type="primary",
         help=(
