@@ -54,6 +54,8 @@ def test_deleting_one_grant_does_not_delete_the_other(tmp_path):
     store.delete_credentials(SUBJECT, "memory")
 
     assert store.get_credentials_json(SUBJECT, "memory") is None
+    assert store.get_credentials_record(SUBJECT, "memory")["status"] == "revoked"
+    assert store.get_credentials_record(SUBJECT, "youtube")["status"] == "active"
     assert store.get_credentials_json(SUBJECT, "youtube") == youtube
 
 
