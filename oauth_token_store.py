@@ -63,11 +63,20 @@ class OAuthTokenStore:
                 subject_key TEXT NOT NULL,
                 purpose TEXT NOT NULL,
                 encrypted_value BLOB NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
                 updated_at REAL NOT NULL,
                 PRIMARY KEY (app_key, subject_key, purpose)
             )
             """
         )
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(oauth_credentials)")
+        }
+        if "revoked" not in columns:
+            connection.execute(
+                "ALTER TABLE oauth_credentials "
+                "ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0"
+            )
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -88,27 +97,33 @@ class OAuthTokenStore:
         finally:
             connection.close()
 
-    def get_credentials_json(self, subject: str, purpose: str):
-        """Return decrypted credential JSON, or None when no grant is stored."""
+    def get_credentials_record(self, subject: str, purpose: str):
+        """Return the grant status and payload so tabs can observe shared disconnects."""
         self._validate_purpose(purpose)
         subject_key = self._subject_key(subject)
         with self._connection() as connection:
             row = connection.execute(
                 """
-                SELECT encrypted_value FROM oauth_credentials
+                SELECT encrypted_value, revoked FROM oauth_credentials
                 WHERE app_key = ? AND subject_key = ? AND purpose = ?
                 """,
                 (self._app_key, subject_key, purpose),
             ).fetchone()
         if row is None:
-            return None
+            return {"status": "missing", "credentials_json": None}
+        if bool(row[1]):
+            return {"status": "revoked", "credentials_json": None}
         try:
             cleartext = self._cipher.decrypt(bytes(row[0])).decode("utf-8")
             if not isinstance(json.loads(cleartext), dict):
-                return None
-            return cleartext
+                raise ValueError("Invalid stored credential payload.")
+            return {"status": "active", "credentials_json": cleartext}
         except (InvalidToken, UnicodeDecodeError, ValueError, TypeError):
-            return None
+            return {"status": "invalid", "credentials_json": None}
+
+    def get_credentials_json(self, subject: str, purpose: str):
+        """Return decrypted credential JSON, or None when no active grant is stored."""
+        return self.get_credentials_record(subject, purpose)["credentials_json"]
 
     def save_credentials_json(self, subject: str, purpose: str, credentials_json: str) -> None:
         """Encrypt and upsert a credential payload without logging it."""
@@ -123,10 +138,11 @@ class OAuthTokenStore:
             connection.execute(
                 """
                 INSERT INTO oauth_credentials
-                    (app_key, subject_key, purpose, encrypted_value, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (app_key, subject_key, purpose, encrypted_value, revoked, updated_at)
+                VALUES (?, ?, ?, ?, 0, ?)
                 ON CONFLICT (app_key, subject_key, purpose) DO UPDATE SET
                     encrypted_value = excluded.encrypted_value,
+                    revoked = 0,
                     updated_at = excluded.updated_at
                 """,
                 (self._app_key, subject_key, purpose, ciphertext, time.time()),
@@ -137,10 +153,17 @@ class OAuthTokenStore:
         self._validate_purpose(purpose)
         subject_key = self._subject_key(subject)
         with self._connection() as connection:
+            # Keep a tombstone so already-open tabs learn that this grant was revoked.
+            tombstone = self._cipher.encrypt(b"{}")
             connection.execute(
                 """
-                DELETE FROM oauth_credentials
-                WHERE app_key = ? AND subject_key = ? AND purpose = ?
+                INSERT INTO oauth_credentials
+                    (app_key, subject_key, purpose, encrypted_value, revoked, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT (app_key, subject_key, purpose) DO UPDATE SET
+                    encrypted_value = excluded.encrypted_value,
+                    revoked = 1,
+                    updated_at = excluded.updated_at
                 """,
-                (self._app_key, subject_key, purpose),
+                (self._app_key, subject_key, purpose, tombstone, time.time()),
             )
