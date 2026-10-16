@@ -170,7 +170,8 @@ def render_chat(youtube, secrets):
     st.subheader("YouTube Strategist Chat")
     st.caption(
         "Discuss edits naturally, provide a reference video, revise the proposal, "
-        "and approve the exact metadata before anything is changed."
+        "and approve the exact metadata before anything is changed. Video metadata, "
+        "your instructions, and any available reference transcript are sent to Gemini."
     )
     gemini = secrets.get("gemini", {})
     model = gemini.get("model", DEFAULT_MODEL)
