@@ -245,3 +245,22 @@ writes the line without it.
 ## Licence
 
 MIT. Use it, change it, ship it.
+
+
+### Conversational YouTube Strategist (Gemini)
+
+The Streamlit dashboard includes an optional conversational metadata editor. It accepts a video URL or ID from the configured owner channel and a public reference video URL. It retrieves available public reference metadata and attempts to retrieve a public transcript; if no transcript is available, it clearly falls back to metadata only. It does not claim to inspect video visuals from a URL.
+
+To enable the chat, create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey) and add the following to Streamlit Community Cloud → Manage app → Settings → Secrets. Keep the key private and never commit it to the repository:
+
+```toml
+[gemini]
+api_key = "YOUR_GEMINI_API_KEY"
+model = "gemini-3.8-flash"
+```
+
+The model name is configurable. Gemini API usage and billing/rate limits are separate from a Google AI Pro consumer subscription. The chat sends the target video's title, description, tags, the reference video's public metadata, available reference transcript, and your chat instructions to Gemini.
+
+Every response is a proposal only. The app displays current and proposed title, description and tags. You must explicitly click **Approve and apply this exact proposal** before a change is sent to YouTube. The existing connector re-checks that the target metadata has not changed since review, validates the proposal, applies only supported snippet metadata, and verifies the update. Changing the proposal invalidates the prior approval digest. Transcript retrieval is best-effort; transcript-disabled, private, age-restricted, or otherwise unavailable videos may fall back to public metadata.
+
+The chat history and approval audit are held in the current Streamlit session. They are not durable across session expiry. Do not enter secrets or other sensitive information in the chat.
