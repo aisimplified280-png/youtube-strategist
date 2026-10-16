@@ -34,6 +34,25 @@ def test_credentials_are_shared_by_purpose_and_owner(tmp_path):
     assert store.get_credentials_json("different-owner", "youtube") is None
 
 
+def test_separate_instances_share_active_grants_and_revocations(tmp_path):
+    path = tmp_path / "shared.sqlite3"
+    first_tab = OAuthTokenStore(SECRET, path)
+    second_tab = OAuthTokenStore(SECRET, path)
+    youtube = payload("youtube-refresh-secret")
+    memory = payload("memory-refresh-secret")
+
+    first_tab.save_credentials_json(SUBJECT, "youtube", youtube)
+    second_tab.save_credentials_json(SUBJECT, "memory", memory)
+
+    assert first_tab.get_credentials_json(SUBJECT, "youtube") == youtube
+    assert first_tab.get_credentials_json(SUBJECT, "memory") == memory
+
+    second_tab.delete_credentials(SUBJECT, "youtube")
+    assert first_tab.get_credentials_record(SUBJECT, "youtube")["status"] == "revoked"
+    assert first_tab.get_credentials_json(SUBJECT, "youtube") is None
+    assert first_tab.get_credentials_json(SUBJECT, "memory") == memory
+
+
 def test_stored_values_are_encrypted_at_rest(tmp_path):
     path = tmp_path / "shared.sqlite3"
     store = OAuthTokenStore(SECRET, path)
