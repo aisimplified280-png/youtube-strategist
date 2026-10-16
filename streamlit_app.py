@@ -411,8 +411,8 @@ def _start_youtube_authorization(secrets, subject):
         type="primary",
         help=(
             "Google will return to the configured Streamlit app URL. This grants "
-            "Analytics and metadata access plus Sheets access and access to files created "
-            "by this app for private Strategist Memory."
+            "YouTube access and limited Drive file access for the private Strategist Memory "
+            "spreadsheet created by this app."
         ),
     )
     st.caption(
