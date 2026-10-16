@@ -6,6 +6,32 @@ import strategist_chat
 
 
 class StrategistChatTests(unittest.TestCase):
+    def test_load_target_video_without_reference(self):
+        session_state = {}
+        target_snippet = {"title": "My video", "description": "A test", "tags": []}
+        with patch("strategist_chat.st.session_state", session_state), patch(
+            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
+        ):
+            context, error = strategist_chat._load_conversation_videos(
+                Mock(), {}, "Please improve this: https://youtu.be/abcdefghijk"
+            )
+        self.assertIsNone(error)
+        self.assertEqual(context["target_id"], "abcdefghijk")
+        self.assertIsNone(context["reference_id"])
+        self.assertEqual(context["reference_snippet"], {})
+        self.assertEqual(context["transcript"], "")
+        self.assertIn("No reference video supplied", context["transcript_status"])
+        self.assertEqual(session_state["strategist_target_reference"], context)
+
+    def test_load_conversation_without_video_requests_one_link(self):
+        with patch("strategist_chat.st.session_state", {}):
+            context, message = strategist_chat._load_conversation_videos(
+                Mock(), {}, "Can you improve my SEO?"
+            )
+        self.assertIsNone(context)
+        self.assertIn("your own YouTube video link", message)
+        self.assertIn("optional", message)
+
     def test_parse_watch_url(self):
         self.assertEqual(
             strategist_chat.parse_video_id("https://www.youtube.com/watch?v=abcdefghijk"),
