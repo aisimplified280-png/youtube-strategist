@@ -55,12 +55,21 @@ def reuse_or_create_oauth_state(state, subject, secret, *, now=None):
 
 
 def consume_oauth_state(returned_state, expected_state, subject, secret, *, now=None):
-    return (
-        isinstance(returned_state, str)
-        and isinstance(expected_state, str)
-        and hmac.compare_digest(returned_state, expected_state)
-        and verify_oauth_state(returned_state, subject, secret, now=now)
-    )
+    """Validate callback state even when Streamlit session state did not survive a redirect.
+
+    When the initiating session is still available, require an exact state match.
+    When it is unavailable, the signed state still has to be valid, unexpired, and
+    bound to the authenticated owner. The authorization code is exchanged immediately
+    and Google only permits a code to be redeemed once.
+    """
+    if not isinstance(returned_state, str):
+        return False
+    if expected_state is not None:
+        if not isinstance(expected_state, str):
+            return False
+        if not hmac.compare_digest(returned_state, expected_state):
+            return False
+    return verify_oauth_state(returned_state, subject, secret, now=now)
 
 
 def verify_oauth_state(state, subject, secret, *, now=None):
