@@ -18,6 +18,25 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_MODEL = "gemini-3.8-flash"
 MAX_TRANSCRIPT_CHARS = 12000
 MAX_HISTORY_TURNS = 8
+QUICK_ACTIONS = {
+    "title": (
+        "Improve only the title. Make it clearer and more intriguing without adding "
+        "unsupported claims. Keep the current description and tags unchanged."
+    ),
+    "description": (
+        "Improve only the description and its relevant hashtags. Keep the current "
+        "title and separate tags unchanged."
+    ),
+    "tags": (
+        "Improve only the separate YouTube tags using relevant, specific search terms. "
+        "Keep the current title and description unchanged."
+    ),
+    "review": (
+        "Review the title, description, hashtags, and separate tags together. Improve "
+        "only what is justified by the available video metadata and transcript; do not "
+        "invent content or promise performance."
+    ),
+}
 
 
 def parse_video_id(reference):
@@ -360,12 +379,30 @@ def render_chat(youtube, secrets):
             "in the same message. A second, reference-video link is optional."
         )
 
+    quick_instruction = None
+    if context:
+        st.markdown("**Quick actions**")
+        quick_columns = st.columns(2)
+        quick_buttons = (
+            ("Improve title", "title"),
+            ("Description + hashtags", "description"),
+            ("Improve tags", "tags"),
+            ("Review all metadata", "review"),
+        )
+        for index, (label, action_key) in enumerate(quick_buttons):
+            if quick_columns[index % 2].button(
+                label,
+                key=f"strategist_quick_action_{action_key}",
+                use_container_width=True,
+            ):
+                quick_instruction = QUICK_ACTIONS[action_key]
+
     history = st.session_state.setdefault("strategist_chat_history", [])
     for turn in history:
         with st.chat_message("user" if turn["role"] == "user" else "assistant"):
             st.markdown(turn["content"])
 
-    instruction = st.chat_input(
+    instruction = quick_instruction or st.chat_input(
         "Paste your video link and ask for an improvement (reference optional)…",
         key="strategist_chat_input",
     )
