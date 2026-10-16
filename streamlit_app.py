@@ -1117,20 +1117,18 @@ def _render_recent_opportunities(
                 )
     elif memory_status == "not_connected":
         st.info(
-            "The scan is ready in this session. Connect private Strategist Memory separately "
-            "to keep the scan history and approved experiment log between sessions."
+            "The scan is ready in this session. Connect private Strategist Memory from the "
+            "sidebar to keep scan history and approved experiments between sessions."
         )
-        _start_memory_authorization(secrets, subject)
     elif memory_status == "session_only" and memory_error:
         st.warning(
-            "This scan is available in the current session, but durable memory was not saved. "
+            "This scan is available in this session, but durable memory was not saved. "
             + memory_error
         )
         st.caption(
-            "Verify that the Google Drive API and Google Sheets API are enabled, then "
-            "reauthorize the private-memory connection below."
+            "If the memory token is already authorized, use Retry spreadsheet setup. "
+            "Otherwise, connect private Strategist Memory from the sidebar."
         )
-        _start_memory_authorization(secrets, subject)
 
     if not ctr_available:
         st.info(
@@ -1323,27 +1321,33 @@ def main():
             st.caption("Private memory: connected and verified")
             memory_url = st.session_state.get("content_memory_spreadsheet_url")
             if memory_url:
-                st.markdown(f"[Open memory spreadsheet]({memory_url})")
+                st.link_button(
+                    "Open memory spreadsheet",
+                    memory_url,
+                    use_container_width=True,
+                )
         elif memory_credentials:
-            st.caption("Private memory: authorized; setup not verified")
+            st.caption("Private memory: authorized; setup needs attention")
         else:
             st.caption("Private memory: not connected")
-        if st.button(
-            "Disconnect private memory" if memory_credentials else "Connect private memory",
-            key="asl_memory_connect",
+            _start_memory_authorization(secrets, subject)
+        if memory_credentials and st.button(
+            "Disconnect private memory",
+            key="asl_memory_disconnect",
             use_container_width=True,
         ):
-            if memory_credentials:
-                for key in (
-                    "memory_credentials_json",
-                    "memory_store_setup_attempted",
-                    "content_memory_store_verified",
-                    "content_memory_spreadsheet_url",
-                    "content_memory_recent_scans",
-                    "memory_connection_pending_verification",
-                ):
-                    st.session_state.pop(key, None)
-                st.session_state["content_memory_write_status"] = "not_connected"
+            for key in (
+                "memory_credentials_json",
+                "memory_store_setup_attempted",
+                "content_memory_store_verified",
+                "content_memory_spreadsheet_url",
+                "content_memory_recent_scans",
+                "memory_connection_pending_verification",
+                "memory_connected_message",
+                "memory_store_setup_error",
+            ):
+                st.session_state.pop(key, None)
+            st.session_state["content_memory_write_status"] = "not_connected"
             st.session_state["asl_workspace"] = "Find videos"
             st.rerun()
         with st.expander("Account"):
