@@ -824,21 +824,32 @@ def _save_scan_snapshot_to_memory(memory_credentials, snapshot):
     try:
         store = content_memory.GoogleSheetsMemoryStore.from_credentials(memory_credentials)
         store.append_scan(snapshot)
-        # Clear only after the append returns successfully, so an explicit retry can
-        # recover a failed save. The app will never report a failed write as saved.
-        st.session_state.pop("pending_memory_snapshot", None)
-        st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
-        st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
-        st.session_state["content_memory_write_status"] = "saved"
-        st.session_state.pop("content_memory_write_error", None)
-        st.session_state.pop("memory_store_setup_error", None)
     except Exception as error:
         message = content_memory.describe_memory_error(error)
         st.session_state["pending_memory_snapshot"] = snapshot
+        st.session_state["content_memory_store_verified"] = False
         st.session_state["content_memory_write_status"] = "session_only"
         st.session_state["content_memory_write_error"] = message
         st.session_state["memory_store_setup_error"] = message
         st.session_state.pop("content_memory_recent_scans", None)
+        return
+
+    # The append is confirmed. Clear the pending row before the history read so a
+    # transient read failure can never cause the successful append to be duplicated.
+    st.session_state.pop("pending_memory_snapshot", None)
+    st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
+    st.session_state["content_memory_store_verified"] = True
+    st.session_state["content_memory_write_status"] = "saved"
+    st.session_state.pop("content_memory_write_error", None)
+    st.session_state.pop("memory_store_setup_error", None)
+    try:
+        st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
+        st.session_state.pop("content_memory_history_error", None)
+    except Exception as error:
+        st.session_state["content_memory_recent_scans"] = []
+        st.session_state["content_memory_history_error"] = (
+            content_memory.describe_memory_error(error)
+        )
 
 
 def _persist_opportunity_scan(
