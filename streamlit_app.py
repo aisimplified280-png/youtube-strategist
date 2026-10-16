@@ -126,13 +126,14 @@ def _flow_config(secrets):
     }
 
 
-def _new_google_flow(secrets, *, state=None):
+def _new_google_flow(secrets, *, state=None, code_verifier=None):
     oauth = secrets["youtube_oauth"]
     return Flow.from_client_config(
         _flow_config(secrets),
         scopes=connector.SCOPES,
         state=state,
         redirect_uri=oauth["redirect_uri"],
+        code_verifier=code_verifier,
     )
 
 
@@ -143,6 +144,7 @@ def _handle_youtube_callback(secrets, subject):
     oauth_error = query.get("error")
     if oauth_error:
         st.session_state.pop("pending_youtube_oauth_state", None)
+        st.session_state.pop("pending_youtube_oauth_code_verifier", None)
         query.clear()
         st.error(
             "Google authorization was not completed. Reconnect YouTube when you are ready."
@@ -152,6 +154,7 @@ def _handle_youtube_callback(secrets, subject):
         return
     if not code or not returned_state:
         st.session_state.pop("pending_youtube_oauth_state", None)
+        st.session_state.pop("pending_youtube_oauth_code_verifier", None)
         query.clear()
         st.error("Google returned an incomplete authorization response.")
         return
@@ -164,6 +167,7 @@ def _handle_youtube_callback(secrets, subject):
         secrets["security"]["state_secret"],
     )
     if not valid_state:
+        st.session_state.pop("pending_youtube_oauth_code_verifier", None)
         query.clear()
         st.error(
             "The authorization response expired or did not match the signed-in account. "
@@ -171,8 +175,21 @@ def _handle_youtube_callback(secrets, subject):
         )
         return
 
+    code_verifier = st.session_state.pop(
+        "pending_youtube_oauth_code_verifier", None
+    )
+    if not isinstance(code_verifier, str) or not code_verifier:
+        query.clear()
+        st.error(
+            "The Google authorization verifier was missing or expired. "
+            "Start a fresh YouTube authorization."
+        )
+        return
+
     try:
-        flow = _new_google_flow(secrets, state=returned_state)
+        flow = _new_google_flow(
+            secrets, state=returned_state, code_verifier=code_verifier
+        )
         flow.fetch_token(code=code)
     except (
         ValueError,
@@ -180,10 +197,28 @@ def _handle_youtube_callback(secrets, subject):
         OAuthError,
         OAuth2Error,
         requests.RequestException,
-    ):
+    ) as error:
         query.clear()
+        error_code = getattr(error, "error", None)
+        if not (
+            isinstance(error_code, str)
+            and 0 < len(error_code) <= 64
+            and all(
+                character.isascii()
+                and (character.isalnum() or character in "._-")
+                for character in error_code
+            )
+        ):
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", None)
+            error_code = (
+                f"HTTP {status}"
+                if isinstance(status, int)
+                else type(error).__name__
+            )
         st.error(
-            "Google authorization exchange failed. Check the hosted OAuth client and "
+            f"Google authorization exchange failed ({error_code}). "
+            "Check the hosted OAuth client and "
             "redirect URI, then reconnect."
         )
         return
@@ -246,18 +281,27 @@ def _credentials_from_session():
 
 def _start_youtube_authorization(secrets, subject):
     signing_secret = secrets["security"]["state_secret"]
+    pending_state = st.session_state.get("pending_youtube_oauth_state")
     state = dashboard_security.reuse_or_create_oauth_state(
-        st.session_state.get("pending_youtube_oauth_state"),
+        pending_state,
         subject,
         signing_secret,
     )
     st.session_state["pending_youtube_oauth_state"] = state
-    flow = _new_google_flow(secrets, state=state)
+    code_verifier = (
+        st.session_state.get("pending_youtube_oauth_code_verifier")
+        if pending_state == state
+        else None
+    )
+    flow = _new_google_flow(
+        secrets, state=state, code_verifier=code_verifier
+    )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
+    st.session_state["pending_youtube_oauth_code_verifier"] = flow.code_verifier
     st.link_button(
         "Authorize YouTube Analytics and metadata access",
         authorization_url,
