@@ -730,7 +730,7 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
     auto_run = st.session_state.pop("opportunity_auto_run", False)
     request_text = st.session_state.pop("channel_analysis_request", None)
     if request_text:
-        st.caption("Request: " + request_text)
+        st.caption("Starting from your request in chat.")
 
     if start_date > end_date:
         st.error("Choose a start date on or before the end date.")
@@ -828,6 +828,45 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
         "If that evidence is unavailable, the scan uses measured views or labels results as a "
         "limited-evidence shortlist."
     )
+    if request_text:
+        if not recent_ids:
+            assistant_summary = (
+                f"I checked uploads dated {start_date.isoformat()} through "
+                f"{end_date.isoformat()}, but no uploads in the selected catalogue "
+                "were published during that period. Try a wider date range."
+            )
+        elif not measured_recent:
+            assistant_summary = (
+                f"I checked {len(recent_ids)} recent uploads from "
+                f"{start_date.isoformat()} through {end_date.isoformat()}, but YouTube "
+                "returned no measured view rows. I didn't invent a ranking."
+            )
+        elif candidates:
+            first_titles = "; ".join(
+                str(item.get("title", "(untitled)"))
+                for item in candidates[:3]
+            )
+            ctr_message = (
+                "Measured CTR was available for some candidates."
+                if ctr_available else
+                "Reliable CTR was unavailable; the shortlist uses views/peer data instead."
+            )
+            assistant_summary = (
+                f"I checked {len(recent_ids)} uploads published between "
+                f"{start_date.isoformat()} and {end_date.isoformat()} and found "
+                f"{len(candidates)} metadata-review candidate(s). "
+                f"{ctr_message} First candidates: {first_titles}. "
+                "Open Find videos to review the evidence, then optimize one video at a time."
+            )
+        else:
+            assistant_summary = (
+                f"I checked {len(recent_ids)} uploads published between "
+                f"{start_date.isoformat()} and {end_date.isoformat()}, but the measured "
+                "data did not establish a clear underperformer. No estimated CTR was used."
+            )
+        history = st.session_state.setdefault("strategist_chat_history", [])
+        strategist_chat._append_history(history, "assistant", assistant_summary)
+
     if not ctr_available:
         st.info(
             "Reliable thumbnail CTR was not available for these uploads at the required "
