@@ -518,6 +518,15 @@ def _credentials_from_session(
         )
     except (ValueError, KeyError, TypeError):
         st.session_state.pop(session_key, None)
+        purpose = "memory" if label != "YouTube" else "youtube"
+        subject = st.session_state.get("oauth_owner_subject")
+        if token_store is not None and subject:
+            try:
+                token_store.delete_credentials(subject, purpose)
+            except Exception:
+                st.session_state["oauth_token_store_error"] = (
+                    "An invalid saved authorization could not be cleared from shared storage."
+                )
         return None
     if credentials.valid:
         return credentials
@@ -533,6 +542,15 @@ def _credentials_from_session(
             return credentials
         except (GoogleAuthError, requests.RequestException):
             st.session_state.pop(session_key, None)
+            purpose = "memory" if label != "YouTube" else "youtube"
+            subject = st.session_state.get("oauth_owner_subject")
+            if token_store is not None and subject:
+                try:
+                    token_store.delete_credentials(subject, purpose)
+                except Exception:
+                    st.session_state["oauth_token_store_error"] = (
+                        "An expired authorization could not be cleared from shared storage."
+                    )
             warning_key = "youtube_auth_warning" if label == "YouTube" else "memory_auth_warning"
             st.session_state[warning_key] = (
                 f"Saved {label} authorization could not be refreshed. "
@@ -541,6 +559,15 @@ def _credentials_from_session(
             return None
     if credentials.expired:
         st.session_state.pop(session_key, None)
+        purpose = "memory" if label != "YouTube" else "youtube"
+        subject = st.session_state.get("oauth_owner_subject")
+        if token_store is not None and subject:
+            try:
+                token_store.delete_credentials(subject, purpose)
+            except Exception:
+                st.session_state["oauth_token_store_error"] = (
+                    "An expired authorization could not be cleared from shared storage."
+                )
         warning_key = "youtube_auth_warning" if label == "YouTube" else "memory_auth_warning"
         st.session_state[warning_key] = (
             f"Saved {label} authorization expired without a refresh token. "
@@ -548,6 +575,15 @@ def _credentials_from_session(
         )
         return None
     st.session_state.pop(session_key, None)
+    purpose = "memory" if label != "YouTube" else "youtube"
+    subject = st.session_state.get("oauth_owner_subject")
+    if token_store is not None and subject:
+        try:
+            token_store.delete_credentials(subject, purpose)
+        except Exception:
+            st.session_state["oauth_token_store_error"] = (
+                "An invalid authorization could not be cleared from shared storage."
+            )
     return None
 
 
