@@ -1,4 +1,4 @@
-"""Conversational, approval-gated Gemini assistant for YouTube metadata."""
+"""Conversational, approval-gated Grok-first YouTube metadata assistant."""
 
 import json
 import re
@@ -275,7 +275,7 @@ def render_chat(youtube, secrets):
     st.caption(
         "Discuss edits naturally, provide a reference video, revise the proposal, "
         "and approve the exact metadata before anything is changed. Video metadata, "
-        "your instructions, and any available reference transcript are sent to Gemini."
+        "your instructions, and any available reference transcript are sent to Grok first, or Gemini if fallback is needed."
     )
     xai = secrets.get("xai", {})
     gemini = secrets.get("gemini", {})
