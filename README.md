@@ -99,12 +99,14 @@ YouTube confirms the approved update. Drafts and rejected proposals are not reco
 as completed experiments. The spreadsheet is owned by the authorized Google account.
 
 To enable the feature, enable **Google Drive API** and **Google Sheets API** in the
-same Google Cloud project as the app's OAuth client. In the app, scan uploads. If the
-existing YouTube session was authorized before the memory feature was added, use the
-reconnect button to grant the new scopes once. The app requests the limited `drive.file` scope for the spreadsheet created
-by this app. The Sheets API supports this per-file scope, so the app avoids requesting
-the broader `spreadsheets` scope or full Drive access. If the APIs are not enabled or Google denies access, scans
-continue to work in the current session and the app reports that memory was not saved.
+same Google Cloud project as the app's OAuth client. Authorize YouTube from the YouTube
+connection button, then connect private Strategist Memory separately from the Find videos
+workspace. Google rejects a combined consent request containing both YouTube and
+`drive.file` scopes, so the app keeps these as two separate flows and separate tokens.
+The memory flow requests only the limited `drive.file` scope for the spreadsheet created
+by this app; it does not request the broader `spreadsheets` scope or full Drive access.
+If the APIs are not enabled or Google denies memory access, channel scans continue in the
+current session and the app reports that memory was not saved.
 
 The action brief distinguishes measured CTR comparisons from view-based or limited-
 evidence review candidates. It recommends actions and next metrics to inspect, but
