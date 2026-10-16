@@ -63,6 +63,27 @@ st.markdown(
         opacity: .64;
         margin: .85rem .1rem .35rem;
     }
+    .asl-oauth-link {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 2.65rem;
+        margin: .25rem 0 .5rem;
+        padding: .65rem .8rem;
+        border: 1px solid var(--primary-color);
+        border-radius: .7rem;
+        background: var(--primary-color);
+        color: white !important;
+        font-weight: 650;
+        line-height: 1.25;
+        text-align: center;
+        text-decoration: none !important;
+        overflow-wrap: anywhere;
+    }
+    .asl-oauth-link:hover { filter: brightness(.94); }
+    .asl-oauth-link:focus-visible { outline: 2px solid var(--text-color); outline-offset: 2px; }
     .asl-page-heading { margin: .15rem 0 1.25rem; }
     .asl-page-title {
         font-size: clamp(1.45rem, 3.3vw, 1.95rem);
@@ -234,6 +255,19 @@ def _new_google_flow(secrets, *, scopes=None, state=None, code_verifier=None):
         redirect_uri=oauth["redirect_uri"],
         code_verifier=code_verifier,
     )
+
+
+def _render_same_tab_oauth_link(label, authorization_url, help_text):
+    """Navigate this tab to Google rather than creating an isolated Streamlit session."""
+    safe_label = html.escape(label)
+    safe_url = html.escape(authorization_url, quote=True)
+    st.markdown(
+        f'<a class="asl-oauth-link" href="{safe_url}" target="_self" rel="noreferrer">'
+        f'{safe_label}</a>',
+        unsafe_allow_html=True,
+    )
+    if help_text:
+        st.caption(help_text)
 
 
 def _restore_shared_oauth_credentials(token_store, subject):
@@ -535,14 +569,11 @@ def _start_youtube_authorization(secrets, subject):
         prompt="consent",
         login_hint=getattr(st.user, "email", ""),
     )
-    st.link_button(
+    _render_same_tab_oauth_link(
         "Authorize YouTube Analytics and metadata access",
         authorization_url,
-        type="primary",
-        help=(
-            "This separate Google authorization grants the app its required YouTube "
-            "Analytics and metadata permissions only."
-        ),
+        "Google opens in this tab and returns here. This grant covers YouTube Analytics "
+        "and metadata permissions only.",
     )
     st.caption(
         "YouTube authorization is stored separately from the optional private-memory connection."
@@ -570,16 +601,12 @@ def _start_memory_authorization(secrets, subject):
         prompt="consent",
         login_hint=getattr(st.user, "email", ""),
     )
-    st.link_button(
+    _render_same_tab_oauth_link(
         "Connect private Strategist Memory",
         authorization_url,
-        type="primary",
-        use_container_width=True,
-        help=(
-            "This is a separate, optional Google authorization. It requests only the "
-            "limited drive.file permission for the private spreadsheet created by this app; "
-            "it does not request YouTube scopes in the same consent."
-        ),
+        "Google opens in this tab and returns here. This optional grant requests only "
+        "the limited drive.file permission for the private spreadsheet; it does not request "
+        "YouTube scopes in the same consent.",
     )
 
 def _verify_private_memory_workbook(memory_credentials):
