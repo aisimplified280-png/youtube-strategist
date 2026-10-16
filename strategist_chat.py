@@ -239,6 +239,7 @@ def render_chat(youtube, secrets):
         if existing_proposal and existing_proposal.get("target_id") != context["target_id"]:
             existing_proposal = None
         _append_history(history, "user", instruction)
+        st.session_state.pop("strategist_chat_proposal", None)
         st.session_state.pop("strategist_chat_digest", None)
         with st.chat_message("user"):
             st.markdown(instruction)
