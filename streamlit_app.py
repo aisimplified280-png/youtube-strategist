@@ -949,12 +949,7 @@ def main():
         _start_youtube_authorization(secrets, subject)
         return
 
-    if not st.session_state.get("session_access_warning_shown"):
-        st.warning(
-            "Approvals and audit entries are held only in this authenticated browser "
-            "session. This free deployment does not provide durable audit storage."
-        )
-        st.session_state["session_access_warning_shown"] = True
+    st.session_state["session_access_warning_shown"] = True
 
     try:
         youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
@@ -999,6 +994,7 @@ def main():
         )
         st.divider()
         st.caption("Every YouTube change requires your approval.")
+        st.caption("Conversation history and audit records are session-only.")
 
     optimizer_error = st.session_state.pop("optimizer_open_error", None)
     if optimizer_error:
