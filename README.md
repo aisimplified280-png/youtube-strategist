@@ -257,7 +257,10 @@ To enable the chat, create a Gemini API key in [Google AI Studio](https://aistud
 [gemini]
 api_key = "YOUR_GEMINI_API_KEY"
 model = "gemini-3.8-flash"
+fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 ```
+
+The primary model is attempted first. If it hits a model quota/rate limit (HTTP 429), is unavailable (HTTP 404), returns a transient server error (HTTP 5xx), or times out, the chat automatically tries each distinct model in `fallback_models` in order. The UI shows which model answered. If all configured models fail, the chat reports that rather than losing the proposal silently. Authentication/permission errors (HTTP 401/403) stop immediately because changing models will not repair an invalid key or missing access. Keep the fallback list to model IDs currently supported for your Gemini API key; a project-wide quota limit can affect every model, so fallback is best-effort, not a guarantee.
 
 The model name is configurable. Gemini API usage and billing/rate limits are separate from a Google AI Pro consumer subscription. The chat sends the target video's title, description, tags, the reference video's public metadata, available reference transcript, and your chat instructions to Gemini.
 
