@@ -650,8 +650,8 @@ def main():
         st.caption("Read-only performance reports. Request all metadata changes in the Strategist chat above.")
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
-        with st.sidebar:
-            st.header("Analytics range")
+        with st.container():
+            st.caption("Choose the reporting window")
             start_date = st.date_input(
                 "Start date",
                 value=default_start,
