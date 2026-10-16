@@ -154,7 +154,7 @@ def _groq_generate(api_key, model, prompt, fallback_models=None):
     candidates = []
     for candidate in [model or DEFAULT_GROQ_MODEL, *(fallback_models or [])]:
         candidate = str(candidate).strip()
-        if candidate and re.fullmatch(r"[A-Za-z0-9._-]+", candidate) and candidate not in candidates:
+        if candidate and re.fullmatch(r"[A-Za-z0-9._/-]+", candidate) and candidate not in candidates:
             candidates.append(candidate)
     if not candidates:
         raise ValueError("Configure at least one valid Groq model name.")
