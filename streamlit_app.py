@@ -308,7 +308,6 @@ def _start_youtube_authorization(secrets, subject):
     )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
         prompt="consent",
     )
     st.link_button(
