@@ -6,6 +6,18 @@ import strategist_chat
 
 
 class StrategistChatTests(unittest.TestCase):
+    def test_quick_actions_are_focused_and_available(self):
+        self.assertEqual(
+            set(strategist_chat.QUICK_ACTIONS),
+            {"title", "description", "tags", "review"},
+        )
+        self.assertIn("Keep the current description and tags unchanged",
+                      strategist_chat.QUICK_ACTIONS["title"])
+        self.assertIn("Keep the current title", strategist_chat.QUICK_ACTIONS["description"])
+        self.assertIn("Keep the current title and description unchanged",
+                      strategist_chat.QUICK_ACTIONS["tags"])
+        self.assertIn("do not invent content", strategist_chat.QUICK_ACTIONS["review"])
+
     def test_load_target_video_without_reference(self):
         session_state = {}
         target_snippet = {"title": "My video", "description": "A test", "tags": []}
