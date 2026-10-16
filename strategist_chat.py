@@ -424,7 +424,7 @@ def _apply_error_message(error):
     )
 
 
-def render_chat(youtube, secrets, credentials=None):
+def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
     """Render a clean, chat-first editor with conversational setup and explicit approval."""
     st.caption(
         "Paste your video link once, then ask for a better title, description, or tags. "
@@ -774,12 +774,13 @@ def render_chat(youtube, secrets, credentials=None):
                 else:
                     st.success(f"Verified update: {result['title']}")
                     try:
-                        if credentials is None:
+                        if memory_credentials is None:
                             raise content_memory.MemoryStoreError(
-                                "Google credentials were unavailable to save this experiment."
+                                "Private Strategist Memory is not connected. Open Find videos "
+                                "and connect memory separately to save this approved experiment."
                             )
                         memory_store = content_memory.GoogleSheetsMemoryStore.from_credentials(
-                            credentials
+                            memory_credentials
                         )
                         baseline = content_memory.metrics_snapshot_from_session(
                             st.session_state, context["target_id"]

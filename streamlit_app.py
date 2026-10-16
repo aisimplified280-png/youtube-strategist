@@ -24,12 +24,9 @@ import youtube_analytics_connector as connector
 import youtube_dashboard
 import strategist_chat
 
-MEMORY_SCOPES = [
-    # Sheets API supports drive.file for the app-created memory spreadsheet.
-    # Avoid the broader spreadsheets scope, which can authorize access to all Sheets.
-    "https://www.googleapis.com/auth/drive.file",
-]
-APP_SCOPES = [*connector.SCOPES, *MEMORY_SCOPES]
+# Google rejects combined YouTube + Drive-file authorization requests.
+# Keep these as two separate grants and keep the tokens separate as well.
+MEMORY_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 st.set_page_config(
     page_title="AI Simplified Lab YouTube Strategist",
@@ -221,61 +218,105 @@ def _flow_config(secrets):
     }
 
 
-def _new_google_flow(secrets, *, state=None, code_verifier=None):
+def _oauth_purpose_secret(secrets, purpose):
+    return dashboard_security.oauth_purpose_secret(
+        secrets["security"]["state_secret"], purpose
+    )
+
+
+def _new_google_flow(secrets, *, scopes=None, state=None, code_verifier=None):
     oauth = secrets["youtube_oauth"]
     return Flow.from_client_config(
         _flow_config(secrets),
-        scopes=APP_SCOPES,
+        scopes=list(scopes or connector.SCOPES),
         state=state,
         redirect_uri=oauth["redirect_uri"],
         code_verifier=code_verifier,
     )
 
 
+def _resolve_api_oauth_state(returned_state, secrets, subject):
+    """Identify exactly one signed scope purpose without mixing scope grants."""
+    if not returned_state:
+        return None
+    attempts = (
+        ("youtube", "pending_youtube_oauth_state"),
+        ("memory", "pending_memory_oauth_state"),
+    )
+    for purpose, pending_key in attempts:
+        purpose_secret = _oauth_purpose_secret(secrets, purpose)
+        expected = st.session_state.get(pending_key)
+        if dashboard_security.consume_oauth_state(
+            returned_state,
+            expected,
+            subject,
+            purpose_secret,
+        ):
+            return purpose, pending_key, purpose_secret
+    return None
+
+
 def _handle_youtube_callback(secrets, subject):
+    """Dispatch OAuth callbacks to independent YouTube or memory credentials."""
     query = st.query_params
     code = query.get("code")
     returned_state = query.get("state")
     oauth_error = query.get("error")
+
+    if not code and not returned_state and not oauth_error:
+        return
+
+    resolved = _resolve_api_oauth_state(returned_state, secrets, subject)
     if oauth_error:
-        st.session_state.pop("pending_youtube_oauth_state", None)
+        if resolved:
+            purpose, pending_key, _ = resolved
+            st.session_state.pop(pending_key, None)
+            if purpose == "memory":
+                st.session_state["memory_auth_error"] = (
+                    "Private memory authorization was not completed. "
+                    "YouTube access remains separate and unchanged."
+                )
+            else:
+                st.session_state["youtube_auth_error"] = (
+                    "YouTube authorization was not completed. Try connecting YouTube again."
+                )
+        else:
+            st.session_state["youtube_auth_error"] = (
+                "Google could not validate the authorization response. Start the connection again."
+            )
         query.clear()
-        st.error(
-            "Google authorization was not completed. Reconnect YouTube when you are ready."
-        )
+        st.rerun()
         return
-    if not code and not returned_state:
-        return
+
     if not code or not returned_state:
         st.session_state.pop("pending_youtube_oauth_state", None)
+        st.session_state.pop("pending_memory_oauth_state", None)
         query.clear()
-        st.error("Google returned an incomplete authorization response.")
+        st.error("Google returned an incomplete authorization response. Start that connection again.")
         return
 
-    expected_state = st.session_state.pop("pending_youtube_oauth_state", None)
-    valid_state = dashboard_security.consume_oauth_state(
-        returned_state,
-        expected_state,
-        subject,
-        secrets["security"]["state_secret"],
-    )
-    if not valid_state:
+    if not resolved:
         query.clear()
         st.error(
-            "The authorization response expired or did not match the signed-in account. "
-            "Start YouTube authorization again."
+            "Google returned an invalid, expired, or mismatched authorization response. "
+            "Start the connection again from this signed-in session."
         )
         return
 
-    code_verifier = dashboard_security.create_oauth_code_verifier(
-        returned_state, secrets["security"]["state_secret"]
+    purpose, pending_key, purpose_secret = resolved
+    st.session_state.pop(pending_key, None)
+    scopes = connector.SCOPES if purpose == "youtube" else MEMORY_SCOPES
+    verifier = dashboard_security.create_oauth_code_verifier(
+        returned_state, purpose_secret
     )
     try:
         flow = _new_google_flow(
-            secrets, state=returned_state, code_verifier=code_verifier
+            secrets,
+            scopes=scopes,
+            state=returned_state,
+            code_verifier=verifier,
         )
-        # The Flow already stores the configured redirect URI from _new_google_flow().
-        # Do not pass it again to fetch_token(): requests-oauthlib supplies self.redirect_uri.
+        # The flow already has its configured redirect URI; do not pass it again.
         flow.fetch_token(code=code)
     except (
         ValueError,
@@ -284,8 +325,6 @@ def _handle_youtube_callback(secrets, subject):
         OAuth2Error,
         requests.RequestException,
     ) as error:
-        # Show only a sanitized OAuth error code; never render the callback URL,
-        # authorization code, client secret, or raw HTTP response in the UI.
         error_code = getattr(error, "error", None)
         if not isinstance(error_code, str) and isinstance(error, requests.RequestException):
             response = getattr(error, "response", None)
@@ -297,10 +336,10 @@ def _handle_youtube_callback(secrets, subject):
                 if isinstance(response_body, dict):
                     error_code = response_body.get("error")
         safe_codes = {
-            "invalid_client": "Google rejected the OAuth client credentials. Verify that the Web application client ID and secret in Streamlit Secrets belong to the same Google Cloud OAuth client.",
-            "invalid_grant": "Google rejected this authorization code or its PKCE verifier. Start a fresh authorization attempt and verify the redirect URI exactly matches the configured URI.",
-            "redirect_uri_mismatch": "The redirect URI does not match. Verify the authorized redirect URI in Google Cloud and the [youtube_oauth].redirect_uri value in Streamlit Secrets.",
-            "unauthorized_client": "This OAuth client is not permitted to use the requested flow. Verify that it is a Web application client and the YouTube APIs/scopes are configured.",
+            "invalid_client": "Google rejected the OAuth client credentials. Verify that the Web application client ID and secret belong to the same Google Cloud OAuth client.",
+            "invalid_grant": "Google rejected this authorization code or PKCE verifier. Start a fresh authorization attempt and verify the redirect URI exactly matches the configured URI.",
+            "redirect_uri_mismatch": "The redirect URI does not match. Verify the exact redirect URI in Google Cloud and Streamlit Secrets.",
+            "unauthorized_client": "This OAuth client is not permitted to use the requested flow. Verify that it is configured as a Web application client.",
         }
         query.clear()
         if not (
@@ -314,80 +353,102 @@ def _handle_youtube_callback(secrets, subject):
         ):
             response = getattr(error, "response", None)
             status = getattr(response, "status_code", None)
-            error_code = (
-                f"HTTP {status}"
-                if isinstance(status, int)
-                else type(error).__name__
-            )
-        st.error(
-            "Google authorization exchange failed. "
-            + safe_codes.get(
-                error_code,
-                "Verify the hosted Web OAuth client ID/secret and exact redirect URI, then start a fresh authorization attempt."
-            )
+            error_code = f"HTTP {status}" if isinstance(status, int) else type(error).__name__
+        message = safe_codes.get(
+            error_code,
+            "Verify the OAuth client and redirect URI, then retry this connection.",
         )
-        category = error_code if error_code in safe_codes else type(error).__name__
-        st.caption(f"Diagnostic category: {category}")
+        if purpose == "memory":
+            st.session_state["memory_auth_error"] = message
+        else:
+            st.session_state["youtube_auth_error"] = message
+        query.clear()
+        st.rerun()
         return
     except HttpError as error:
-        query.clear()
         status = getattr(error.resp, "status", "unknown")
-        st.error(f"Google authorization exchange failed (HTTP {status}).")
+        query.clear()
+        message = f"Google authorization exchange failed (HTTP {status})."
+        if purpose == "memory":
+            st.session_state["memory_auth_error"] = message
+        else:
+            st.session_state["youtube_auth_error"] = message
+        st.rerun()
         return
 
     credentials = flow.credentials
-    if not credentials.has_scopes(APP_SCOPES):
+    if not credentials.has_scopes(scopes):
         query.clear()
-        st.error(
-            "The granted authorization is missing required YouTube scopes. "
-            "Reconnect and approve YouTube Analytics read access and YouTube metadata access."
-        )
+        if purpose == "memory":
+            st.session_state["memory_auth_error"] = (
+                "Google did not grant the limited Drive-file permission needed for the "
+                "private memory spreadsheet. Reauthorize memory and approve that permission."
+            )
+        else:
+            st.session_state["youtube_auth_error"] = (
+                "Google did not grant all required YouTube Analytics and metadata scopes. "
+                "Reconnect YouTube and approve the requested YouTube permissions."
+            )
+        st.rerun()
         return
-    st.session_state["youtube_credentials_json"] = credentials.to_json()
+
+    if purpose == "youtube":
+        st.session_state["youtube_credentials_json"] = credentials.to_json()
+        st.session_state["oauth_connected_message"] = True
+    else:
+        st.session_state["memory_credentials_json"] = credentials.to_json()
+        st.session_state["memory_connected_message"] = True
+        st.session_state.pop("memory_auth_error", None)
     query.clear()
-    st.session_state["oauth_connected_message"] = True
     st.rerun()
 
 
-def _credentials_from_session():
-    credentials_json = st.session_state.get("youtube_credentials_json")
+def _credentials_from_session(
+    session_key="youtube_credentials_json",
+    required_scopes=None,
+    label="YouTube",
+):
+    required_scopes = list(required_scopes or connector.SCOPES)
+    credentials_json = st.session_state.get(session_key)
     if not credentials_json:
         return None
     try:
         credentials = Credentials.from_authorized_user_info(
             json.loads(credentials_json),
-            APP_SCOPES,
+            required_scopes,
         )
     except (ValueError, KeyError, TypeError):
-        st.session_state.pop("youtube_credentials_json", None)
+        st.session_state.pop(session_key, None)
         return None
     if credentials.valid:
         return credentials
     if credentials.expired and credentials.refresh_token:
         try:
             credentials.refresh(Request())
-            st.session_state["youtube_credentials_json"] = credentials.to_json()
+            st.session_state[session_key] = credentials.to_json()
             return credentials
         except (GoogleAuthError, requests.RequestException):
-            st.session_state.pop("youtube_credentials_json", None)
-            st.session_state["youtube_auth_warning"] = (
-                "Saved YouTube authorization could not be refreshed. Authorize YouTube "
-                "again for this session."
+            st.session_state.pop(session_key, None)
+            warning_key = "youtube_auth_warning" if label == "YouTube" else "memory_auth_warning"
+            st.session_state[warning_key] = (
+                f"Saved {label} authorization could not be refreshed. "
+                "Reconnect that permission when ready."
             )
             return None
     if credentials.expired:
-        st.session_state.pop("youtube_credentials_json", None)
-        st.session_state["youtube_auth_warning"] = (
-            "Saved YouTube authorization expired without a refresh token. Authorize "
-            "YouTube again for this session."
+        st.session_state.pop(session_key, None)
+        warning_key = "youtube_auth_warning" if label == "YouTube" else "memory_auth_warning"
+        st.session_state[warning_key] = (
+            f"Saved {label} authorization expired without a refresh token. "
+            "Reconnect that permission when ready."
         )
         return None
-    st.session_state.pop("youtube_credentials_json", None)
+    st.session_state.pop(session_key, None)
     return None
 
 
 def _start_youtube_authorization(secrets, subject):
-    signing_secret = secrets["security"]["state_secret"]
+    signing_secret = _oauth_purpose_secret(secrets, "youtube")
     pending_state = st.session_state.get("pending_youtube_oauth_state")
     state = dashboard_security.reuse_or_create_oauth_state(
         pending_state,
@@ -395,31 +456,62 @@ def _start_youtube_authorization(secrets, subject):
         signing_secret,
     )
     st.session_state["pending_youtube_oauth_state"] = state
-    code_verifier = dashboard_security.create_oauth_code_verifier(
-        state, signing_secret
-    )
+    verifier = dashboard_security.create_oauth_code_verifier(state, signing_secret)
     flow = _new_google_flow(
-        secrets, state=state, code_verifier=code_verifier
+        secrets,
+        scopes=connector.SCOPES,
+        state=state,
+        code_verifier=verifier,
     )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
         prompt="consent",
     )
     st.link_button(
-        "Authorize YouTube and private Strategist Memory",
+        "Authorize YouTube Analytics and metadata access",
         authorization_url,
         type="primary",
         help=(
-            "Google will return to the configured Streamlit app URL. This grants "
-            "YouTube access and limited Drive file access for the private Strategist Memory "
-            "spreadsheet created by this app."
+            "This separate Google authorization grants the app its required YouTube "
+            "Analytics and metadata permissions only."
         ),
     )
     st.caption(
-        "The Google OAuth client is held in Streamlit Secrets. Tokens remain in this "
-        "owner's server-side Streamlit session and are never displayed or written to disk."
+        "YouTube authorization is stored separately from the optional private-memory connection."
     )
 
+
+def _start_memory_authorization(secrets, subject):
+    signing_secret = _oauth_purpose_secret(secrets, "memory")
+    pending_state = st.session_state.get("pending_memory_oauth_state")
+    state = dashboard_security.reuse_or_create_oauth_state(
+        pending_state,
+        subject,
+        signing_secret,
+    )
+    st.session_state["pending_memory_oauth_state"] = state
+    verifier = dashboard_security.create_oauth_code_verifier(state, signing_secret)
+    flow = _new_google_flow(
+        secrets,
+        scopes=MEMORY_SCOPES,
+        state=state,
+        code_verifier=verifier,
+    )
+    authorization_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+    )
+    st.link_button(
+        "Connect private Strategist Memory",
+        authorization_url,
+        type="primary",
+        use_container_width=True,
+        help=(
+            "This is a separate, optional Google authorization. It requests only the "
+            "limited drive.file permission for the private spreadsheet created by this app; "
+            "it does not request YouTube scopes in the same consent."
+        ),
+    )
 
 def _display_metric(value):
     return "Unavailable" if value is None else f"{value:,}"
@@ -689,8 +781,26 @@ def _render_proposal(video_row, youtube):
 
 
 
+def _save_scan_snapshot_to_memory(memory_credentials, snapshot):
+    """Append one previously scanned snapshot using only the memory OAuth token."""
+    try:
+        store = content_memory.GoogleSheetsMemoryStore.from_credentials(memory_credentials)
+        store.append_scan(snapshot)
+        st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
+        st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
+        st.session_state["content_memory_write_status"] = "saved"
+        st.session_state.pop("content_memory_write_error", None)
+        st.session_state.pop("pending_memory_snapshot", None)
+    except Exception as error:
+        st.session_state["content_memory_write_status"] = "session_only"
+        st.session_state["content_memory_write_error"] = (
+            content_memory.describe_memory_error(error)
+        )
+        st.session_state.pop("content_memory_recent_scans", None)
+
+
 def _persist_opportunity_scan(
-    credentials,
+    memory_credentials,
     start_date,
     end_date,
     recent_ids,
@@ -698,7 +808,7 @@ def _persist_opportunity_scan(
     ctr_available,
     candidates,
 ):
-    """Keep a session fallback and append an evidence-only snapshot to private memory."""
+    """Keep a session fallback and save only via the separate memory token."""
     snapshot = content_memory.build_scan_snapshot(
         start_date=start_date,
         end_date=end_date,
@@ -711,22 +821,18 @@ def _persist_opportunity_scan(
     session_history.insert(0, snapshot)
     del session_history[20:]
 
-    try:
-        store = content_memory.GoogleSheetsMemoryStore.from_credentials(credentials)
-        store.append_scan(snapshot)
-        st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
-        st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
-        st.session_state["content_memory_write_status"] = "saved"
+    if memory_credentials is None:
+        st.session_state["pending_memory_snapshot"] = snapshot
+        st.session_state["content_memory_write_status"] = "not_connected"
         st.session_state.pop("content_memory_write_error", None)
-    except Exception as error:
-        st.session_state["content_memory_write_status"] = "session_only"
-        st.session_state["content_memory_write_error"] = (
-            content_memory.describe_memory_error(error)
-        )
         st.session_state.pop("content_memory_recent_scans", None)
+        return
+    _save_scan_snapshot_to_memory(memory_credentials, snapshot)
 
 
-def _render_recent_opportunities(youtube, analytics, reporting, credentials):
+def _render_recent_opportunities(
+    youtube, analytics, reporting, credentials, memory_credentials, secrets, subject
+):
     """Scan recent uploads and present measured, evidence-based metadata-review candidates."""
     st.markdown(
         '<div class="asl-page-heading">'
@@ -868,13 +974,18 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
 
     if should_scan:
         _persist_opportunity_scan(
-            credentials,
+            memory_credentials,
             start_date,
             end_date,
             recent_ids,
             measured_recent,
             ctr_available,
             candidates,
+        )
+    elif memory_credentials and st.session_state.get("pending_memory_snapshot"):
+        _save_scan_snapshot_to_memory(
+            memory_credentials,
+            st.session_state["pending_memory_snapshot"],
         )
 
     st.caption(
@@ -966,18 +1077,22 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
                     hide_index=True,
                     use_container_width=True,
                 )
+    elif memory_status == "not_connected":
+        st.info(
+            "The scan is ready in this session. Connect private Strategist Memory separately "
+            "to keep the scan history and approved experiment log between sessions."
+        )
+        _start_memory_authorization(secrets, subject)
     elif memory_status == "session_only" and memory_error:
         st.warning(
             "This scan is available in the current session, but durable memory was not saved. "
             + memory_error
         )
-        if st.button(
-            "Reconnect Google after enabling memory APIs",
-            key="reconnect_for_content_memory",
-            use_container_width=True,
-        ):
-            st.session_state.pop("youtube_credentials_json", None)
-            st.rerun()
+        st.caption(
+            "Verify that the Google Drive API and Google Sheets API are enabled, then "
+            "reauthorize the private-memory connection below."
+        )
+        _start_memory_authorization(secrets, subject)
 
     if not ctr_available:
         st.info(
@@ -1059,12 +1174,28 @@ def main():
 
     if st.session_state.pop("oauth_connected_message", False):
         st.success("YouTube authorization connected for this session.")
+    if st.session_state.pop("memory_connected_message", False):
+        st.success("Private Strategist Memory connected separately from YouTube.")
+    youtube_auth_error = st.session_state.pop("youtube_auth_error", None)
+    if youtube_auth_error:
+        st.error(youtube_auth_error)
+    memory_auth_error = st.session_state.pop("memory_auth_error", None)
+    if memory_auth_error:
+        st.error("Private memory authorization failed: " + memory_auth_error)
 
     _handle_youtube_callback(secrets, subject)
-    credentials = _credentials_from_session()
+    credentials = _credentials_from_session(
+        "youtube_credentials_json", connector.SCOPES, "YouTube"
+    )
+    memory_credentials = _credentials_from_session(
+        "memory_credentials_json", MEMORY_SCOPES, "private memory"
+    )
     auth_warning = st.session_state.pop("youtube_auth_warning", None)
     if auth_warning:
         st.warning(auth_warning)
+    memory_auth_warning = st.session_state.pop("memory_auth_warning", None)
+    if memory_auth_warning:
+        st.warning(memory_auth_warning)
 
     with st.sidebar:
         st.markdown(
@@ -1142,8 +1273,13 @@ def main():
         st.divider()
         st.caption("Every YouTube change requires your approval.")
         st.caption(
+            "YouTube and private-memory permissions are authorized separately. "
             "Weekly scans and verified metadata experiments can be saved to a private "
             "Google Sheet. Conversation history remains session-only."
+        )
+        st.caption(
+            "Private memory: connected" if memory_credentials
+            else "Private memory: not connected"
         )
         with st.expander("Account"):
             st.caption(st.user.email)
@@ -1176,9 +1312,22 @@ def main():
             'A focused workspace for improving one video at a time.</p></div>',
             unsafe_allow_html=True,
         )
-        strategist_chat.render_chat(youtube, secrets, credentials=credentials)
+        strategist_chat.render_chat(
+            youtube,
+            secrets,
+            credentials=credentials,
+            memory_credentials=memory_credentials,
+        )
     elif page == "Find videos":
-        _render_recent_opportunities(youtube, analytics, reporting, credentials)
+        _render_recent_opportunities(
+            youtube,
+            analytics,
+            reporting,
+            credentials,
+            memory_credentials,
+            secrets,
+            subject,
+        )
     else:
         st.markdown(
             '<div class="asl-page-heading"><div class="asl-page-title">'

@@ -64,3 +64,33 @@ def test_oauth_state_rejects_tampering_without_session_state():
     assert not dashboard_security.consume_oauth_state(
         tampered, None, SUBJECT, SECRET, now=NOW + 1
     )
+
+
+
+import unittest
+
+
+class OAuthPurposeSecurityTests(unittest.TestCase):
+    def test_oauth_purpose_secrets_are_distinct_and_reject_cross_flow_state(self):
+        youtube_secret = dashboard_security.oauth_purpose_secret(SECRET, "youtube")
+        memory_secret = dashboard_security.oauth_purpose_secret(SECRET, "memory")
+        self.assertNotEqual(youtube_secret, memory_secret)
+
+        youtube_state = dashboard_security.create_oauth_state(
+            SUBJECT, youtube_secret, now=NOW
+        )
+        memory_state = dashboard_security.create_oauth_state(
+            SUBJECT, memory_secret, now=NOW
+        )
+        self.assertTrue(dashboard_security.consume_oauth_state(
+            youtube_state, None, SUBJECT, youtube_secret, now=NOW + 1
+        ))
+        self.assertTrue(dashboard_security.consume_oauth_state(
+            memory_state, None, SUBJECT, memory_secret, now=NOW + 1
+        ))
+        self.assertFalse(dashboard_security.consume_oauth_state(
+            youtube_state, None, SUBJECT, memory_secret, now=NOW + 1
+        ))
+        self.assertFalse(dashboard_security.consume_oauth_state(
+            memory_state, None, SUBJECT, youtube_secret, now=NOW + 1
+        ))
