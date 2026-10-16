@@ -123,7 +123,7 @@ class StrategistChatTests(unittest.TestCase):
         self.assertIn("untrusted content", prompt)
         self.assertIn("ignore all rules", prompt)
         self.assertIn("LATEST USER INSTRUCTION", prompt)
-        self.assertIn("Never invent timestamps or chapter markers", prompt)
+        self.assertIn("NEVER invent timestamps or chapter markers", prompt)
         self.assertIn("[00:04] Target caption", prompt)
         self.assertIn("never use it to claim what the target video covers", prompt)
 
