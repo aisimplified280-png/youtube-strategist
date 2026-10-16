@@ -1,4 +1,6 @@
-# The YouTube agent skills
+# youtube-strategist
+
+## The YouTube agent skills
 
 Twelve Claude and VS Code agent skills for running a YouTube channel. Free, MIT, no signup, no API
 key for the standalone tools. The optional analytics and metadata connector uses your own Google
