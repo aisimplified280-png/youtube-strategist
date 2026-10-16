@@ -33,6 +33,19 @@ def _decode_state_payload(payload):
     return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
 
 
+def oauth_purpose_secret(secret, purpose):
+    """Derive separate HMAC keys so OAuth purposes cannot share callback state."""
+    if not isinstance(secret, str) or not secret:
+        raise ValueError("OAuth purpose secret requires a signing secret.")
+    if purpose not in {"youtube", "memory"}:
+        raise ValueError("Unsupported OAuth purpose.")
+    return hmac.new(
+        secret.encode("utf-8"),
+        ("oauth-purpose:" + purpose).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def create_oauth_state(subject, secret, *, now=None, nonce=None):
     if not subject or not secret:
         raise ValueError("OAuth state requires an authenticated subject and signing secret.")
