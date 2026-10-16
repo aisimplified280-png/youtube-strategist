@@ -84,38 +84,64 @@ def _extract_json(text):
     return result
 
 
-def _gemini_generate(api_key, model, prompt):
+def _gemini_generate(api_key, model, prompt, fallback_models=None):
+    """Try configured models in order; move on for quota, availability, and transient failures."""
     if not isinstance(api_key, str) or not api_key.strip():
         raise ValueError("Add [gemini].api_key to Streamlit Secrets to enable chat.")
-    model = (model or DEFAULT_MODEL).strip()
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
-        raise ValueError("The configured Gemini model name is invalid.")
-    response = requests.post(
-        GEMINI_ENDPOINT.format(model=model),
-        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-        json={
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "temperature": 0.7,
-                "maxOutputTokens": 4096,
-            },
-        },
-        timeout=60,
-    )
-    if response.status_code >= 400:
-        # Do not echo response body: it may contain provider diagnostics or sensitive data.
+
+    candidates = []
+    for candidate in [model or DEFAULT_MODEL, *(fallback_models or [])]:
+        candidate = str(candidate).strip()
+        if not candidate or not re.fullmatch(r"[A-Za-z0-9._-]+", candidate):
+            continue
+        if candidate not in candidates:
+            candidates.append(candidate)
+    if not candidates:
+        raise ValueError("Configure at least one valid Gemini model name.")
+
+    failures = []
+    for candidate in candidates:
+        try:
+            response = requests.post(
+                GEMINI_ENDPOINT.format(model=candidate),
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json={
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "temperature": 0.7,
+                        "maxOutputTokens": 4096,
+                    },
+                },
+                timeout=60,
+            )
+        except requests.RequestException:
+            failures.append(f"{candidate}: network/timeout")
+            continue
+
         if response.status_code in (401, 403):
-            raise RuntimeError("Gemini rejected the API key or access. Check [gemini].api_key.")
-        if response.status_code == 429:
-            raise RuntimeError("Gemini rate limit reached. Wait briefly and retry.")
-        raise RuntimeError(f"Gemini request failed (HTTP {response.status_code}).")
-    try:
-        payload = response.json()
-        text = payload["candidates"][0]["content"]["parts"][0]["text"]
-    except (ValueError, KeyError, IndexError, TypeError) as error:
-        raise RuntimeError("Gemini returned an unexpected response format.") from error
-    return _extract_json(text)
+            raise RuntimeError("Gemini rejected the API key or access. Check [gemini].api_key and API permissions.")
+        if response.status_code == 429 or response.status_code >= 500 or response.status_code == 404:
+            # 429 can be model-specific quota; 404 often means a configured model is unavailable.
+            failures.append(f"{candidate}: HTTP {response.status_code}")
+            continue
+        if response.status_code >= 400:
+            raise RuntimeError(f"Gemini request was rejected (HTTP {response.status_code}); check the prompt and model configuration.")
+        try:
+            payload = response.json()
+            text = payload["candidates"][0]["content"]["parts"][0]["text"]
+            return _extract_json(text), candidate
+        except (ValueError, KeyError, IndexError, TypeError) as error:
+            failures.append(f"{candidate}: invalid response")
+            continue
+
+    tried = ", ".join(candidates)
+    details = "; ".join(failures)
+    raise RuntimeError(
+        f"All configured Gemini models failed ({tried}). This may be a project-wide quota "
+        f"limit or a temporary API issue. Check Google AI Studio quotas or configure another "
+        f"available model. Details: {details}"
+    )
 
 
 def _build_prompt(target, reference, transcript, transcript_status, history, instruction):
@@ -175,6 +201,11 @@ def render_chat(youtube, secrets):
     )
     gemini = secrets.get("gemini", {})
     model = gemini.get("model", DEFAULT_MODEL)
+    fallback_models = gemini.get("fallback_models", [])
+    if isinstance(fallback_models, str):
+        fallback_models = [item.strip() for item in fallback_models.split(",") if item.strip()]
+    if not isinstance(fallback_models, (list, tuple)):
+        fallback_models = []
 
     with st.expander("Set up this conversation", expanded=not bool(
         st.session_state.get("strategist_target_reference")
@@ -245,7 +276,7 @@ def render_chat(youtube, secrets):
         with st.chat_message("user"):
             st.markdown(instruction)
         with st.chat_message("assistant"):
-            with st.spinner(f"Thinking with {model}..."):
+            with st.spinner(f"Trying {model} and configured fallback models if needed..."):
                 try:
                     prompt_source = (
                         existing_proposal["proposed"]
@@ -266,7 +297,9 @@ def render_chat(youtube, secrets):
                         target, reference, context["transcript"],
                         context["transcript_status"], history[:-1], instruction
                     )
-                    result = _gemini_generate(gemini.get("api_key"), model, prompt)
+                    result, used_model = _gemini_generate(
+                        gemini.get("api_key"), model, prompt, fallback_models
+                    )
                     title = result.get("title")
                     description = result.get("description")
                     tags = result.get("tags")
@@ -282,6 +315,10 @@ def render_chat(youtube, secrets):
                     if not isinstance(rationale, list):
                         rationale = []
                     st.markdown(assistant_message)
+                    if used_model != model:
+                        st.caption(f"Fallback active: response generated with {used_model}.")
+                    else:
+                        st.caption(f"Model used: {used_model}")
                     if rationale:
                         st.markdown("**Why these changes**")
                         for reason in rationale[:6]:
