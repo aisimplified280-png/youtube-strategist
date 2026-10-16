@@ -643,8 +643,7 @@ def main():
         st.error("Could not initialize Google's YouTube API clients.")
         return
 
-    with st.container(border=True):
-        strategist_chat.render_chat(youtube, secrets)
+    strategist_chat.render_chat(youtube, secrets)
 
     with st.expander("Channel analytics (optional)", expanded=False):
         st.caption("Read-only performance reports. Request all metadata changes in the Strategist chat above.")
