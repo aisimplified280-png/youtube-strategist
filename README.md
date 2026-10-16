@@ -90,6 +90,28 @@ title, description, and tags after you approve the exact proposal in chat. It ca
 delete videos, change visibility, alter audience settings, or modify channel settings. The other
 skills still produce material for you to review and use.
 
+### Private Strategist Memory (weekly scans and experiments)
+
+The hosted app can create a private Google spreadsheet called **AI Simplified Lab
+Strategist Memory** after the first successful channel scan. It records dated scan
+snapshots, compact evidence-backed action briefs, and metadata changes only after
+YouTube confirms the approved update. Drafts and rejected proposals are not recorded
+as completed experiments. The spreadsheet is owned by the authorized Google account.
+
+To enable the feature, enable **Google Drive API** and **Google Sheets API** in the
+same Google Cloud project as the app's OAuth client. In the app, scan uploads. If the
+existing YouTube session was authorized before the memory feature was added, use the
+reconnect button to grant the new scopes once. The app requests the Sheets scope and
+the limited `drive.file` scope used for files created/opened by this app; it does not
+request full Drive access. If the APIs are not enabled or Google denies access, scans
+continue to work in the current session and the app reports that memory was not saved.
+
+The action brief distinguishes measured CTR comparisons from view-based or limited-
+evidence review candidates. It recommends actions and next metrics to inspect, but
+does not claim metadata caused an underperformance or guarantee CTR improvement.
+Conversation history remains session-only. No secret, OAuth token, or channel data is
+committed to this repository.
+
 ### YouTube analytics and metadata connector
 
 `youtube_analytics_connector.py` keeps the existing read-only Analytics exports. The

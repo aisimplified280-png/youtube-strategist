@@ -10,6 +10,7 @@ import requests
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
 
+import content_memory
 import youtube_analytics_connector as connector
 
 
@@ -423,7 +424,7 @@ def _apply_error_message(error):
     )
 
 
-def render_chat(youtube, secrets):
+def render_chat(youtube, secrets, credentials=None):
     """Render a clean, chat-first editor with conversational setup and explicit approval."""
     st.caption(
         "Paste your video link once, then ask for a better title, description, or tags. "
@@ -772,6 +773,33 @@ def render_chat(youtube, secrets):
                     st.error(_apply_error_message(error))
                 else:
                     st.success(f"Verified update: {result['title']}")
+                    try:
+                        if credentials is None:
+                            raise content_memory.MemoryStoreError(
+                                "Google credentials were unavailable to save this experiment."
+                            )
+                        memory_store = content_memory.GoogleSheetsMemoryStore.from_credentials(
+                            credentials
+                        )
+                        baseline = content_memory.metrics_snapshot_from_session(
+                            st.session_state, context["target_id"]
+                        )
+                        memory_store.append_experiment(
+                            video_id=context["target_id"],
+                            video_url=f"https://www.youtube.com/watch?v={context['target_id']}",
+                            before=proposal["before"],
+                            proposed=proposal["proposed"],
+                            proposal_digest=digest,
+                            baseline_metrics=baseline,
+                        )
+                        st.session_state["content_memory_spreadsheet_url"] = (
+                            memory_store.spreadsheet_url
+                        )
+                        st.session_state.pop("content_memory_last_error", None)
+                    except Exception as memory_error:
+                        st.session_state["content_memory_last_error"] = (
+                            content_memory.describe_memory_error(memory_error)
+                        )
                     st.session_state["strategist_target_reference"]["target_snippet"] = deepcopy(
                         proposal["proposed"]
                     )

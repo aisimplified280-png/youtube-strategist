@@ -18,10 +18,17 @@ from googleapiclient.errors import HttpError
 from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 from streamlit.errors import StreamlitSecretNotFoundError
 
+import content_memory
 import dashboard_security
 import youtube_analytics_connector as connector
 import youtube_dashboard
 import strategist_chat
+
+MEMORY_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
+]
+APP_SCOPES = [*connector.SCOPES, *MEMORY_SCOPES]
 
 st.set_page_config(
     page_title="AI Simplified Lab YouTube Strategist",
@@ -217,7 +224,7 @@ def _new_google_flow(secrets, *, state=None, code_verifier=None):
     oauth = secrets["youtube_oauth"]
     return Flow.from_client_config(
         _flow_config(secrets),
-        scopes=connector.SCOPES,
+        scopes=APP_SCOPES,
         state=state,
         redirect_uri=oauth["redirect_uri"],
         code_verifier=code_verifier,
@@ -328,7 +335,7 @@ def _handle_youtube_callback(secrets, subject):
         return
 
     credentials = flow.credentials
-    if not credentials.has_scopes(connector.SCOPES):
+    if not credentials.has_scopes(APP_SCOPES):
         query.clear()
         st.error(
             "The granted authorization is missing required YouTube scopes. "
@@ -348,7 +355,7 @@ def _credentials_from_session():
     try:
         credentials = Credentials.from_authorized_user_info(
             json.loads(credentials_json),
-            connector.SCOPES,
+            APP_SCOPES,
         )
     except (ValueError, KeyError, TypeError):
         st.session_state.pop("youtube_credentials_json", None)
@@ -398,12 +405,13 @@ def _start_youtube_authorization(secrets, subject):
         prompt="consent",
     )
     st.link_button(
-        "Authorize YouTube Analytics and metadata access",
+        "Authorize YouTube and private Strategist Memory",
         authorization_url,
         type="primary",
         help=(
-            "Google will return to the configured Streamlit app URL. "
-            "This grants read-only Analytics access and snippet metadata editing."
+            "Google will return to the configured Streamlit app URL. This grants "
+            "Analytics and metadata access plus Sheets access and access to files created "
+            "by this app for private Strategist Memory."
         ),
     )
     st.caption(
@@ -678,6 +686,45 @@ def _render_proposal(video_row, youtube):
             st.rerun()
 
 
+
+
+def _persist_opportunity_scan(
+    credentials,
+    start_date,
+    end_date,
+    recent_ids,
+    measured_recent,
+    ctr_available,
+    candidates,
+):
+    """Keep a session fallback and append an evidence-only snapshot to private memory."""
+    snapshot = content_memory.build_scan_snapshot(
+        start_date=start_date,
+        end_date=end_date,
+        upload_count=len(recent_ids),
+        measured_views_count=len(measured_recent),
+        usable_ctr_count=len(ctr_available),
+        candidates=candidates,
+    )
+    session_history = st.session_state.setdefault("session_scan_history", [])
+    session_history.insert(0, snapshot)
+    del session_history[20:]
+
+    try:
+        store = content_memory.GoogleSheetsMemoryStore.from_credentials(credentials)
+        store.append_scan(snapshot)
+        st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
+        st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
+        st.session_state["content_memory_write_status"] = "saved"
+        st.session_state.pop("content_memory_write_error", None)
+    except Exception as error:
+        st.session_state["content_memory_write_status"] = "session_only"
+        st.session_state["content_memory_write_error"] = (
+            content_memory.describe_memory_error(error)
+        )
+        st.session_state.pop("content_memory_recent_scans", None)
+
+
 def _render_recent_opportunities(youtube, analytics, reporting, credentials):
     """Scan recent uploads and present measured, evidence-based metadata-review candidates."""
     st.markdown(
@@ -818,6 +865,17 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
         and row["impressions"] >= 100
     ]
 
+    if should_scan:
+        _persist_opportunity_scan(
+            credentials,
+            start_date,
+            end_date,
+            recent_ids,
+            measured_recent,
+            ctr_available,
+            candidates,
+        )
+
     st.caption(
         f"{len(recent_ids)} uploads in the selected weeks · "
         f"{len(measured_recent)} with measured views · "
@@ -866,6 +924,59 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
             )
         history = st.session_state.setdefault("strategist_chat_history", [])
         strategist_chat._append_history(history, "assistant", assistant_summary)
+
+    if candidates:
+        st.subheader("Action brief for the selected period")
+        st.caption(
+            "Start with these evidence-backed actions. The signal ranks what to review; "
+            "it does not prove that metadata caused the performance gap."
+        )
+        for index, action in enumerate(content_memory.build_weekly_action_brief(candidates), 1):
+            with st.container(border=True):
+                st.markdown(f"**{index}. {action['title']}**")
+                st.caption(f"{action['signal']} · {action['confidence']}")
+                st.write(action["first_action"])
+                st.caption(f"Evidence: {action['evidence']}")
+                st.caption(f"Measure next: {action['success_metric']}")
+
+    memory_status = st.session_state.get("content_memory_write_status")
+    memory_url = st.session_state.get("content_memory_spreadsheet_url")
+    memory_error = st.session_state.get("content_memory_write_error")
+    if memory_status == "saved" and memory_url:
+        st.caption(f"Private Strategist Memory saved · [Open memory spreadsheet]({memory_url})")
+        history = st.session_state.get("content_memory_recent_scans", [])
+        if history:
+            with st.expander("Previous channel reviews"):
+                st.dataframe(
+                    [
+                        {
+                            "Saved (UTC)": item.get("saved_at_utc"),
+                            "Period": (
+                                f"{item.get('period_start', '')} – "
+                                f"{item.get('period_end', '')}"
+                            ),
+                            "Uploads": item.get("uploads_in_window"),
+                            "Measured views": item.get("measured_views_count"),
+                            "Usable CTR": item.get("usable_ctr_count"),
+                            "Candidates": item.get("candidate_count"),
+                        }
+                        for item in history
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+    elif memory_status == "session_only" and memory_error:
+        st.warning(
+            "This scan is available in the current session, but durable memory was not saved. "
+            + memory_error
+        )
+        if st.button(
+            "Reconnect Google after enabling memory APIs",
+            key="reconnect_for_content_memory",
+            use_container_width=True,
+        ):
+            st.session_state.pop("youtube_credentials_json", None)
+            st.rerun()
 
     if not ctr_available:
         st.info(
@@ -1029,7 +1140,10 @@ def main():
         )
         st.divider()
         st.caption("Every YouTube change requires your approval.")
-        st.caption("Conversation history and audit records are session-only.")
+        st.caption(
+            "Weekly scans and verified metadata experiments can be saved to a private "
+            "Google Sheet. Conversation history remains session-only."
+        )
         with st.expander("Account"):
             st.caption(st.user.email)
             if st.button("Sign out", key="asl_sidebar_signout", use_container_width=True):
@@ -1047,6 +1161,13 @@ def main():
     if optimizer_error:
         st.error(optimizer_error)
 
+    experiment_memory_error = st.session_state.pop("content_memory_last_error", None)
+    if experiment_memory_error:
+        st.warning(
+            "The YouTube metadata update was verified, but the experiment was not saved "
+            "to durable memory. " + experiment_memory_error
+        )
+
     if page == "Strategist":
         st.markdown(
             '<div class="asl-page-heading"><div class="asl-page-title">'
@@ -1054,7 +1175,7 @@ def main():
             'A focused workspace for improving one video at a time.</p></div>',
             unsafe_allow_html=True,
         )
-        strategist_chat.render_chat(youtube, secrets)
+        strategist_chat.render_chat(youtube, secrets, credentials=credentials)
     elif page == "Find videos":
         _render_recent_opportunities(youtube, analytics, reporting, credentials)
     else:
