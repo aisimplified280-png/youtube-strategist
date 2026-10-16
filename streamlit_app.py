@@ -920,7 +920,6 @@ def main():
             '<div class="asl-sidebar-brand">✳ AI Simplified Lab</div>',
             unsafe_allow_html=True,
         )
-        st.caption(f"Signed in as {st.user.email}")
         if st.button("New chat", key="asl_new_chat", use_container_width=True):
             for key in (
                 "strategist_target_reference",
@@ -934,19 +933,16 @@ def main():
                 st.session_state.pop(key, None)
             st.session_state["asl_pending_workspace"] = "Strategist"
             st.rerun()
-        st.button("Sign out", on_click=st.logout)
-        if credentials:
-            if st.button("Disconnect YouTube for this session"):
-                st.session_state.pop("youtube_credentials_json", None)
-                st.session_state.pop("dashboard_data", None)
-                st.rerun()
 
     if not credentials:
         st.info(
-            "Connect YouTube to grant read-only Analytics access and permission to edit "
-            "approved video titles, descriptions, and tags."
+            "Connect YouTube to read channel performance and prepare approved metadata changes."
         )
         _start_youtube_authorization(secrets, subject)
+        with st.sidebar:
+            with st.expander("Account"):
+                st.caption(st.user.email)
+                st.button("Sign out", on_click=st.logout, key="asl_signout_unconnected")
         return
 
     st.session_state["session_access_warning_shown"] = True
@@ -995,6 +991,18 @@ def main():
         st.divider()
         st.caption("Every YouTube change requires your approval.")
         st.caption("Conversation history and audit records are session-only.")
+        with st.expander("Account"):
+            st.caption(st.user.email)
+            if st.button("Sign out", key="asl_sidebar_signout", use_container_width=True):
+                st.logout()
+            if st.button(
+                "Disconnect YouTube",
+                key="asl_sidebar_disconnect",
+                use_container_width=True,
+            ):
+                st.session_state.pop("youtube_credentials_json", None)
+                st.session_state.pop("dashboard_data", None)
+                st.rerun()
 
     optimizer_error = st.session_state.pop("optimizer_open_error", None)
     if optimizer_error:
