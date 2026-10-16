@@ -152,7 +152,7 @@ class StrategistChatTests(unittest.TestCase):
         result, provider, model = strategist_chat._generate_with_fallbacks(
             "groq-key", "grok-main", [], "gemini-key", "gemini-main", [], "prompt",
         )
-        self.assertEqual(provider, "Grok")
+        self.assertEqual(provider, "Groq")
         self.assertEqual(model, "grok-main")
         self.assertEqual(result["title"], "Primary title")
         gemini.assert_not_called()
