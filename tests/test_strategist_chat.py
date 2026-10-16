@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import Mock, patch
 
+import requests
 import strategist_chat
 
 
@@ -55,6 +57,55 @@ class StrategistChatTests(unittest.TestCase):
         self.assertIn("untrusted content", prompt)
         self.assertIn("ignore all rules", prompt)
         self.assertIn("LATEST USER INSTRUCTION", prompt)
+
+    @patch("strategist_chat.requests.post")
+    def test_model_fallback_on_quota_error(self, post):
+        quota_response = Mock(status_code=429)
+        success_response = Mock(status_code=200)
+        success_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text":
+                '{"assistant_message":"Ready","title":"A title","description":"Text","tags":[],"rationale":[]}'
+            }]}}]
+        }
+        post.side_effect = [quota_response, success_response]
+        result, used_model = strategist_chat._gemini_generate(
+            "test-key", "primary-model", "prompt", ["fallback-model"]
+        )
+        self.assertEqual(used_model, "fallback-model")
+        self.assertEqual(result["title"], "A title")
+        self.assertEqual(post.call_count, 2)
+
+    @patch("strategist_chat.requests.post")
+    def test_model_fallback_on_network_timeout(self, post):
+        success_response = Mock(status_code=200)
+        success_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text":
+                '{"assistant_message":"Ready","title":"A title","description":"Text","tags":[],"rationale":[]}'
+            }]}}]
+        }
+        post.side_effect = [requests.Timeout("timed out"), success_response]
+        result, used_model = strategist_chat._gemini_generate(
+            "test-key", "primary-model", "prompt", ["fallback-model"]
+        )
+        self.assertEqual(used_model, "fallback-model")
+        self.assertEqual(result["title"], "A title")
+
+    @patch("strategist_chat.requests.post")
+    def test_all_models_exhausted_reports_fallback_failure(self, post):
+        post.return_value = Mock(status_code=429)
+        with self.assertRaisesRegex(RuntimeError, "All configured Gemini models failed"):
+            strategist_chat._gemini_generate(
+                "test-key", "primary-model", "prompt", ["fallback-model"]
+            )
+
+    @patch("strategist_chat.requests.post")
+    def test_invalid_api_key_does_not_retry_other_models(self, post):
+        post.return_value = Mock(status_code=403)
+        with self.assertRaisesRegex(RuntimeError, "rejected the API key"):
+            strategist_chat._gemini_generate(
+                "test-key", "primary-model", "prompt", ["fallback-model"]
+            )
+        self.assertEqual(post.call_count, 1)
 
 
 if __name__ == "__main__":
