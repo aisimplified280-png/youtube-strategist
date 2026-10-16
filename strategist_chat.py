@@ -13,6 +13,8 @@ import youtube_analytics_connector as connector
 
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+XAI_CHAT_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+DEFAULT_GROK_MODEL = "grok-4.6"
 DEFAULT_MODEL = "gemini-3.8-flash"
 MAX_TRANSCRIPT_CHARS = 12000
 MAX_HISTORY_TURNS = 8
@@ -144,6 +146,82 @@ def _gemini_generate(api_key, model, prompt, fallback_models=None):
     )
 
 
+
+def _grok_generate(api_key, model, prompt, fallback_models=None):
+    """Call xAI's OpenAI-compatible chat endpoint, trying configured Grok models in order."""
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ValueError("Add [xai].api_key to Streamlit Secrets to enable Grok.")
+    candidates = []
+    for candidate in [model or DEFAULT_GROK_MODEL, *(fallback_models or [])]:
+        candidate = str(candidate).strip()
+        if candidate and re.fullmatch(r"[A-Za-z0-9._-]+", candidate) and candidate not in candidates:
+            candidates.append(candidate)
+    if not candidates:
+        raise ValueError("Configure at least one valid Grok model name.")
+
+    failures = []
+    for candidate in candidates:
+        try:
+            response = requests.post(
+                XAI_CHAT_ENDPOINT,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": candidate,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.7,
+                    "max_tokens": 4096,
+                },
+                timeout=90,
+            )
+        except requests.RequestException:
+            failures.append(f"{candidate}: network/timeout")
+            continue
+
+        if response.status_code == 429 or response.status_code >= 500 or response.status_code == 404:
+            failures.append(f"{candidate}: HTTP {response.status_code}")
+            continue
+        if response.status_code in (401, 403):
+            failures.append(f"{candidate}: authentication/permission HTTP {response.status_code}")
+            break
+        if response.status_code >= 400:
+            failures.append(f"{candidate}: HTTP {response.status_code}")
+            continue
+        try:
+            payload = response.json()
+            response_text = payload["choices"][0]["message"]["content"]
+            return _extract_json(response_text), candidate
+        except (ValueError, KeyError, IndexError, TypeError):
+            failures.append(f"{candidate}: invalid response")
+            continue
+
+    raise RuntimeError("Grok unavailable: " + "; ".join(failures or ["no usable model configured"]))
+
+
+def _generate_with_fallbacks(xai_key, grok_model, grok_fallbacks,
+                             gemini_key, gemini_model, gemini_fallbacks, prompt):
+    """Prefer Grok; use Gemini only when Grok cannot produce a valid response."""
+    failures = []
+    if isinstance(xai_key, str) and xai_key.strip():
+        try:
+            result, used_model = _grok_generate(xai_key, grok_model, prompt, grok_fallbacks)
+            return result, "Grok", used_model
+        except (ValueError, RuntimeError, requests.RequestException) as error:
+            failures.append(f"Grok: {error}")
+    else:
+        failures.append("Grok: no [xai].api_key configured")
+
+    if isinstance(gemini_key, str) and gemini_key.strip():
+        try:
+            result, used_model = _gemini_generate(gemini_key, gemini_model, prompt, gemini_fallbacks)
+            return result, "Gemini", used_model
+        except (ValueError, RuntimeError, requests.RequestException) as error:
+            failures.append(f"Gemini: {error}")
+    else:
+        failures.append("Gemini: no [gemini].api_key configured")
+
+    raise RuntimeError("No configured AI provider could complete this request. " + " | ".join(failures))
+
 def _build_prompt(target, reference, transcript, transcript_status, history, instruction):
     recent = history[-MAX_HISTORY_TURNS:]
     history_text = "\n".join(
@@ -199,13 +277,20 @@ def render_chat(youtube, secrets):
         "and approve the exact metadata before anything is changed. Video metadata, "
         "your instructions, and any available reference transcript are sent to Gemini."
     )
+    xai = secrets.get("xai", {})
     gemini = secrets.get("gemini", {})
-    model = gemini.get("model", DEFAULT_MODEL)
-    fallback_models = gemini.get("fallback_models", [])
-    if isinstance(fallback_models, str):
-        fallback_models = [item.strip() for item in fallback_models.split(",") if item.strip()]
-    if not isinstance(fallback_models, (list, tuple)):
-        fallback_models = []
+    grok_model = xai.get("model", DEFAULT_GROK_MODEL)
+    grok_fallbacks = xai.get("fallback_models", [])
+    gemini_model = gemini.get("model", DEFAULT_MODEL)
+    gemini_fallbacks = gemini.get("fallback_models", [])
+    if isinstance(grok_fallbacks, str):
+        grok_fallbacks = [item.strip() for item in grok_fallbacks.split(",") if item.strip()]
+    if not isinstance(grok_fallbacks, (list, tuple)):
+        grok_fallbacks = []
+    if isinstance(gemini_fallbacks, str):
+        gemini_fallbacks = [item.strip() for item in gemini_fallbacks.split(",") if item.strip()]
+    if not isinstance(gemini_fallbacks, (list, tuple)):
+        gemini_fallbacks = []
 
     with st.expander("Set up this conversation", expanded=not bool(
         st.session_state.get("strategist_target_reference")
@@ -276,7 +361,7 @@ def render_chat(youtube, secrets):
         with st.chat_message("user"):
             st.markdown(instruction)
         with st.chat_message("assistant"):
-            with st.spinner(f"Trying {model} and configured fallback models if needed..."):
+            with st.spinner("Trying Grok first, then Gemini if needed..."):
                 try:
                     prompt_source = (
                         existing_proposal["proposed"]
@@ -297,8 +382,9 @@ def render_chat(youtube, secrets):
                         target, reference, context["transcript"],
                         context["transcript_status"], history[:-1], instruction
                     )
-                    result, used_model = _gemini_generate(
-                        gemini.get("api_key"), model, prompt, fallback_models
+                    result, used_provider, used_model = _generate_with_fallbacks(
+                        xai.get("api_key"), grok_model, grok_fallbacks,
+                        gemini.get("api_key"), gemini_model, gemini_fallbacks, prompt
                     )
                     title = result.get("title")
                     description = result.get("description")
@@ -315,10 +401,7 @@ def render_chat(youtube, secrets):
                     if not isinstance(rationale, list):
                         rationale = []
                     st.markdown(assistant_message)
-                    if used_model != model:
-                        st.caption(f"Fallback active: response generated with {used_model}.")
-                    else:
-                        st.caption(f"Model used: {used_model}")
+                    st.caption(f"AI provider used: {used_provider} · Model: {used_model}")
                     if rationale:
                         st.markdown("**Why these changes**")
                         for reason in rationale[:6]:
