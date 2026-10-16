@@ -8,6 +8,7 @@ state secret; raw Google subject identifiers are never stored.
 
 import base64
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 import sqlite3
@@ -75,11 +76,23 @@ class OAuthTokenStore:
             pass
         return connection
 
+    @contextmanager
+    def _connection(self):
+        connection = self._connect()
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def get_credentials_json(self, subject: str, purpose: str):
         """Return decrypted credential JSON, or None when no grant is stored."""
         self._validate_purpose(purpose)
         subject_key = self._subject_key(subject)
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT encrypted_value FROM oauth_credentials
@@ -106,7 +119,7 @@ class OAuthTokenStore:
         ):
             raise ValueError("OAuth credentials must be a JSON object.")
         ciphertext = self._cipher.encrypt(credentials_json.encode("utf-8"))
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO oauth_credentials
@@ -123,7 +136,7 @@ class OAuthTokenStore:
         """Remove just one permission grant; the other purpose remains untouched."""
         self._validate_purpose(purpose)
         subject_key = self._subject_key(subject)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 DELETE FROM oauth_credentials
