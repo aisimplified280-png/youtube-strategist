@@ -20,6 +20,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 import content_memory
 import dashboard_security
+import oauth_token_store
 import youtube_analytics_connector as connector
 import youtube_dashboard
 import strategist_chat
@@ -235,6 +236,54 @@ def _new_google_flow(secrets, *, scopes=None, state=None, code_verifier=None):
     )
 
 
+def _restore_shared_oauth_credentials(token_store, subject):
+    """Hydrate grants created in other browser tabs into this Streamlit session."""
+    if token_store is None:
+        return
+    try:
+        saved = {
+            "youtube": token_store.get_credentials_json(subject, "youtube"),
+            "memory": token_store.get_credentials_json(subject, "memory"),
+        }
+    except Exception:
+        st.session_state["oauth_token_store_error"] = (
+            "The encrypted shared authorization store could not be read. "
+            "This tab may not see permissions completed in another tab; retry the connection "
+            "or check the app's writable temporary storage."
+        )
+        return
+
+    # A token already in the shared vault is authoritative and may have been refreshed
+    # in another tab. Do not erase a valid in-session grant if a preceding write failed.
+    for purpose, session_key in (
+        ("youtube", "youtube_credentials_json"),
+        ("memory", "memory_credentials_json"),
+    ):
+        if saved[purpose]:
+            st.session_state[session_key] = saved[purpose]
+
+
+def _save_shared_oauth_credentials(token_store, subject, purpose, credentials_json):
+    """Persist a successful grant without ever logging its access or refresh tokens."""
+    if token_store is None:
+        st.session_state["oauth_token_store_error"] = (
+            "Shared authorization storage is unavailable, so Google permissions may not "
+            "carry between browser tabs. The current tab can still use its own connection."
+        )
+        return False
+    try:
+        token_store.save_credentials_json(subject, purpose, credentials_json)
+    except Exception:
+        st.session_state["oauth_token_store_error"] = (
+            "Google authorization succeeded, but the encrypted shared authorization store "
+            "could not save the grant. The connection may be limited to this tab; retry after "
+            "checking the app's writable temporary storage."
+        )
+        return False
+    st.session_state.pop("oauth_token_store_error", None)
+    return True
+
+
 def _resolve_api_oauth_state(returned_state, secrets, subject):
     """Identify exactly one signed scope purpose without mixing scope grants."""
     if not returned_state:
@@ -256,7 +305,7 @@ def _resolve_api_oauth_state(returned_state, secrets, subject):
     return None
 
 
-def _handle_youtube_callback(secrets, subject):
+def _handle_youtube_callback(secrets, subject, token_store=None):
     """Dispatch OAuth callbacks to independent YouTube or memory credentials."""
     query = st.query_params
     code = query.get("code")
@@ -392,17 +441,25 @@ def _handle_youtube_callback(secrets, subject):
         st.rerun()
         return
 
+    credentials_json = credentials.to_json()
+    # A shared encrypted store is essential here: OAuth callbacks can arrive in a
+    # different Streamlit session from the tab that initiated authorization.
+    persisted = _save_shared_oauth_credentials(
+        token_store, subject, purpose, credentials_json
+    )
     if purpose == "youtube":
-        st.session_state["youtube_credentials_json"] = credentials.to_json()
+        st.session_state["youtube_credentials_json"] = credentials_json
         st.session_state["oauth_connected_message"] = True
     else:
-        st.session_state["memory_credentials_json"] = credentials.to_json()
+        st.session_state["memory_credentials_json"] = credentials_json
         # Do not show "connected" until a workbook is created/opened and verified.
         st.session_state["memory_connection_pending_verification"] = True
         st.session_state["memory_store_setup_attempted"] = False
         st.session_state.pop("content_memory_store_verified", None)
         st.session_state.pop("memory_auth_error", None)
         st.session_state.pop("memory_store_setup_error", None)
+    if not persisted:
+        st.session_state["oauth_shared_store_fallback"] = True
     query.clear()
     st.rerun()
 
@@ -411,6 +468,7 @@ def _credentials_from_session(
     session_key="youtube_credentials_json",
     required_scopes=None,
     label="YouTube",
+    token_store=None,
 ):
     required_scopes = list(required_scopes or connector.SCOPES)
     credentials_json = st.session_state.get(session_key)
@@ -429,7 +487,12 @@ def _credentials_from_session(
     if credentials.expired and credentials.refresh_token:
         try:
             credentials.refresh(Request())
-            st.session_state[session_key] = credentials.to_json()
+            refreshed_json = credentials.to_json()
+            st.session_state[session_key] = refreshed_json
+            purpose = "memory" if label != "YouTube" else "youtube"
+            subject = st.session_state.get("oauth_owner_subject")
+            if token_store is not None and subject:
+                _save_shared_oauth_credentials(token_store, subject, purpose, refreshed_json)
             return credentials
         except (GoogleAuthError, requests.RequestException):
             st.session_state.pop(session_key, None)
@@ -1219,6 +1282,19 @@ def main():
         return
 
     subject = _owner_identity(secrets)
+    st.session_state["oauth_owner_subject"] = subject
+    try:
+        token_store = oauth_token_store.OAuthTokenStore(
+            secrets["security"]["state_secret"]
+        )
+    except (TypeError, ValueError):
+        token_store = None
+        st.session_state["oauth_token_store_error"] = (
+            "Encrypted shared authorization storage could not be initialized. "
+            "Permissions may be limited to one browser tab."
+        )
+    _restore_shared_oauth_credentials(token_store, subject)
+
     pending_workspace = st.session_state.pop("asl_pending_workspace", None)
     if pending_workspace in {"Strategist", "Find videos", "Analytics"}:
         st.session_state["asl_workspace"] = pending_workspace
@@ -1232,12 +1308,15 @@ def main():
     if memory_auth_error:
         st.error("Private memory authorization failed: " + memory_auth_error)
 
-    _handle_youtube_callback(secrets, subject)
+    _handle_youtube_callback(secrets, subject, token_store)
+    token_store_error = st.session_state.pop("oauth_token_store_error", None)
+    if token_store_error:
+        st.warning(token_store_error)
     credentials = _credentials_from_session(
-        "youtube_credentials_json", connector.SCOPES, "YouTube"
+        "youtube_credentials_json", connector.SCOPES, "YouTube", token_store
     )
     memory_credentials = _credentials_from_session(
-        "memory_credentials_json", MEMORY_SCOPES, "private memory"
+        "memory_credentials_json", MEMORY_SCOPES, "private memory", token_store
     )
     _verify_private_memory_workbook(memory_credentials)
     if st.session_state.pop("memory_connected_message", False):
@@ -1358,6 +1437,14 @@ def main():
             key="asl_memory_disconnect",
             use_container_width=True,
         ):
+            try:
+                if token_store is not None:
+                    token_store.delete_credentials(subject, "memory")
+            except Exception:
+                st.session_state["oauth_token_store_error"] = (
+                    "Private memory was disconnected in this tab, but the shared token "
+                    "store could not be updated. Reopen the app and verify its connection state."
+                )
             for key in (
                 "memory_credentials_json",
                 "memory_store_setup_attempted",
@@ -1381,6 +1468,14 @@ def main():
                 key="asl_sidebar_disconnect",
                 use_container_width=True,
             ):
+                try:
+                    if token_store is not None:
+                        token_store.delete_credentials(subject, "youtube")
+                except Exception:
+                    st.session_state["oauth_token_store_error"] = (
+                        "YouTube was disconnected in this tab, but the shared token store "
+                        "could not be updated. Reopen the app and verify its connection state."
+                    )
                 st.session_state.pop("youtube_credentials_json", None)
                 st.session_state.pop("dashboard_data", None)
                 st.rerun()
