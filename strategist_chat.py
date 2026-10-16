@@ -382,7 +382,7 @@ def render_chat(youtube, secrets):
     quick_instruction = None
     if context:
         st.markdown("**Quick actions**")
-        quick_columns = st.columns(2)
+        quick_rows = (st.columns(2), st.columns(2))
         quick_buttons = (
             ("Improve title", "title"),
             ("Description + hashtags", "description"),
@@ -390,7 +390,7 @@ def render_chat(youtube, secrets):
             ("Review all metadata", "review"),
         )
         for index, (label, action_key) in enumerate(quick_buttons):
-            if quick_columns[index % 2].button(
+            if quick_rows[index // 2][index % 2].button(
                 label,
                 key=f"strategist_quick_action_{action_key}",
                 use_container_width=True,
