@@ -503,6 +503,114 @@ class YoutubeDashboardTests(unittest.TestCase):
         )
         self.assertNotIn("long", [row["video_id"] for row in ranked])
 
+    def test_recent_video_opportunities_prioritize_measured_low_ctr(self):
+        rows = [
+            {
+                "video_id": "recent-low-ctr",
+                "title": "Recent upload with low CTR",
+                "url": "https://youtube.com/watch?v=recent-low-ctr",
+                "published_at": "2026-10-10",
+                "format": "Short-duration candidate (<=180 sec)",
+                "age_days": 7,
+                "views": 90,
+                "impressions": 800,
+                "ctr": 1.2,
+            },
+            *[
+                {
+                    "video_id": f"peer-{index}",
+                    "title": f"Peer {index}",
+                    "url": f"https://youtube.com/watch?v=peer-{index}",
+                    "published_at": f"2026-10-{index + 2:02d}",
+                    "format": "Short-duration candidate (<=180 sec)",
+                    "age_days": 7 + index,
+                    "views": 150 + index * 20,
+                    "impressions": 500,
+                    "ctr": 5.0 + index,
+                }
+                for index in range(3)
+            ],
+        ]
+
+        ranked = youtube_dashboard.rank_recent_video_opportunities(
+            rows, ["recent-low-ctr"]
+        )
+
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]["selection_basis"], "low_ctr_vs_peers")
+        self.assertEqual(ranked[0]["opportunity_priority"], 0)
+        self.assertEqual(ranked[0]["peer_ctr_median"], 6.0)
+        self.assertIn("Measured thumbnail CTR is 1.20%", ranked[0]["opportunity_evidence"])
+        self.assertNotIn("estimate", ranked[0]["opportunity_evidence"].lower())
+
+    def test_recent_opportunities_never_invent_ctr_when_unavailable(self):
+        rows = [
+            {
+                "video_id": "recent-low-views",
+                "title": "Recent upload",
+                "url": "https://youtube.com/watch?v=recent-low-views",
+                "format": "Short-duration candidate (<=180 sec)",
+                "age_days": 5,
+                "views": 20,
+                "impressions": None,
+                "ctr": None,
+            },
+            *[
+                {
+                    "video_id": f"peer-{index}",
+                    "title": f"Peer {index}",
+                    "url": f"https://youtube.com/watch?v=peer-{index}",
+                    "format": "Short-duration candidate (<=180 sec)",
+                    "age_days": 5 + index,
+                    "views": 100 + index * 20,
+                    "impressions": None,
+                    "ctr": None,
+                }
+                for index in range(3)
+            ],
+        ]
+
+        ranked = youtube_dashboard.rank_recent_video_opportunities(
+            rows, ["recent-low-views"]
+        )
+
+        self.assertEqual(ranked[0]["selection_basis"], "low_views_vs_peers")
+        self.assertEqual(ranked[0]["opportunity_type"], "Views below similar uploads")
+        self.assertIsNone(ranked[0]["ctr"])
+        self.assertIsNone(ranked[0].get("peer_ctr_median"))
+
+    def test_recent_opportunities_fall_back_to_explicit_limited_evidence_watchlist(self):
+        rows = [
+            {
+                "video_id": "recent-low-views",
+                "title": "Recent upload",
+                "url": "https://youtube.com/watch?v=recent-low-views",
+                "format": "Short-duration candidate (<=180 sec)",
+                "age_days": 5,
+                "views": 20,
+                "impressions": None,
+                "ctr": None,
+            },
+            {
+                "video_id": "other",
+                "title": "Other upload",
+                "url": "https://youtube.com/watch?v=other",
+                "format": "Long-form (>180 sec)",
+                "age_days": 30,
+                "views": 500,
+                "impressions": None,
+                "ctr": None,
+            },
+        ]
+
+        ranked = youtube_dashboard.rank_recent_video_opportunities(
+            rows, ["recent-low-views"]
+        )
+
+        self.assertEqual(ranked[0]["selection_basis"], "lowest_observed_views")
+        self.assertIn("review shortlist only", ranked[0]["opportunity_evidence"])
+        self.assertIn("not a confirmed underperformer", ranked[0]["opportunity_evidence"])
+
     def test_metadata_suggestion_preserves_description_links_and_existing_tags(self):
         snippet = {
             "title": "Why Your LLM Cache Fails",

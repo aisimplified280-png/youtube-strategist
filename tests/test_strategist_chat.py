@@ -18,6 +18,20 @@ class StrategistChatTests(unittest.TestCase):
                       strategist_chat.QUICK_ACTIONS["tags"])
         self.assertIn("do not invent content", strategist_chat.QUICK_ACTIONS["review"])
 
+    def test_channel_performance_request_routes_to_opportunity_scan(self):
+        self.assertTrue(strategist_chat._is_channel_opportunity_request(
+            "check the least performing video or short this and last week and "
+            "optimize their title, description and # tags I need best ctr"
+        ))
+        self.assertTrue(strategist_chat._is_channel_opportunity_request(
+            "Find my lowest performing Shorts from last week"
+        ))
+
+    def test_single_video_metadata_request_is_not_routed_to_channel_scan(self):
+        self.assertFalse(strategist_chat._is_channel_opportunity_request(
+            "Improve the title and description of this video"
+        ))
+
     def test_load_target_video_without_reference(self):
         session_state = {}
         target_snippet = {"title": "My video", "description": "A test", "tags": []}

@@ -364,6 +364,23 @@ def _load_conversation_videos(youtube, secrets, message):
     return context, None
 
 
+def _is_channel_opportunity_request(message):
+    """Recognize a request to inspect channel uploads before asking for a target URL."""
+    text = (message or "").casefold()
+    has_video_scope = bool(re.search(r"\b(channel|videos?|shorts?|uploads?)\b", text))
+    has_performance_intent = bool(re.search(
+        r"\b(least performing|lowest performing|underperform(?:ing)?|"
+        r"low[- ]performing|worst performing|weakest|lowest views|low ctr|best ctr)\b",
+        text,
+    ))
+    has_period = bool(re.search(
+        r"\b(this and last week|this week|last week|last \d+ days|past \d+ days|"
+        r"recent uploads|recent videos|last fortnight)\b",
+        text,
+    ))
+    return has_video_scope and has_performance_intent and (has_period or "ctr" in text)
+
+
 def _apply_error_message(error):
     """Convert apply/verification failures into safe, actionable UI messages."""
     if isinstance(error, connector.MetadataValidationError):
@@ -514,8 +531,9 @@ def render_chat(youtube, secrets):
         with st.chat_message("user" if turn["role"] == "user" else "assistant"):
             st.markdown(turn["content"])
 
-    instruction = quick_instruction or st.chat_input(
-        "Paste your video link and ask for an improvement (reference optional)…",
+    pending_instruction = st.session_state.pop("strategist_pending_instruction", None)
+    instruction = pending_instruction or quick_instruction or st.chat_input(
+        "Message your strategist…",
         key="strategist_chat_input",
     )
     if instruction:
@@ -524,6 +542,13 @@ def render_chat(youtube, secrets):
 
         urls = _youtube_urls_from_message(instruction)
         context = st.session_state.get("strategist_target_reference")
+        if not context and not urls and _is_channel_opportunity_request(instruction):
+            _append_history(history, "user", instruction)
+            st.session_state["channel_analysis_request"] = instruction
+            st.session_state["opportunity_auto_run"] = True
+            st.session_state["asl_pending_workspace"] = "Find videos"
+            st.rerun()
+
         is_new_video_selection = len(urls) >= 2 or (bool(urls) and not context)
         if len(urls) == 1 and context:
             try:

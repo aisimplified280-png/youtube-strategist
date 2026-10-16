@@ -821,6 +821,152 @@ def rank_optimization_candidates(video_rows, *, limit=5):
     return recommendations[:limit]
 
 
+def rank_recent_video_opportunities(video_rows, candidate_video_ids, *, limit=8):
+    """Find low-CTR or low-view uploads using measured metrics and matched peers only."""
+    if not isinstance(limit, int) or limit < 1:
+        raise ValueError("Opportunity limit must be a positive integer.")
+
+    candidate_ids = set(candidate_video_ids or [])
+    pool = [
+        row for row in video_rows
+        if row.get("video_id")
+        and isinstance(row.get("views"), (int, float))
+        and isinstance(row.get("age_days"), (int, float))
+        and isinstance(row.get("format"), str)
+    ]
+    candidate_rows = [row for row in pool if row["video_id"] in candidate_ids]
+    ranked = []
+
+    for video in candidate_rows:
+        age = video["age_days"]
+        peers = [
+            peer for peer in pool
+            if peer["video_id"] != video["video_id"]
+            and peer["format"] == video["format"]
+            and abs(peer["age_days"] - age) <= max(14, int(age * 0.5))
+        ]
+        peer_views = [
+            peer["views"] for peer in peers
+            if isinstance(peer.get("views"), (int, float))
+        ]
+        peer_views_median = median(peer_views) if len(peer_views) >= 3 else None
+        relative_views_gap = (
+            (video["views"] - peer_views_median) / peer_views_median
+            if peer_views_median and video["views"] < peer_views_median
+            else None
+        )
+
+        video_ctr = video.get("ctr")
+        video_impressions = video.get("impressions")
+        video_ctr_is_measured = (
+            isinstance(video_ctr, (int, float))
+            and isinstance(video_impressions, (int, float))
+            and video_impressions >= 100
+        )
+        peer_ctrs = [
+            peer["ctr"] for peer in peers
+            if isinstance(peer.get("ctr"), (int, float))
+            and isinstance(peer.get("impressions"), (int, float))
+            and peer["impressions"] >= 100
+        ]
+        peer_ctr_median = median(peer_ctrs) if len(peer_ctrs) >= 3 else None
+        relative_ctr_gap = (
+            (video_ctr - peer_ctr_median) / peer_ctr_median
+            if (
+                video_ctr_is_measured
+                and peer_ctr_median is not None
+                and peer_ctr_median > 0
+                and video_ctr < peer_ctr_median
+            )
+            else None
+        )
+
+        item = {
+            **video,
+            "peer_count": len(peers),
+            "peer_views_median": peer_views_median,
+            "relative_views_gap": relative_views_gap,
+            "peer_ctr_count": len(peer_ctrs),
+            "peer_ctr_median": peer_ctr_median,
+            "relative_ctr_gap": relative_ctr_gap,
+        }
+        if relative_ctr_gap is not None:
+            item.update({
+                "selection_basis": "low_ctr_vs_peers",
+                "opportunity_type": "Low CTR vs similar uploads",
+                "opportunity_priority": 0,
+                "opportunity_score": relative_ctr_gap,
+                "opportunity_evidence": (
+                    f"Measured thumbnail CTR is {video_ctr:.2f}% vs. the "
+                    f"{peer_ctr_median:.2f}% median across {len(peer_ctrs)} "
+                    "same-format, similar-age videos. Each comparison video has at "
+                    "least 100 measured impressions. This is a review signal, not a guarantee."
+                ),
+            })
+        elif relative_views_gap is not None:
+            item.update({
+                "selection_basis": "low_views_vs_peers",
+                "opportunity_type": "Views below similar uploads",
+                "opportunity_priority": 1,
+                "opportunity_score": relative_views_gap,
+                "opportunity_evidence": (
+                    f"{video['views']:g} measured views vs. {peer_views_median:g} "
+                    f"median views across {len(peer_views)} same-format, similar-age "
+                    "videos in the selected reporting window. Low views do not prove "
+                    "that metadata caused the gap."
+                ),
+            })
+        else:
+            continue
+        ranked.append(item)
+
+    if ranked:
+        ranked.sort(
+            key=lambda item: (
+                item["opportunity_priority"],
+                item["opportunity_score"],
+                -item["peer_count"],
+            )
+        )
+        return ranked[:limit]
+
+    # If evidence is too sparse for a benchmark, offer a clearly labelled watchlist,
+    # not a fabricated underperformer or CTR estimate.
+    fallback = sorted(candidate_rows, key=lambda item: (item["views"], item["title"].casefold()))
+    result = []
+    for video in fallback[:limit]:
+        age = video["age_days"]
+        peers = [
+            peer for peer in pool
+            if peer["video_id"] != video["video_id"]
+            and peer["format"] == video["format"]
+            and abs(peer["age_days"] - age) <= max(14, int(age * 0.5))
+        ]
+        has_ctr = (
+            isinstance(video.get("ctr"), (int, float))
+            and isinstance(video.get("impressions"), (int, float))
+            and video["impressions"] >= 100
+        )
+        result.append({
+            **video,
+            "peer_count": len(peers),
+            "selection_basis": "lowest_observed_views",
+            "opportunity_type": "Lowest observed views · limited evidence",
+            "opportunity_priority": 2,
+            "opportunity_evidence": (
+                f"{video['views']:g} measured views in the selected reporting window. "
+                "The available data did not establish a low-CTR or below-median peer signal, "
+                "so this is a review shortlist only—not a confirmed underperformer. "
+                + (
+                    "CTR is measured but did not qualify as a below-peer signal."
+                    if has_ctr else
+                    "Reliable CTR is unavailable or has fewer than 100 impressions."
+                )
+            ),
+        })
+    return result
+
+
 def generate_metadata_proposal(snippet):
     """Suggest only metadata terms directly evidenced by the existing snippet."""
     title = snippet.get("title", "")

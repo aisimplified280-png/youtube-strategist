@@ -33,30 +33,43 @@ st.markdown(
     """
     <style>
     .block-container {
-        max-width: 1040px;
+        max-width: 980px;
         padding-top: 1.1rem;
-        padding-bottom: 3rem;
+        padding-bottom: 5.5rem;
     }
-    .asl-header { margin: 0.15rem 0 1.1rem; }
-    .asl-brand {
-        font-size: .72rem;
-        font-weight: 750;
-        letter-spacing: .16em;
-        opacity: .7;
-        margin-bottom: .35rem;
+    [data-testid="stSidebar"] {
+        border-right: 1px solid rgba(128, 128, 128, .22);
     }
+    [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+        padding-top: 1rem;
+    }
+    .asl-sidebar-brand {
+        font-size: .98rem;
+        font-weight: 720;
+        letter-spacing: -.025em;
+        line-height: 1.25;
+        margin: .2rem .15rem 1.1rem;
+    }
+    .asl-sidebar-overline {
+        font-size: .68rem;
+        font-weight: 720;
+        letter-spacing: .13em;
+        opacity: .64;
+        margin: .85rem .1rem .35rem;
+    }
+    .asl-page-heading { margin: .15rem 0 1.25rem; }
     .asl-page-title {
-        font-size: clamp(1.65rem, 4vw, 2.2rem);
-        line-height: 1.12;
-        font-weight: 780;
+        font-size: clamp(1.45rem, 3.3vw, 1.95rem);
+        line-height: 1.18;
+        font-weight: 700;
         letter-spacing: -.035em;
         margin: 0;
     }
     .asl-page-subtitle {
-        margin-top: .45rem;
+        margin-top: .4rem;
         margin-bottom: 0;
-        opacity: .72;
-        font-size: .96rem;
+        opacity: .7;
+        font-size: .91rem;
     }
     .asl-proposal-field {
         white-space: pre-wrap;
@@ -64,48 +77,47 @@ st.markdown(
         word-break: normal;
         background: var(--secondary-background-color);
         color: var(--text-color);
-        border: 1px solid rgba(128, 128, 128, .25);
-        border-radius: .65rem;
-        padding: .8rem .9rem;
+        border: 1px solid rgba(128, 128, 128, .2);
+        border-radius: .75rem;
+        padding: .85rem .9rem;
         line-height: 1.55;
         font-size: .95rem;
     }
-    [data-testid="stSegmentedControl"] { width: 100%; margin-bottom: .9rem; }
-    [data-testid="stSegmentedControl"] button {
-        min-height: 2.75rem;
-        justify-content: center;
-    }
     [data-testid="stButton"] button {
-        min-height: 2.7rem;
+        min-height: 2.65rem;
         white-space: normal;
         line-height: 1.25;
+        border-radius: .7rem;
+    }
+    [data-testid="stChatInput"] {
+        border-radius: 1rem;
     }
     [data-testid="stChatMessage"] {
-        border-radius: .85rem;
-        padding: .75rem .9rem;
+        border: none;
+        background: transparent;
+        padding: .45rem .15rem;
+    }
+    [data-testid="stExpander"] {
+        border-radius: .75rem;
     }
     @media (max-width: 640px) {
         .block-container {
-            padding-top: .65rem;
-            padding-bottom: 2rem;
-            padding-left: .75rem;
-            padding-right: .75rem;
+            padding-top: .7rem;
+            padding-bottom: 4.8rem;
+            padding-left: .8rem;
+            padding-right: .8rem;
         }
-        .asl-header { margin-bottom: .8rem; }
-        .asl-page-subtitle { font-size: .9rem; }
-        [data-testid="stChatMessage"] { padding: .65rem .7rem; }
-        [data-testid="stSegmentedControl"] button { min-height: 2.9rem; }
-        [data-testid="stDataFrame"] { max-width: 100%; }
+        .asl-page-heading { margin-bottom: 1rem; }
+        .asl-page-subtitle { font-size: .87rem; }
+        .asl-proposal-field { padding: .75rem; font-size: .9rem; }
+        [data-testid="stButton"] button { min-height: 2.85rem; }
+        [data-testid="stChatMessage"] { padding: .3rem 0; }
     }
     </style>
-    <div class="asl-header">
-      <div class="asl-brand">AI SIMPLIFIED LAB</div>
-      <div class="asl-page-title">YouTube Strategist</div>
-      <p class="asl-page-subtitle">Make every video stronger. Review changes before they reach YouTube.</p>
-    </div>
     """,
     unsafe_allow_html=True,
 )
+
 
 
 def _read_secrets():
@@ -666,6 +678,261 @@ def _render_proposal(video_row, youtube):
             st.rerun()
 
 
+def _render_recent_opportunities(youtube, analytics, reporting, credentials):
+    """Scan recent uploads and present measured, evidence-based metadata-review candidates."""
+    st.markdown(
+        '<div class="asl-page-heading">'
+        '<div class="asl-page-title">Find videos to improve</div>'
+        '<p class="asl-page-subtitle">Use channel data to shortlist uploads worth reviewing. '
+        'No guessed CTR and no automatic publishing.</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    yesterday = date.today() - timedelta(days=1)
+    this_week_start = date.today() - timedelta(days=date.today().weekday())
+    default_start = this_week_start - timedelta(days=7)
+    default_end = yesterday
+
+    if "opportunity_start_date" not in st.session_state:
+        st.session_state["opportunity_start_date"] = default_start
+    if "opportunity_end_date" not in st.session_state:
+        st.session_state["opportunity_end_date"] = default_end
+    if "opportunity_video_limit" not in st.session_state:
+        st.session_state["opportunity_video_limit"] = 50
+
+    with st.form("opportunity_scan_form"):
+        date_columns = st.columns(2)
+        with date_columns[0]:
+            start_date = st.date_input(
+                "From",
+                min_value=date(2005, 1, 1),
+                max_value=yesterday,
+                key="opportunity_start_date",
+            )
+        with date_columns[1]:
+            end_date = st.date_input(
+                "Through",
+                min_value=date(2005, 1, 1),
+                max_value=yesterday,
+                key="opportunity_end_date",
+            )
+        video_limit = st.selectbox(
+            "Compare against recent uploads",
+            options=(25, 50, 100),
+            key="opportunity_video_limit",
+        )
+        scan_clicked = st.form_submit_button(
+            "Scan uploads",
+            type="primary",
+            use_container_width=True,
+        )
+
+    auto_run = st.session_state.pop("opportunity_auto_run", False)
+    request_text = st.session_state.pop("channel_analysis_request", None)
+    if request_text:
+        st.caption("Starting from your request in chat.")
+
+    if start_date > end_date:
+        st.error("Choose a start date on or before the end date.")
+        return
+    if end_date >= date.today():
+        st.error("The reporting period must end yesterday or earlier.")
+        return
+
+    query_key = (start_date.isoformat(), end_date.isoformat(), video_limit)
+    cached_key = st.session_state.get("opportunity_data_key")
+    should_scan = scan_clicked or auto_run
+    if should_scan:
+        with st.spinner("Checking upload performance and available thumbnail CTR…"):
+            try:
+                data = youtube_dashboard.load_dashboard_data(
+                    youtube,
+                    analytics,
+                    start_date,
+                    end_date,
+                    video_limit=video_limit,
+                    reporting=reporting,
+                    credentials=credentials,
+                )
+            except HttpError as error:
+                status = getattr(getattr(error, "resp", None), "status", "unknown")
+                if status == 403:
+                    st.error(
+                        "YouTube denied an Analytics/Reporting request (HTTP 403). "
+                        "Check API enablement, channel authorization, reporting access, and quota."
+                    )
+                else:
+                    st.error(f"YouTube API request failed (HTTP {status}).")
+                return
+            except (
+                GoogleAuthError,
+                httplib2.HttpLib2Error,
+                OSError,
+                requests.RequestException,
+            ):
+                st.error(
+                    "Google could not complete the report request. Reconnect YouTube if needed, "
+                    "then retry the scan."
+                )
+                return
+            except (
+                connector.VideoNotFoundError,
+                connector.MetadataValidationError,
+                RuntimeError,
+                ValueError,
+            ) as error:
+                st.error(str(error))
+                return
+        st.session_state["opportunity_data"] = data
+        st.session_state["opportunity_data_key"] = query_key
+    elif cached_key != query_key:
+        st.info("Select the reporting dates, then choose **Scan uploads** to analyse them.")
+        return
+
+    data = st.session_state.get("opportunity_data")
+    if not data or st.session_state.get("opportunity_data_key") != query_key:
+        st.info("Choose a date range and scan the uploads to see measured opportunities.")
+        return
+
+    recent_ids = [
+        row["video_id"]
+        for row in data["video_rows"]
+        if row.get("published_at")
+        and start_date.isoformat() <= row["published_at"][:10] <= end_date.isoformat()
+    ]
+    candidates = youtube_dashboard.rank_recent_video_opportunities(
+        data["video_rows"],
+        recent_ids,
+        limit=8,
+    )
+    measured_recent = [
+        row for row in data["video_rows"]
+        if row.get("video_id") in recent_ids
+        and isinstance(row.get("views"), (int, float))
+    ]
+    ctr_available = [
+        row for row in data["video_rows"]
+        if row.get("video_id") in recent_ids
+        and isinstance(row.get("ctr"), (int, float))
+        and isinstance(row.get("impressions"), (int, float))
+        and row["impressions"] >= 100
+    ]
+
+    st.caption(
+        f"{len(recent_ids)} uploads in the selected weeks · "
+        f"{len(measured_recent)} with measured views · "
+        f"{len(ctr_available)} with usable measured CTR"
+    )
+    st.caption(
+        "CTR comparisons require actual impressions and at least three comparable videos. "
+        "If that evidence is unavailable, the scan uses measured views or labels results as a "
+        "limited-evidence shortlist."
+    )
+    if request_text:
+        if not recent_ids:
+            assistant_summary = (
+                f"I checked uploads dated {start_date.isoformat()} through "
+                f"{end_date.isoformat()}, but no uploads in the selected catalogue "
+                "were published during that period. Try a wider date range."
+            )
+        elif not measured_recent:
+            assistant_summary = (
+                f"I checked {len(recent_ids)} recent uploads from "
+                f"{start_date.isoformat()} through {end_date.isoformat()}, but YouTube "
+                "returned no measured view rows. I didn't invent a ranking."
+            )
+        elif candidates:
+            first_titles = "; ".join(
+                str(item.get("title", "(untitled)"))
+                for item in candidates[:3]
+            )
+            ctr_message = (
+                "Measured CTR was available for some candidates."
+                if ctr_available else
+                "Reliable CTR was unavailable; the shortlist uses views/peer data instead."
+            )
+            assistant_summary = (
+                f"I checked {len(recent_ids)} uploads published between "
+                f"{start_date.isoformat()} and {end_date.isoformat()} and found "
+                f"{len(candidates)} metadata-review candidate(s). "
+                f"{ctr_message} First candidates: {first_titles}. "
+                "Open Find videos to review the evidence, then optimize one video at a time."
+            )
+        else:
+            assistant_summary = (
+                f"I checked {len(recent_ids)} uploads published between "
+                f"{start_date.isoformat()} and {end_date.isoformat()}, but the measured "
+                "data did not establish a clear underperformer. No estimated CTR was used."
+            )
+        history = st.session_state.setdefault("strategist_chat_history", [])
+        strategist_chat._append_history(history, "assistant", assistant_summary)
+
+    if not ctr_available:
+        st.info(
+            "Reliable thumbnail CTR was not available for these uploads at the required "
+            "impression threshold. I will not estimate it; any candidates below use measured "
+            "view counts and clearly stated peer evidence."
+        )
+
+    if not recent_ids:
+        st.info(
+            "No uploads were published during this period within the selected catalogue. "
+            "Choose a wider date range or increase the upload comparison limit."
+        )
+        return
+    if not measured_recent:
+        st.warning(
+            "YouTube Analytics returned no measured view rows for these uploads. "
+            "No underperformer can be identified from this report."
+        )
+        return
+    if not candidates:
+        st.success(
+            "No recent upload had enough measured evidence to stand out as a metadata-review "
+            "candidate. That is not proof that every upload is performing well."
+        )
+        return
+
+    for candidate in candidates:
+        with st.container(border=True):
+            st.write(candidate.get("title", "(untitled)"))
+            st.caption(
+                f"Published {candidate.get('published_at', 'date unavailable')[:10]} · "
+                f"{candidate.get('format', 'Format unavailable')}"
+            )
+            views = candidate.get("views")
+            impressions = candidate.get("impressions")
+            ctr = candidate.get("ctr")
+            metrics_line = (
+                f"Views: {views:,.0f}" if isinstance(views, (int, float))
+                else "Views: unavailable"
+            )
+            metrics_line += (
+                f"   ·   CTR: {ctr:.2f}%"
+                if isinstance(ctr, (int, float))
+                and isinstance(impressions, (int, float))
+                and impressions >= 100
+                else "   ·   CTR: unavailable"
+            )
+            metrics_line += (
+                f"   ·   Impressions: {impressions:,.0f}"
+                if isinstance(impressions, (int, float))
+                else "   ·   Impressions: unavailable"
+            )
+            st.caption(metrics_line)
+            st.markdown(f"**{candidate['opportunity_type']}**")
+            st.write(candidate["opportunity_evidence"])
+            if st.button(
+                "Optimize title, description and tags",
+                key=f"optimize_opportunity_{candidate['video_id']}",
+                type="primary" if candidate is candidates[0] else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state["pending_optimizer_video_url"] = candidate["url"]
+                st.session_state["asl_pending_workspace"] = "Strategist"
+                st.rerun()
+
+
 def main():
     secrets = _read_secrets()
     if not getattr(st.user, "is_logged_in", False):
@@ -674,6 +941,10 @@ def main():
         return
 
     subject = _owner_identity(secrets)
+    pending_workspace = st.session_state.pop("asl_pending_workspace", None)
+    if pending_workspace in {"Strategist", "Find videos", "Analytics"}:
+        st.session_state["asl_workspace"] = pending_workspace
+
     if st.session_state.pop("oauth_connected_message", False):
         st.success("YouTube authorization connected for this session.")
 
@@ -684,28 +955,36 @@ def main():
         st.warning(auth_warning)
 
     with st.sidebar:
-        st.caption(f"Signed in as {st.user.email}")
-        st.button("Sign out", on_click=st.logout)
-        if credentials:
-            if st.button("Disconnect YouTube for this session"):
-                st.session_state.pop("youtube_credentials_json", None)
-                st.session_state.pop("dashboard_data", None)
-                st.rerun()
+        st.markdown(
+            '<div class="asl-sidebar-brand">✳ AI Simplified Lab</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("New chat", key="asl_new_chat", use_container_width=True):
+            for key in (
+                "strategist_target_reference",
+                "strategist_chat_history",
+                "strategist_chat_proposal",
+                "strategist_chat_digest",
+                "strategist_pending_instruction",
+                "channel_analysis_request",
+                "opportunity_auto_run",
+            ):
+                st.session_state.pop(key, None)
+            st.session_state["asl_pending_workspace"] = "Strategist"
+            st.rerun()
 
     if not credentials:
         st.info(
-            "Connect YouTube to grant read-only Analytics access and permission to edit "
-            "approved video titles, descriptions, and tags."
+            "Connect YouTube to read channel performance and prepare approved metadata changes."
         )
         _start_youtube_authorization(secrets, subject)
+        with st.sidebar:
+            with st.expander("Account"):
+                st.caption(st.user.email)
+                st.button("Sign out", on_click=st.logout, key="asl_signout_unconnected")
         return
 
-    if not st.session_state.get("session_access_warning_shown"):
-        st.warning(
-            "Approvals and audit entries are held only in this authenticated browser "
-            "session. This free deployment does not provide durable audit storage."
-        )
-        st.session_state["session_access_warning_shown"] = True
+    st.session_state["session_access_warning_shown"] = True
 
     try:
         youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
@@ -719,18 +998,73 @@ def main():
         st.error("Could not initialize Google's YouTube API clients.")
         return
 
-    page = st.segmented_control(
-        "Workspace",
-        options=["Strategist", "Analytics"],
-        default="Strategist",
-        label_visibility="collapsed",
-        key="primary_workspace",
-    ) or "Strategist"
+    pending_video_url = st.session_state.pop("pending_optimizer_video_url", None)
+    if pending_video_url:
+        try:
+            _, load_message = strategist_chat._load_conversation_videos(
+                youtube, secrets, pending_video_url
+            )
+            if load_message:
+                st.session_state["optimizer_open_error"] = load_message
+            else:
+                st.session_state["strategist_pending_instruction"] = (
+                    "Create a proposal to improve this video's title, description, "
+                    "relevant hashtags, and tags. Use only facts supported by the target "
+                    "transcript and existing metadata. Do not promise CTR or invent chapters. "
+                    "Keep the title and description natural and useful for a viewer."
+                )
+        except Exception:
+            st.session_state["optimizer_open_error"] = (
+                "Could not open this video for optimization. Check YouTube access and try again."
+            )
+        st.session_state["asl_workspace"] = "Strategist"
+
+    with st.sidebar:
+        st.markdown('<div class="asl-sidebar-overline">WORKSPACE</div>', unsafe_allow_html=True)
+        page = st.radio(
+            "Workspace",
+            options=["Strategist", "Find videos", "Analytics"],
+            key="asl_workspace",
+            label_visibility="collapsed",
+        )
+        st.divider()
+        st.caption("Every YouTube change requires your approval.")
+        st.caption("Conversation history and audit records are session-only.")
+        with st.expander("Account"):
+            st.caption(st.user.email)
+            if st.button("Sign out", key="asl_sidebar_signout", use_container_width=True):
+                st.logout()
+            if st.button(
+                "Disconnect YouTube",
+                key="asl_sidebar_disconnect",
+                use_container_width=True,
+            ):
+                st.session_state.pop("youtube_credentials_json", None)
+                st.session_state.pop("dashboard_data", None)
+                st.rerun()
+
+    optimizer_error = st.session_state.pop("optimizer_open_error", None)
+    if optimizer_error:
+        st.error(optimizer_error)
 
     if page == "Strategist":
+        st.markdown(
+            '<div class="asl-page-heading"><div class="asl-page-title">'
+            'YouTube Strategist</div><p class="asl-page-subtitle">'
+            'A focused workspace for improving one video at a time.</p></div>',
+            unsafe_allow_html=True,
+        )
         strategist_chat.render_chat(youtube, secrets)
+    elif page == "Find videos":
+        _render_recent_opportunities(youtube, analytics, reporting, credentials)
     else:
-        st.caption("Channel performance and optimization evidence.")
+        st.markdown(
+            '<div class="asl-page-heading"><div class="asl-page-title">'
+            'Channel analytics</div><p class="asl-page-subtitle">'
+            'Measured channel performance and reporting coverage.</p></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Read-only performance reports and optimization evidence.")
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
         with st.container():
