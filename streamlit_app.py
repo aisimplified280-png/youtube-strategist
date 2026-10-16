@@ -824,16 +824,20 @@ def _save_scan_snapshot_to_memory(memory_credentials, snapshot):
     try:
         store = content_memory.GoogleSheetsMemoryStore.from_credentials(memory_credentials)
         store.append_scan(snapshot)
+        # Clear only after the append returns successfully, so an explicit retry can
+        # recover a failed save. The app will never report a failed write as saved.
+        st.session_state.pop("pending_memory_snapshot", None)
         st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
         st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
         st.session_state["content_memory_write_status"] = "saved"
         st.session_state.pop("content_memory_write_error", None)
-        st.session_state.pop("pending_memory_snapshot", None)
+        st.session_state.pop("memory_store_setup_error", None)
     except Exception as error:
+        message = content_memory.describe_memory_error(error)
+        st.session_state["pending_memory_snapshot"] = snapshot
         st.session_state["content_memory_write_status"] = "session_only"
-        st.session_state["content_memory_write_error"] = (
-            content_memory.describe_memory_error(error)
-        )
+        st.session_state["content_memory_write_error"] = message
+        st.session_state["memory_store_setup_error"] = message
         st.session_state.pop("content_memory_recent_scans", None)
 
 
