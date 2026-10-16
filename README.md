@@ -247,16 +247,16 @@ writes the line without it.
 MIT. Use it, change it, ship it.
 
 
-### Conversational YouTube Strategist (Grok first, Gemini backup)
+### Conversational YouTube Strategist (Groq first, Gemini backup)
 
-The Streamlit dashboard includes a conversational metadata editor that uses xAI Grok as its primary provider and Gemini only as a fallback. It accepts a video URL or ID from the configured owner channel and a public reference video URL. It retrieves available public reference metadata and attempts to retrieve a public transcript; if no transcript is available, it clearly falls back to metadata only. It does not claim to inspect video visuals from a URL.
+The Streamlit dashboard includes a conversational metadata editor that uses Groq as its primary provider and Gemini only as a fallback. It accepts a video URL or ID from the configured owner channel and a public reference video URL. It retrieves available public reference metadata and attempts to retrieve a public transcript; if no transcript is available, it clearly falls back to metadata only. It does not claim to inspect video visuals from a URL.
 
 Add both providers to Streamlit Community Cloud → Manage app → Settings → Secrets. Keep both keys private and never commit them to the repository:
 
 ```toml
-[xai]
-api_key = "YOUR_XAI_API_KEY"
-model = "grok-4.6"
+[groq]
+api_key = "YOUR_GROQ_API_KEY"
+model = "openai/gpt-oss-120b"
 fallback_models = []
 
 [gemini]
@@ -265,9 +265,9 @@ model = "gemini-3.8-flash"
 fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 ```
 
-Create the Grok key in [the xAI Console](https://console.x.ai/) and the Gemini key in [Google AI Studio](https://aistudio.google.com/apikey). Grok is always tried first. If it hits a model quota/rate limit (HTTP 429), is unavailable (HTTP 404), returns a transient server error (HTTP 5xx), times out, or returns an unusable response, the app tries any configured Grok fallback models and then switches to Gemini. Gemini fallback models are tried in order for the same kinds of recoverable failures. The UI shows the provider and model that answered. Authentication/permission failures also allow the other provider to be attempted, since the other provider has separate credentials. If all configured models fail, the app reports that clearly. Fallback is best-effort: project-wide quota limits or invalid keys for both providers can still block a request. API usage and billing are separate for each provider.
+Create the Grok key in [the xAI Console](https://console.groq.com/keys) and the Gemini key in [Google AI Studio](https://aistudio.google.com/apikey). Groq is always tried first. If it hits a model quota/rate limit (HTTP 429), is unavailable (HTTP 404), returns a transient server error (HTTP 5xx), times out, or returns an unusable response, the app tries any configured Groq fallback models and then switches to Gemini. Gemini fallback models are tried in order for the same kinds of recoverable failures. The UI shows the provider and model that answered. Authentication/permission failures also allow the other provider to be attempted, since the other provider has separate credentials. If all configured models fail, the app reports that clearly. Fallback is best-effort: project-wide quota limits or invalid keys for both providers can still block a request. API usage and billing are separate for each provider.
 
-Model names are configurable. The chat sends the target video's title, description, tags, the reference video's public metadata, available reference transcript, and your chat instructions to whichever provider handles the request: Grok first, Gemini only if Grok fails. xAI API usage and Gemini API usage/billing are separate; Gemini API limits are also separate from a Google AI Pro consumer subscription.
+Model names are configurable. The chat sends the target video's title, description, tags, the reference video's public metadata, available reference transcript, and your chat instructions to whichever provider handles the request: Groq first, Gemini only if Groq fails. Groq API usage and Gemini API usage/billing are separate; Gemini API limits are also separate from a Google AI Pro consumer subscription.
 
 Every response is a proposal only. The app displays current and proposed title, description and tags. You must explicitly click **Approve and apply this exact proposal** before a change is sent to YouTube. The existing connector re-checks that the target metadata has not changed since review, validates the proposal, applies only supported snippet metadata, and verifies the update. Changing the proposal invalidates the prior approval digest. Transcript retrieval is best-effort; transcript-disabled, private, age-restricted, or otherwise unavailable videos may fall back to public metadata.
 
