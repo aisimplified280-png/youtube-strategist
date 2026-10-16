@@ -280,6 +280,10 @@ def _handle_youtube_callback(secrets, subject):
                 st.session_state["youtube_auth_error"] = (
                     "YouTube authorization was not completed. Try connecting YouTube again."
                 )
+        else:
+            st.session_state["youtube_auth_error"] = (
+                "Google could not validate the authorization response. Start the connection again."
+            )
         query.clear()
         st.rerun()
         return
