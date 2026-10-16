@@ -93,7 +93,8 @@ skills still produce material for you to review and use.
 ### Private Strategist Memory (weekly scans and experiments)
 
 The hosted app can create a private Google spreadsheet called **AI Simplified Lab
-Strategist Memory** after the first successful channel scan. It records dated scan
+Strategist Memory** when the separate memory consent is granted. The app verifies the
+spreadsheet and tabs before showing the connection as ready. It records dated scan
 snapshots, compact evidence-backed action briefs, and metadata changes only after
 YouTube confirms the approved update. Drafts and rejected proposals are not recorded
 as completed experiments. The spreadsheet is owned by the authorized Google account.
@@ -105,8 +106,10 @@ workspace. Google rejects a combined consent request containing both YouTube and
 `drive.file` scopes, so the app keeps these as two separate flows and separate tokens.
 The memory flow requests only the limited `drive.file` scope for the spreadsheet created
 by this app; it does not request the broader `spreadsheets` scope or full Drive access.
-If the APIs are not enabled or Google denies memory access, channel scans continue in the
-current session and the app reports that memory was not saved.
+The memory authorization uses the signed-in owner's email as a Google account hint,
+so use the same Google account used to sign in to the app. If the APIs are not enabled or
+Google denies memory access, channel scans continue in the current session and the app
+shows a setup error with a retry action instead of claiming the workbook is ready.
 
 The action brief distinguishes measured CTR comparisons from view-based or limited-
 evidence review candidates. It recommends actions and next metrics to inspect, but
