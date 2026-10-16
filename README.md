@@ -1,7 +1,8 @@
-# The YouTube agent skill
+# The YouTube agent skills
 
-Eleven Claude skills that run a YouTube channel. Free, MIT, no signup, no API key, nothing to
-connect.
+Twelve Claude and VS Code agent skills for running a YouTube channel. Free, MIT, no signup, no API
+key for the standalone tools. The optional analytics and metadata connector uses your own Google
+OAuth credentials.
 
 One of them writes your script off 21 hook formulas and scores the hook before you waste a take on
 it. One lints the title and the thumbnail as a single pairing, because writing them separately is
@@ -47,7 +48,7 @@ Then spend ten minutes on [`templates/voice.md`](templates/voice.md). Copy it to
 my voice.md from these". Every skill reads that file. It matters more here than anywhere else,
 because you have to say the words out loud.
 
-## The eleven
+## The twelve
 
 | command | what it does |
 | --- | --- |
@@ -62,6 +63,7 @@ because you have to say the words out loud.
 | `/yt-seo` | The description, the tags that are worth having, and the three queries this should win. |
 | `/yt-chapters` | Chapters from a transcript, validated against YouTube's own rules so they render. |
 | `/yt-audit` | The whole channel, ending in ONE fix rather than twenty. |
+| `/yt-optimize` | Analyze channel performance, propose video metadata, then update only after approval of the exact proposal. |
 
 ## The six tools
 
@@ -81,10 +83,144 @@ python3 skills/yt-viral/swipe.py collected.json --min 2.0      # outliers by own
 
 The part most packs leave out.
 
-**It does not publish.** YouTube's Data API would allow it with your own OAuth, which makes this
-pack different from the LinkedIn and Instagram ones, where posting is not available at all. It is
-still not built here: every skill ends in a block you copy and a question — ship it, or change it?
-Anything that claims to run your channel unattended should be read with that distinction in mind.
+**It does not publish videos.** The optional `/yt-optimize` connector can update only a video's
+title, description, and tags after you approve the exact proposal in chat. It cannot publish or
+delete videos, change visibility, alter audience settings, or modify channel settings. The other
+skills still produce material for you to review and use.
+
+### YouTube analytics and metadata connector
+
+`youtube_analytics_connector.py` keeps the existing read-only Analytics exports. The
+`/yt-optimize` skill uses its read-only analysis and exact-proposal approval flow to update
+**only** a video's title, description, and tags. It never publishes a video or changes its
+privacy, publication status, audience settings, thumbnails, or channel settings.
+
+The agent analyzes a URL, ID, or title directly in chat. To inspect the latest short-duration
+candidates, it can request:
+
+```bash
+python youtube_analytics_connector.py --latest-short-candidates 10
+```
+
+The YouTube Data API does not expose the Shorts designation or video orientation. Videos up to
+three minutes are therefore labelled **Short candidates**, not confirmed Shorts. The connected
+Analytics API provides views, watch time, average view duration, likes, comments, shares,
+subscriber changes, and traffic sources where available. Impressions and thumbnail CTR are
+explicitly unavailable from this report endpoint; no scores or performance forecasts are
+fabricated. If metadata alone cannot support factual optimization, the agent asks for content
+context rather than inventing claims.
+
+After showing the current and proposed title, complete description, hashtags, separate tags, and
+diff, the skill stages the exact proposal locally and asks for approval. A revised proposal
+invalidates the prior approval ID. After approval, the connector checks that YouTube has not
+changed since review, updates only approved metadata, and refetches to verify the result. Audit
+records are stored in
+`~/.ai-simplified-youtube/metadata_audit.jsonl` (on Windows:
+`%USERPROFILE%\.ai-simplified-youtube\metadata_audit.jsonl`). OAuth tokens are never included in
+the audit log. Proposal state is kept outside the repository in the same private user directory.
+
+The OAuth authorization includes `youtube.force-ssl` for metadata changes. If saved authorization
+needs refreshing, the connector tries the refresh token first and starts Google's normal browser
+sign-in flow if refresh fails. Keep the OAuth client file and token in
+`~/.ai-simplified-youtube/`; never add or share them.
+
+### Streamlit Community Cloud dashboard
+
+`streamlit_app.py` is the browser dashboard entry point. It queries YouTube Analytics directly
+for channel performance and uses the YouTube Reporting API's `channel_reach_basic_a1` report for
+thumbnail impressions (`video_thumbnail_impressions`) and click-through rate
+(`video_thumbnail_impressions_ctr`). These reach metrics are not requested from Analytics
+`reports.query`, where `impressions` is an unsupported identifier. Reach values are displayed only
+when the downloaded report includes the metric; missing, incomplete, or unsupported data is shown
+as unavailable with a reason. No views-based substitute or estimated CTR is used. The daily report
+includes date and video dimensions and is filtered to the chosen UTC date range. Reach totals sum
+only returned video/date rows; missing rows are not turned into zero values. Google lists this
+report under [channel reach reports](https://developers.google.com/youtube/reporting/v1/reports/channel_reports)
+and documents the [reach metrics](https://developers.google.com/youtube/reporting/v1/reports/metrics#video_thumbnail_impressions)
+and [date/video dimensions](https://developers.google.com/youtube/reporting/v1/reports/dimensions).
+
+Reporting API jobs must be created before YouTube generates report files. The first file may take
+up to 48 hours to become available, and the API does not promise historical report files for dates
+before the job was created. Later daily files are asynchronous too. Use **Refresh channel reports**
+to retry after Google has generated new data. The app explains delayed or partial report coverage.
+Enable **YouTube Reporting API** in the same Google Cloud project as YouTube Data API v3 and
+YouTube Analytics API. The connector's existing `yt-analytics.readonly` OAuth scope is sufficient
+for reading these reports; no extra metadata-write scope is used for reach retrieval.
+
+The authorized local Reporting API read attempt returned HTTP 403, so live report availability
+for this channel is **not verified**. Check API enablement, OAuth consent/scopes, channel
+authorization, and Google project access after deployment. Mocked report parsing tests do not
+prove the live API configuration is working.
+
+Optimization ranking compares measured views only within the selected date range, format inferred
+from duration, and a similar-upload-age group. It requires at least three measured peers and states
+the comparison evidence; it does not infer a metadata cause or forecast results. Videos up to 180
+seconds are labelled **short-duration candidates**, not confirmed Shorts, because the Data API
+does not return the Shorts designation or orientation. The catalogue is capped at the selected
+number of most recent uploads (up to 250). The metadata suggestion generator is deliberately
+conservative and uses only topic phrases in the current title and description; it is not an AI
+transcription service. Edit or reject any suggestion that does not fit the video.
+
+#### Deploy for free
+
+1. Push this repository to a GitHub account that you can connect to Streamlit Community Cloud.
+   Do not commit OAuth client JSON, token files, CSV exports, `.env` files, or Streamlit secrets.
+   The current local `client_secret.json` is an **installed/desktop** OAuth client and cannot be
+   used for the hosted callback.
+2. In Google Cloud Console, select or create a project and enable **YouTube Data API v3**,
+   **YouTube Analytics API**, and **YouTube Reporting API**. Configure the OAuth consent screen
+   with the owner account as a test user while the app is in testing mode.
+3. Create an OAuth client of type **Web application**. After deploying the app and learning its
+   `https://<app-name>.streamlit.app` address, add both authorized redirect URIs to that client:
+   - `https://<app-name>.streamlit.app/oauth2callback` for Streamlit's Google sign-in.
+   - `https://<app-name>.streamlit.app/` for the YouTube Analytics/Data API authorization callback.
+
+   The same web-client ID and secret are used for both flows. Register `http://localhost:8501/oauth2callback`
+   and `http://localhost:8501/` too only if you will test the app locally.
+4. In Streamlit Community Cloud, create an app from your GitHub repository and set the app file
+   path to `streamlit_app.py`. Select Python 3.12 in the deployment's advanced settings. The
+   dependencies are in [requirements.txt](requirements.txt).
+5. In the app's **Settings → Secrets**, paste the structure from
+   [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example), replacing every placeholder:
+   - Set `auth.redirect_uri` to the deployed `/oauth2callback` URI.
+   - Set `youtube_oauth.redirect_uri` to the deployed root URI, including its trailing `/`.
+   - Put the Web OAuth client ID and secret in both sections.
+   - Set `access.owner_email` to the single Google account allowed into the dashboard.
+   - Generate independent, random values for `auth.cookie_secret` and `security.state_secret`.
+6. Open the app and sign in as the configured owner. Select **Authorize YouTube Analytics and
+   metadata access**, consent to Analytics read access and YouTube metadata access, and return to
+   the dashboard. The app checks Google's verified email against the configured owner before it
+   creates API clients or fetches channel data. An unapproved account sees no dashboard data or
+   YouTube actions. The Streamlit URL itself is not secret; keep the Google owner check enabled.
+7. Select a date range, inspect the performance table and comparison evidence, then select a
+   listed video or enter its YouTube URL, ID, or title in the video lookup. Review or edit its
+   proposal, and press **Approve and apply this exact proposal** only when the shown title,
+   complete description, and tags are correct. Saving edits invalidates the prior proposal. The
+   connector refetches the full snippet before writing, rejects stale proposals, updates only
+   title/description/tags, verifies the saved values, and reports the result.
+
+The hosted flow uses Google OpenID Connect for identity plus a separate Google Web OAuth
+authorization-code flow for YouTube access. OAuth state is signed, expires after 10 minutes,
+is bound to the authenticated Google account, and must match the pending state held in that
+browser session; the callback consumes it before token exchange. API credentials and tokens are
+held in Streamlit Secrets/server-side session state; they are not logged or written to the cloud
+filesystem.
+
+**Google OAuth testing-mode limitation:** Google documents that refresh tokens for an external
+OAuth consent screen left in **Testing** expire after seven days when non-basic scopes (such as
+YouTube scopes) are requested. Reconnect/consent again when that happens. Do not treat this free
+setup as unattended long-term authorization. Broader use or production publishing of the OAuth
+app may require Google verification and compliance review for the requested YouTube scopes.
+
+**Audit and approval state:** Approval proposals, tokens, and audit entries are held in the
+current authenticated Streamlit session only. The dashboard shows session audit outcomes but
+does not claim durable audit history; sessions/restarts can lose that state. Add an access-
+controlled persistent database before relying on long-term history or integrating Slack.
+
+**Streamlit Community Cloud access:** The app URL is reachable, but Google sign-in and the verified
+owner-email check in the app are the access-control barrier. Verify this by opening the deployed
+URL in a signed-out/private browser and with a non-owner Google account; neither should see channel
+data or receive the YouTube API authorization link.
 
 **`hookscore.py` is a heuristic, not a predictor.** The panel was built and calibrated against 74
 real short-form hooks (the first 15 seconds of auto-captions, top-8 and bottom-8 by views across

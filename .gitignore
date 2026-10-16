@@ -1,3 +1,17 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# YouTube OAuth credentials, local exports, and metadata audit logs
+client_secret*.json
+token*.json
+credentials*.json
+/data/youtube_analytics/
+*audit*.jsonl
+*.audit.log
+.env
+.env.*
+.streamlit/secrets.toml
+*.sqlite
+*.sqlite3
+.streamlit/secrets.toml.example.local
