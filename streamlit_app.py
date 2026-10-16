@@ -397,8 +397,12 @@ def _handle_youtube_callback(secrets, subject):
         st.session_state["oauth_connected_message"] = True
     else:
         st.session_state["memory_credentials_json"] = credentials.to_json()
-        st.session_state["memory_connected_message"] = True
+        # Do not show "connected" until a workbook is created/opened and verified.
+        st.session_state["memory_connection_pending_verification"] = True
+        st.session_state["memory_store_setup_attempted"] = False
+        st.session_state.pop("content_memory_store_verified", None)
         st.session_state.pop("memory_auth_error", None)
+        st.session_state.pop("memory_store_setup_error", None)
     query.clear()
     st.rerun()
 
@@ -465,7 +469,8 @@ def _start_youtube_authorization(secrets, subject):
     )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        prompt="consent",
+        prompt="select_account consent",
+        login_hint=getattr(st.user, "email", ""),
     )
     st.link_button(
         "Authorize YouTube Analytics and metadata access",
@@ -499,7 +504,8 @@ def _start_memory_authorization(secrets, subject):
     )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        prompt="consent",
+        prompt="select_account consent",
+        login_hint=getattr(st.user, "email", ""),
     )
     st.link_button(
         "Connect private Strategist Memory",
@@ -512,6 +518,38 @@ def _start_memory_authorization(secrets, subject):
             "it does not request YouTube scopes in the same consent."
         ),
     )
+
+def _verify_private_memory_workbook(memory_credentials):
+    """Create/locate the spreadsheet and prove the granted token can read and write it."""
+    if memory_credentials is None or st.session_state.get("memory_store_setup_attempted"):
+        return
+
+    st.session_state["memory_store_setup_attempted"] = True
+    try:
+        store = content_memory.GoogleSheetsMemoryStore.from_credentials(memory_credentials)
+        pending_snapshot = st.session_state.get("pending_memory_snapshot")
+        if pending_snapshot:
+            store.append_scan(pending_snapshot)
+            # Remove immediately after a successful append to prevent duplicate writes.
+            st.session_state.pop("pending_memory_snapshot", None)
+        recent_scans = store.list_recent_scans(limit=8)
+    except Exception as error:
+        message = content_memory.describe_memory_error(error)
+        st.session_state["content_memory_store_verified"] = False
+        st.session_state["content_memory_write_status"] = "session_only"
+        st.session_state["content_memory_write_error"] = message
+        st.session_state["memory_store_setup_error"] = message
+        return
+
+    st.session_state["content_memory_store_verified"] = True
+    st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
+    st.session_state["content_memory_recent_scans"] = recent_scans
+    st.session_state["content_memory_write_status"] = "saved"
+    st.session_state.pop("content_memory_write_error", None)
+    st.session_state.pop("memory_store_setup_error", None)
+    if st.session_state.pop("memory_connection_pending_verification", False):
+        st.session_state["memory_connected_message"] = True
+
 
 def _display_metric(value):
     return "Unavailable" if value is None else f"{value:,}"
@@ -1174,8 +1212,6 @@ def main():
 
     if st.session_state.pop("oauth_connected_message", False):
         st.success("YouTube authorization connected for this session.")
-    if st.session_state.pop("memory_connected_message", False):
-        st.success("Private Strategist Memory connected separately from YouTube.")
     youtube_auth_error = st.session_state.pop("youtube_auth_error", None)
     if youtube_auth_error:
         st.error(youtube_auth_error)
@@ -1190,6 +1226,12 @@ def main():
     memory_credentials = _credentials_from_session(
         "memory_credentials_json", MEMORY_SCOPES, "private memory"
     )
+    _verify_private_memory_workbook(memory_credentials)
+    if st.session_state.pop("memory_connected_message", False):
+        memory_url = st.session_state.get("content_memory_spreadsheet_url")
+        st.success("Private Strategist Memory connected and spreadsheet verified.")
+        if memory_url:
+            st.markdown(f"[Open your Strategist Memory spreadsheet]({memory_url})")
     auth_warning = st.session_state.pop("youtube_auth_warning", None)
     if auth_warning:
         st.warning(auth_warning)
@@ -1277,10 +1319,33 @@ def main():
             "Weekly scans and verified metadata experiments can be saved to a private "
             "Google Sheet. Conversation history remains session-only."
         )
-        st.caption(
-            "Private memory: connected" if memory_credentials
-            else "Private memory: not connected"
-        )
+        if st.session_state.get("content_memory_store_verified"):
+            st.caption("Private memory: connected and verified")
+            memory_url = st.session_state.get("content_memory_spreadsheet_url")
+            if memory_url:
+                st.markdown(f"[Open memory spreadsheet]({memory_url})")
+        elif memory_credentials:
+            st.caption("Private memory: authorized; setup not verified")
+        else:
+            st.caption("Private memory: not connected")
+        if st.button(
+            "Disconnect private memory" if memory_credentials else "Connect private memory",
+            key="asl_memory_connect",
+            use_container_width=True,
+        ):
+            if memory_credentials:
+                for key in (
+                    "memory_credentials_json",
+                    "memory_store_setup_attempted",
+                    "content_memory_store_verified",
+                    "content_memory_spreadsheet_url",
+                    "content_memory_recent_scans",
+                    "memory_connection_pending_verification",
+                ):
+                    st.session_state.pop(key, None)
+                st.session_state["content_memory_write_status"] = "not_connected"
+            st.session_state["asl_workspace"] = "Find videos"
+            st.rerun()
         with st.expander("Account"):
             st.caption(st.user.email)
             if st.button("Sign out", key="asl_sidebar_signout", use_container_width=True):
@@ -1304,6 +1369,16 @@ def main():
             "The YouTube metadata update was verified, but the experiment was not saved "
             "to durable memory. " + experiment_memory_error
         )
+
+    memory_setup_error = st.session_state.get("memory_store_setup_error")
+    if memory_credentials and memory_setup_error:
+        st.error(
+            "Google authorization succeeded, but the memory spreadsheet could not be "
+            "created or verified. " + memory_setup_error
+        )
+        if st.button("Retry spreadsheet setup", key="retry_memory_setup"):
+            st.session_state["memory_store_setup_attempted"] = False
+            st.rerun()
 
     if page == "Strategist":
         st.markdown(
