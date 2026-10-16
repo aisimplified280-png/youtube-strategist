@@ -1321,7 +1321,7 @@ def main():
             "Weekly scans and verified metadata experiments can be saved to a private "
             "Google Sheet. Conversation history remains session-only."
         )
-        if st.session_state.get("content_memory_store_verified"):
+        if memory_credentials and st.session_state.get("content_memory_store_verified"):
             st.caption("Private memory: connected and verified")
             memory_url = st.session_state.get("content_memory_spreadsheet_url")
             if memory_url:
@@ -1334,7 +1334,14 @@ def main():
             st.caption("Private memory: authorized; setup needs attention")
         else:
             st.caption("Private memory: not connected")
+            memory_url = st.session_state.get("content_memory_spreadsheet_url")
+            if memory_url:
+                st.link_button("Open last memory spreadsheet", memory_url, use_container_width=True)
             _start_memory_authorization(secrets, subject)
+        st.caption(
+            "Use the same Google account as app sign-in. YouTube access and Drive memory "
+            "are separate Google permission grants."
+        )
         if memory_credentials and st.button(
             "Disconnect private memory",
             key="asl_memory_disconnect",
