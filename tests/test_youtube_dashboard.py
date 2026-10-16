@@ -615,7 +615,7 @@ class YoutubeDashboardTests(unittest.TestCase):
             )
         )
 
-    def test_youtube_oauth_state_must_match_pending_session_state(self):
+    def test_youtube_oauth_state_matches_session_or_validates_signed_fallback(self):
         state = create_oauth_state(
             "google-subject",
             "test-signing-secret",
@@ -632,7 +632,7 @@ class YoutubeDashboardTests(unittest.TestCase):
                 now=1001,
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             consume_oauth_state(
                 state,
                 None,
