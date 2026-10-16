@@ -778,53 +778,6 @@ def main():
                 st.caption(data["traffic_status"])
 
         st.subheader("Video and short-duration candidate performance")
-        with st.form("find_video_form"):
-            video_reference = st.text_input(
-                "Find a channel video by YouTube URL, video ID, or title"
-            )
-            find_video = st.form_submit_button("Find video")
-        if find_video:
-            st.session_state.pop("requested_video_row", None)
-            if not video_reference.strip():
-                st.warning("Enter a YouTube URL, video ID, or title.")
-            else:
-                try:
-                    requested_video = youtube_dashboard.fetch_video_dashboard_row(
-                        youtube,
-                        analytics,
-                        video_reference,
-                        start_date,
-                        end_date,
-                        reporting=reporting,
-                        credentials=credentials,
-                    )
-                except HttpError as error:
-                    status = getattr(error.resp, "status", "unknown")
-                    st.error(f"Video lookup failed (HTTP {status}).")
-                except (
-                    connector.VideoNotFoundError,
-                    ValueError,
-                ) as error:
-                    st.error(str(error))
-                except (
-                    GoogleAuthError,
-                    httplib2.HttpLib2Error,
-                    OSError,
-                    requests.RequestException,
-                ):
-                    st.error("The Google API request failed during video lookup.")
-                else:
-                    st.session_state["requested_video_row"] = requested_video
-                    st.success(f"Selected channel video: {requested_video['title']}")
-
-        requested_video = st.session_state.get("requested_video_row")
-        if requested_video and st.button(
-            "Clear requested video",
-            key="clear_requested_video",
-        ):
-            st.session_state.pop("requested_video_row", None)
-            st.session_state.pop("pending_metadata_proposal", None)
-            st.rerun()
         format_filter = st.selectbox(
             "Format filter",
             options=(
@@ -834,22 +787,6 @@ def main():
             ),
         )
         visible_rows = _visible_video_rows(data["video_rows"], format_filter)
-        if (
-            requested_video
-            and requested_video["video_id"] not in {
-                row["video_id"] for row in visible_rows
-            }
-            and (
-                format_filter == "All"
-                or requested_video["format"] == format_filter
-            )
-        ):
-            visible_rows.append(requested_video)
-        if requested_video:
-            st.caption(
-                "The requested video is included even if it falls outside the recent-upload "
-                "catalogue; its peer comparison still uses only measured catalogue videos."
-            )
         table_columns = (
             "title",
             "published_at",
@@ -906,12 +843,7 @@ def main():
                         st.write("CTR:", row["ctr_status"])
 
         st.subheader("Metadata optimization candidates")
-        ranking_rows = list(data["video_rows"])
-        if requested_video and requested_video["video_id"] not in {
-            row["video_id"] for row in ranking_rows
-        }:
-            ranking_rows.append(requested_video)
-        ranked = youtube_dashboard.rank_optimization_candidates(ranking_rows)
+        ranked = youtube_dashboard.rank_optimization_candidates(data["video_rows"])
         if ranked:
             for candidate in ranked:
                 st.markdown(
