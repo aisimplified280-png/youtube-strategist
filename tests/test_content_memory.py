@@ -87,6 +87,49 @@ class ContentMemoryTests(unittest.TestCase):
         self.assertIsNone(snapshot["ctr"])
         self.assertIsNone(snapshot["impressions"])
 
+    def test_initialization_creates_private_workbook_and_headers_before_reporting_ready(self):
+        drive = Mock()
+        drive.files.return_value.list.return_value.execute.return_value = {
+            "files": []
+        }
+
+        sheets = Mock()
+        spreadsheet_resource = Mock()
+        sheets.spreadsheets.return_value = spreadsheet_resource
+        spreadsheet_resource.create.return_value.execute.return_value = {
+            "spreadsheetId": "memory-spreadsheet-123"
+        }
+        spreadsheet_resource.get.return_value.execute.return_value = {
+            "sheets": [
+                {"properties": {"title": content_memory.SCAN_SHEET}},
+                {"properties": {"title": content_memory.EXPERIMENT_SHEET}},
+            ]
+        }
+        values_resource = Mock()
+        spreadsheet_resource.values.return_value = values_resource
+        values_resource.get.return_value.execute.return_value = {}
+        values_resource.update.return_value.execute.return_value = {}
+
+        store = content_memory.GoogleSheetsMemoryStore(drive, sheets)
+
+        self.assertEqual(
+            store.spreadsheet_url,
+            "https://docs.google.com/spreadsheets/d/memory-spreadsheet-123/edit",
+        )
+        spreadsheet_resource.create.assert_called_once()
+        self.assertEqual(values_resource.update.call_count, 2)
+        header_rows = [
+            call.kwargs["body"]["values"][0]
+            for call in values_resource.update.call_args_list
+        ]
+        self.assertIn(list(content_memory.SCAN_HEADERS), header_rows)
+        self.assertIn(list(content_memory.EXPERIMENT_HEADERS), header_rows)
+        self.assertEqual(
+            drive.files.return_value.list.call_args.kwargs["q"],
+            "name = 'AI Simplified Lab Strategist Memory' and "
+            "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+        )
+
     def test_append_scan_writes_one_append_only_sheet_row(self):
         store = content_memory.GoogleSheetsMemoryStore.__new__(
             content_memory.GoogleSheetsMemoryStore
