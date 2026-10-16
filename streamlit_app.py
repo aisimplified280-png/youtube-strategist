@@ -24,6 +24,12 @@ import youtube_analytics_connector as connector
 import youtube_dashboard
 import strategist_chat
 
+MEMORY_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
+]
+APP_SCOPES = [*connector.SCOPES, *MEMORY_SCOPES]
+
 st.set_page_config(
     page_title="AI Simplified Lab YouTube Strategist",
     page_icon="📊",
@@ -218,7 +224,7 @@ def _new_google_flow(secrets, *, state=None, code_verifier=None):
     oauth = secrets["youtube_oauth"]
     return Flow.from_client_config(
         _flow_config(secrets),
-        scopes=connector.SCOPES,
+        scopes=APP_SCOPES,
         state=state,
         redirect_uri=oauth["redirect_uri"],
         code_verifier=code_verifier,
@@ -329,7 +335,7 @@ def _handle_youtube_callback(secrets, subject):
         return
 
     credentials = flow.credentials
-    if not credentials.has_scopes(connector.SCOPES):
+    if not credentials.has_scopes(APP_SCOPES):
         query.clear()
         st.error(
             "The granted authorization is missing required YouTube scopes. "
@@ -349,7 +355,7 @@ def _credentials_from_session():
     try:
         credentials = Credentials.from_authorized_user_info(
             json.loads(credentials_json),
-            connector.SCOPES,
+            APP_SCOPES,
         )
     except (ValueError, KeyError, TypeError):
         st.session_state.pop("youtube_credentials_json", None)
@@ -920,7 +926,7 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
         strategist_chat._append_history(history, "assistant", assistant_summary)
 
     if candidates:
-        st.subheader("This week's action brief")
+        st.subheader("Action brief for the selected period")
         st.caption(
             "Start with these evidence-backed actions. The signal ranks what to review; "
             "it does not prove that metadata caused the performance gap."
