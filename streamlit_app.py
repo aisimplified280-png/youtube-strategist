@@ -180,12 +180,34 @@ def _handle_youtube_callback(secrets, subject):
         OAuthError,
         OAuth2Error,
         requests.RequestException,
-    ):
+    ) as error:
+        # Show only a sanitized OAuth error code; never render the callback URL,
+        # authorization code, client secret, or raw HTTP response in the UI.
+        error_code = getattr(error, "error", None)
+        if not isinstance(error_code, str) and isinstance(error, requests.RequestException):
+            response = getattr(error, "response", None)
+            if response is not None:
+                try:
+                    response_body = response.json()
+                except (ValueError, TypeError):
+                    response_body = {}
+                if isinstance(response_body, dict):
+                    error_code = response_body.get("error")
+        safe_codes = {
+            "invalid_client": "Google rejected the OAuth client credentials. Verify that the Web application client ID and secret in Streamlit Secrets belong to the same Google Cloud OAuth client.",
+            "invalid_grant": "Google rejected this authorization code. It may have expired, already been used, or been issued for a different redirect URI. Start a fresh authorization attempt and verify the redirect URI is exactly https://youtube-strategist-gvysp46objgfmgmdemckwe.streamlit.app/ (including the trailing slash).",
+            "redirect_uri_mismatch": "The redirect URI does not match. Verify the authorized redirect URI in Google Cloud and the [youtube_oauth].redirect_uri value in Streamlit Secrets.",
+            "unauthorized_client": "This OAuth client is not permitted to use the requested flow. Verify that it is a Web application client and the YouTube APIs/scopes are configured.",
+        }
         query.clear()
         st.error(
-            "Google authorization exchange failed. Check the hosted OAuth client and "
-            "redirect URI, then reconnect."
+            "Google authorization exchange failed. "
+            + safe_codes.get(
+                error_code,
+                "Verify the hosted Web OAuth client ID/secret and exact redirect URI, then start a fresh authorization attempt."
+            )
         )
+        st.caption(f"Diagnostic category: {error_code if error_code in safe_codes else type(error).__name__}")
         return
     except HttpError as error:
         query.clear()
