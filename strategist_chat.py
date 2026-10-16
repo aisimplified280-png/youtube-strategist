@@ -154,7 +154,7 @@ def _groq_generate(api_key, model, prompt, fallback_models=None):
     candidates = []
     for candidate in [model or DEFAULT_GROQ_MODEL, *(fallback_models or [])]:
         candidate = str(candidate).strip()
-        if candidate and re.fullmatch(r"[A-Za-z0-9._-]+", candidate) and candidate not in candidates:
+        if candidate and re.fullmatch(r"[A-Za-z0-9._/-]+", candidate) and candidate not in candidates:
             candidates.append(candidate)
     if not candidates:
         raise ValueError("Configure at least one valid Groq model name.")
@@ -269,14 +269,53 @@ def _append_history(history, role, content):
     del history[:-MAX_HISTORY_TURNS]
 
 
-def render_chat(youtube, secrets):
-    """Render chat, reference analysis, exact proposal review and explicit approval."""
-    st.subheader("YouTube Strategist Chat")
-    st.caption(
-        "Discuss edits naturally, provide a reference video, revise the proposal, "
-        "and approve the exact metadata before anything is changed. Video metadata, "
-        "your instructions, and any available reference transcript are sent to Groq first, or Gemini if fallback is needed."
+def _youtube_urls_from_message(message):
+    """Extract YouTube links from a natural-language chat message."""
+    return re.findall(
+        r"https?://(?:www\.)?(?:youtube\.com|m\.youtube\.com|youtu\.be)/[^\s<>()]+",
+        message or "",
+        flags=re.IGNORECASE,
     )
+
+
+def _load_conversation_videos(youtube, secrets, message):
+    """Load target/reference links supplied in chat; no setup form is required."""
+    urls = _youtube_urls_from_message(message)
+    if len(urls) < 2:
+        return None, (
+            "To start, send **both video links in one message**: your own AI Simplified Lab "
+            "video first, then the reference video. You can include your instruction too, "
+            "for example: “My video: [URL] Reference: [URL] Make my title more intriguing.”"
+        )
+    target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
+    reference_id = parse_video_id(urls[1].rstrip(".,!?;:"))
+    target_snippet = connector.fetch_video_snippet(youtube, target_id)
+    reference_snippet = _video_snippet(youtube, reference_id)
+    transcript, transcript_status = _transcript_text(reference_id)
+    context = {
+        "target_id": target_id,
+        "reference_id": reference_id,
+        "target_snippet": target_snippet,
+        "reference_snippet": reference_snippet,
+        "transcript": transcript,
+        "transcript_status": transcript_status,
+    }
+    st.session_state["strategist_target_reference"] = context
+    st.session_state["strategist_chat_history"] = []
+    st.session_state.pop("strategist_chat_proposal", None)
+    st.session_state.pop("strategist_chat_digest", None)
+    return context, None
+
+
+def render_chat(youtube, secrets):
+    """Render a clean, chat-first editor with conversational setup and explicit approval."""
+    st.subheader("YouTube Strategist")
+    st.caption(
+        "Tell me what you want to change in plain language. Paste your video links directly "
+        "into chat—no setup form or metadata-editing fields. You approve the exact proposal "
+        "before anything changes on YouTube."
+    )
+
     groq = secrets.get("groq", {})
     gemini = secrets.get("gemini", {})
     groq_model = groq.get("model", DEFAULT_GROQ_MODEL)
@@ -292,55 +331,28 @@ def render_chat(youtube, secrets):
     if not isinstance(gemini_fallbacks, (list, tuple)):
         gemini_fallbacks = []
 
-    with st.expander("Set up this conversation", expanded=not bool(
-        st.session_state.get("strategist_target_reference")
-    )):
-        target_reference = st.text_input(
-            "Your channel video URL or ID",
-            key="strategist_target_input",
-            placeholder="https://www.youtube.com/shorts/…",
-        )
-        reference_reference = st.text_input(
-            "Reference video URL",
-            key="strategist_reference_input",
-            placeholder="https://www.youtube.com/watch?v=…",
-        )
-        if st.button("Load videos", key="strategist_load_videos"):
-            try:
-                target_id = parse_video_id(target_reference)
-                reference_id = parse_video_id(reference_reference)
-                target_snippet = connector.fetch_video_snippet(youtube, target_id)
-                reference_snippet = _video_snippet(youtube, reference_id)
-                transcript, transcript_status = _transcript_text(reference_id)
-            except (ValueError, connector.VideoNotFoundError,
-                    connector.MetadataValidationError) as error:
-                st.error(str(error))
-            except Exception:
-                st.error("Could not load the videos. Check the URLs and YouTube API access.")
-            else:
-                st.session_state["strategist_target_reference"] = {
-                    "target_id": target_id,
-                    "reference_id": reference_id,
-                    "target_snippet": target_snippet,
-                    "reference_snippet": reference_snippet,
-                    "transcript": transcript,
-                    "transcript_status": transcript_status,
-                }
-                st.session_state["strategist_chat_history"] = []
-                st.session_state.pop("strategist_chat_proposal", None)
-                st.session_state.pop("strategist_chat_digest", None)
-                st.success("Videos loaded. You can now discuss the changes.")
-
     context = st.session_state.get("strategist_target_reference")
-    if not context:
-        st.info("Load your own video and a reference video to start.")
-        return
-
-    st.write(
-        f"**Your video:** {context['target_snippet'].get('title', '(untitled)')}  \n"
-        f"**Reference:** {context['reference_snippet'].get('title', '(untitled)')}"
-    )
-    st.caption(context["transcript_status"])
+    if context:
+        st.caption(
+            f"**Working on:** {context['target_snippet'].get('title', '(untitled)')} "
+            f"· **Reference:** {context['reference_snippet'].get('title', '(untitled)')}"
+        )
+        with st.popover("Change videos"):
+            st.write("Paste two new links into the chat to switch the target and reference.")
+            if st.button("Clear conversation", key="clear_strategist_conversation"):
+                for key in (
+                    "strategist_target_reference",
+                    "strategist_chat_history",
+                    "strategist_chat_proposal",
+                    "strategist_chat_digest",
+                ):
+                    st.session_state.pop(key, None)
+                st.rerun()
+    else:
+        st.info(
+            "Start by pasting two links into the chat: **your channel video first, "
+            "reference video second**. Add an instruction in the same message if you like."
+        )
 
     history = st.session_state.setdefault("strategist_chat_history", [])
     for turn in history:
@@ -348,20 +360,61 @@ def render_chat(youtube, secrets):
             st.markdown(turn["content"])
 
     instruction = st.chat_input(
-        "What should change? e.g. make the hook more intriguing but keep it factual",
+        "Tell me what to change, or paste your video + reference links…",
         key="strategist_chat_input",
     )
     if instruction:
+        with st.chat_message("user"):
+            st.markdown(instruction)
+
+        urls = _youtube_urls_from_message(instruction)
+        context = st.session_state.get("strategist_target_reference")
+        is_new_video_pair = len(urls) >= 2
+        if not context or is_new_video_pair:
+            try:
+                context, setup_message = _load_conversation_videos(youtube, secrets, instruction)
+            except (ValueError, connector.VideoNotFoundError, connector.MetadataValidationError) as error:
+                setup_message = str(error)
+                context = None
+            except Exception:
+                setup_message = (
+                    "I couldn't load those videos. Check that the first link is your channel "
+                    "video, the second is a public reference, and YouTube access is connected."
+                )
+                context = None
+            if setup_message:
+                _append_history(history, "user", instruction)
+                _append_history(history, "assistant", setup_message)
+                with st.chat_message("assistant"):
+                    st.markdown(setup_message)
+                st.rerun()
+
+        history = st.session_state.setdefault("strategist_chat_history", [])
+
+        # When two URLs are supplied, remove them from the actual edit instruction.
+        clean_instruction = instruction
+        for url in urls[:2]:
+            clean_instruction = clean_instruction.replace(url, " ").strip()
+        clean_instruction = re.sub(
+            r"\b(my video|target video|reference video|reference|target)\s*[:=-]?\s*",
+            " ",
+            clean_instruction,
+            flags=re.IGNORECASE,
+        ).strip(" \t\r\n,;:-")
+        if not clean_instruction or len(urls) >= 2:
+            clean_instruction = clean_instruction or (
+                "Analyze my video against the reference and suggest the strongest factual metadata improvements."
+            )
+
         existing_proposal = st.session_state.get("strategist_chat_proposal")
         if existing_proposal and existing_proposal.get("target_id") != context["target_id"]:
             existing_proposal = None
         _append_history(history, "user", instruction)
         st.session_state.pop("strategist_chat_proposal", None)
         st.session_state.pop("strategist_chat_digest", None)
-        with st.chat_message("user"):
-            st.markdown(instruction)
+
         with st.chat_message("assistant"):
-            with st.spinner("Trying Groq first, then Gemini if needed..."):
+            with st.spinner("Thinking…"):
                 try:
                     prompt_source = (
                         existing_proposal["proposed"]
@@ -380,7 +433,7 @@ def render_chat(youtube, secrets):
                     }
                     prompt = _build_prompt(
                         target, reference, context["transcript"],
-                        context["transcript_status"], history[:-1], instruction
+                        context["transcript_status"], history[:-1], clean_instruction
                     )
                     result, used_provider, used_model = _generate_with_fallbacks(
                         groq.get("api_key"), groq_model, groq_fallbacks,
@@ -390,22 +443,28 @@ def render_chat(youtube, secrets):
                     description = result.get("description")
                     tags = result.get("tags")
                     if not isinstance(title, str) or not isinstance(description, str):
-                        raise ValueError("AI provider's proposal is missing a title or description.")
+                        raise ValueError("The AI proposal is missing a title or description.")
                     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
-                        raise ValueError("AI provider's proposal contains invalid tags.")
+                        raise ValueError("The AI proposal contains invalid tags.")
                     proposed = deepcopy(context["target_snippet"])
-                    proposed.update({"title": title.strip(), "description": description, "tags": tags})
+                    proposed.update({
+                        "title": title.strip(),
+                        "description": description,
+                        "tags": tags,
+                    })
                     connector._validate_metadata(proposed)
-                    assistant_message = result.get("assistant_message", "I've prepared a revised proposal.")
+                    assistant_message = result.get(
+                        "assistant_message", "I've prepared a revised proposal."
+                    )
                     rationale = result.get("rationale", [])
                     if not isinstance(rationale, list):
                         rationale = []
                     st.markdown(assistant_message)
-                    st.caption(f"AI provider used: {used_provider} · Model: {used_model}")
+                    st.caption(f"{used_provider} · {used_model}")
                     if rationale:
-                        st.markdown("**Why these changes**")
-                        for reason in rationale[:6]:
-                            st.markdown(f"- {reason}")
+                        with st.expander("Why I recommend this", expanded=False):
+                            for reason in rationale[:5]:
+                                st.markdown(f"- {reason}")
                     st.session_state["strategist_chat_proposal"] = {
                         "target_id": context["target_id"],
                         "before": deepcopy(
@@ -419,43 +478,48 @@ def render_chat(youtube, secrets):
                     _append_history(history, "assistant", assistant_message)
                 except (ValueError, RuntimeError, requests.RequestException,
                         connector.MetadataValidationError) as error:
-                    message = str(error) if isinstance(error, (ValueError, RuntimeError,
-                                                               connector.MetadataValidationError)) else "Gemini could not be reached. Try again shortly."
+                    message = str(error) if isinstance(
+                        error, (ValueError, RuntimeError, connector.MetadataValidationError)
+                    ) else "The AI provider could not be reached. Try again shortly."
                     st.error(message)
                     _append_history(history, "assistant", message)
                 except Exception:
-                    st.error("The proposal could not be prepared. Check the video data and try again.")
-                    _append_history(history, "assistant", "The proposal could not be prepared. Check the video data and try again.")
+                    message = "I couldn't prepare the proposal. Check the video data and try again."
+                    st.error(message)
+                    _append_history(history, "assistant", message)
         st.rerun()
 
+    context = st.session_state.get("strategist_target_reference")
     proposal = st.session_state.get("strategist_chat_proposal")
-    if proposal and proposal["target_id"] == context["target_id"]:
-        st.markdown("#### Proposed metadata")
-        before = proposal["before"]
-        after = proposal["proposed"]
-        col1, col2 = st.columns(2)
-        with col1:
+    if context and proposal and proposal["target_id"] == context["target_id"]:
+        st.divider()
+        st.markdown("### Ready for your review")
+        st.markdown("**Proposed title**")
+        st.write(proposal["proposed"].get("title", ""))
+        st.markdown("**Proposed description**")
+        st.text(proposal["proposed"].get("description", ""))
+        st.markdown("**Proposed tags**")
+        tags = proposal["proposed"].get("tags", [])
+        st.write(", ".join(tags) if tags else "No tags proposed")
+
+        with st.expander("Compare with current metadata", expanded=False):
             st.markdown("**Current title**")
-            st.write(before.get("title", ""))
+            st.write(proposal["before"].get("title", ""))
             st.markdown("**Current description**")
-            st.text(before.get("description", ""))
+            st.text(proposal["before"].get("description", ""))
             st.markdown("**Current tags**")
-            st.write(before.get("tags", []))
-        with col2:
-            st.markdown("**Proposed title**")
-            st.write(after.get("title", ""))
-            st.markdown("**Proposed description**")
-            st.text(after.get("description", ""))
-            st.markdown("**Proposed tags**")
-            st.write(after.get("tags", []))
+            st.write(", ".join(proposal["before"].get("tags", [])))
 
         digest = connector.metadata_proposal_digest(
-            context["target_id"], before, after
+            context["target_id"], proposal["before"], proposal["proposed"]
         )
         st.session_state["strategist_chat_digest"] = digest
-        st.warning("Nothing changes on YouTube until you approve this exact proposal.")
-        if st.button("Approve and apply this exact proposal", type="primary",
-                     key="approve_strategist_chat_proposal"):
+        st.warning("No YouTube changes happen until you approve this exact proposal.")
+        if st.button(
+            "Approve and apply exact proposal",
+            type="primary",
+            key="approve_strategist_chat_proposal",
+        ):
             try:
                 def audit_callback(entry):
                     records = st.session_state.setdefault("session_audit_records", [])
@@ -463,7 +527,11 @@ def render_chat(youtube, secrets):
                     del records[20:]
 
                 result = connector.apply_approved_dashboard_proposal(
-                    youtube, context["target_id"], before, after, digest,
+                    youtube,
+                    context["target_id"],
+                    proposal["before"],
+                    proposal["proposed"],
+                    digest,
                     audit_callback=audit_callback,
                 )
             except Exception:
@@ -472,9 +540,10 @@ def render_chat(youtube, secrets):
                     "before trying again; the outcome may require inspection."
                 )
             else:
-                st.success(f"Verified YouTube update: {result['title']}")
-                st.session_state["strategist_target_reference"]["target_snippet"] = deepcopy(after)
+                st.success(f"Verified update: {result['title']}")
+                st.session_state["strategist_target_reference"]["target_snippet"] = deepcopy(
+                    proposal["proposed"]
+                )
                 st.session_state.pop("strategist_chat_proposal", None)
                 st.session_state.pop("strategist_chat_digest", None)
-                st.session_state["strategist_chat_history"] = []
                 st.rerun()

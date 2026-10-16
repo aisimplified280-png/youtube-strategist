@@ -28,10 +28,8 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("AI Simplified Lab YouTube Strategist")
-st.caption(
-    "Private, owner-authenticated channel analytics and approval-gated metadata editing."
-)
+st.title("AI Simplified Lab")
+st.caption("Your YouTube channel, improved through conversation.")
 
 
 def _read_secrets():
@@ -645,395 +643,249 @@ def main():
         st.error("Could not initialize Google's YouTube API clients.")
         return
 
-    with st.container(border=True):
-        strategist_chat.render_chat(youtube, secrets)
+    strategist_chat.render_chat(youtube, secrets)
 
-    yesterday = date.today() - timedelta(days=1)
-    default_start, default_end = youtube_dashboard.default_date_range()
-    with st.sidebar:
-        st.header("Analytics range")
-        start_date = st.date_input(
-            "Start date",
-            value=default_start,
-            max_value=yesterday,
-            key="dashboard_start_date",
-        )
-        end_date = st.date_input(
-            "End date",
-            value=default_end,
-            max_value=yesterday,
-            key="dashboard_end_date",
-        )
-        video_limit = st.selectbox(
-            "Recent uploads to analyze",
-            options=(25, 50, 100, 200, 250),
-            index=2,
-        )
-        refresh_reports = st.button("Refresh channel reports")
-    if refresh_reports:
-        st.session_state.pop("dashboard_data_key", None)
-    if start_date > end_date:
-        st.error("Choose a start date on or before the end date.")
-        return
-    if end_date >= date.today():
-        st.error("YouTube Analytics data is queried only through yesterday.")
-        return
+    with st.expander("Channel analytics (optional)", expanded=False):
+        st.caption("Read-only performance reports. Request all metadata changes in the Strategist chat above.")
+        yesterday = date.today() - timedelta(days=1)
+        default_start, default_end = youtube_dashboard.default_date_range()
+        with st.container():
+            st.caption("Choose the reporting window")
+            start_date = st.date_input(
+                "Start date",
+                value=default_start,
+                max_value=yesterday,
+                key="dashboard_start_date",
+            )
+            end_date = st.date_input(
+                "End date",
+                value=default_end,
+                max_value=yesterday,
+                key="dashboard_end_date",
+            )
+            video_limit = st.selectbox(
+                "Recent uploads to analyze",
+                options=(25, 50, 100, 200, 250),
+                index=2,
+            )
+            refresh_reports = st.button("Refresh channel reports")
+        if refresh_reports:
+            st.session_state.pop("dashboard_data_key", None)
+        if start_date > end_date:
+            st.error("Choose a start date on or before the end date.")
+            return
+        if end_date >= date.today():
+            st.error("YouTube Analytics data is queried only through yesterday.")
+            return
 
-    data_key = (start_date.isoformat(), end_date.isoformat(), video_limit)
-    if st.session_state.get("dashboard_data_key") != data_key:
-        with st.spinner("Fetching channel reports and recent video performance..."):
-            try:
-                dashboard_data = youtube_dashboard.load_dashboard_data(
-                    youtube,
-                    analytics,
-                    start_date,
-                    end_date,
-                    video_limit=video_limit,
-                    reporting=reporting,
-                    credentials=credentials,
-                )
-            except HttpError as error:
-                status = getattr(error.resp, "status", "unknown")
-                if status == 403:
-                    st.error(
-                        "Google denied an Analytics or Data API request (HTTP 403). "
-                        "Check the authorized Google account, API enablement, scopes, "
-                        "and quota."
+        data_key = (start_date.isoformat(), end_date.isoformat(), video_limit)
+        if st.session_state.get("dashboard_data_key") != data_key:
+            with st.spinner("Fetching channel reports and recent video performance..."):
+                try:
+                    dashboard_data = youtube_dashboard.load_dashboard_data(
+                        youtube,
+                        analytics,
+                        start_date,
+                        end_date,
+                        video_limit=video_limit,
+                        reporting=reporting,
+                        credentials=credentials,
                     )
-                else:
-                    st.error(f"YouTube API request failed (HTTP {status}).")
-                return
-            except (
-                GoogleAuthError,
-                httplib2.HttpLib2Error,
-                OSError,
-                requests.RequestException,
-            ):
-                st.error(
-                    "The Google API request failed. Check the network and reconnect "
-                    "YouTube if the authorization expired."
-                )
-                return
-            except (
-                connector.VideoNotFoundError,
-                connector.MetadataValidationError,
-                RuntimeError,
-                ValueError,
-            ) as error:
-                st.error(str(error))
-                return
-        st.session_state["dashboard_data"] = dashboard_data
-        st.session_state["dashboard_data_key"] = data_key
-        st.session_state.pop("pending_metadata_proposal", None)
-        st.session_state.pop("requested_video_row", None)
+                except HttpError as error:
+                    status = getattr(error.resp, "status", "unknown")
+                    if status == 403:
+                        st.error(
+                            "Google denied an Analytics or Data API request (HTTP 403). "
+                            "Check the authorized Google account, API enablement, scopes, "
+                            "and quota."
+                        )
+                    else:
+                        st.error(f"YouTube API request failed (HTTP {status}).")
+                    return
+                except (
+                    GoogleAuthError,
+                    httplib2.HttpLib2Error,
+                    OSError,
+                    requests.RequestException,
+                ):
+                    st.error(
+                        "The Google API request failed. Check the network and reconnect "
+                        "YouTube if the authorization expired."
+                    )
+                    return
+                except (
+                    connector.VideoNotFoundError,
+                    connector.MetadataValidationError,
+                    RuntimeError,
+                    ValueError,
+                ) as error:
+                    st.error(str(error))
+                    return
+            st.session_state["dashboard_data"] = dashboard_data
+            st.session_state["dashboard_data_key"] = data_key
+            st.session_state.pop("pending_metadata_proposal", None)
+            st.session_state.pop("requested_video_row", None)
 
-    data = st.session_state["dashboard_data"]
-    st.caption(
-        f"Channel `{data['channel_id']}` · {data['period']['start']} through "
-        f"{data['period']['end']}"
-    )
-    if data["summary"] is None:
-        st.warning(f"Channel summary: {data['summary_status']}")
-    else:
-        summary = data["summary"]
-        columns = st.columns(8)
-        for column, metric in zip(columns, youtube_dashboard.CORE_METRICS):
-            column.metric(
-                youtube_dashboard.METRIC_LABELS[metric],
-                _display_metric(summary.get(metric)),
-            )
-
-    with st.expander("Analytics coverage and limitations"):
-        st.write("Thumbnail reach report:", data["reach_status"])
-        st.write(
-            "The YouTube Reporting API reach report supplies thumbnail impressions "
-            "and CTR independently of Analytics reports.query. Daily reports are "
-            "asynchronous; first availability may take up to 48 hours. Reach values "
-            "sum returned video/date rows only; missing rows are not converted to zero."
-        )
-        st.write("Daily report:", data["daily_status"])
-        st.write("Traffic-source report:", data["traffic_status"])
-        st.write("Video catalogue:", data["catalogue_note"])
-        st.write(
-            "Format is inferred from duration only: <=180 seconds is a short-duration "
-            "candidate, not a confirmed Short; video orientation is not exposed here."
-        )
-        for warning in data["api_warnings"]:
-            st.warning(warning)
-
-    st.subheader("Channel views by day")
-    if data["daily_rows"]:
-        st.line_chart({
-            row["day"]: row["views"]
-            for row in data["daily_rows"]
-            if row.get("day") is not None and row.get("views") is not None
-        })
-    else:
-        st.caption(data["daily_status"])
-
-    with st.expander("Channel traffic sources"):
-        if data["traffic_sources"]:
-            st.dataframe(data["traffic_sources"], hide_index=True, use_container_width=True)
-        else:
-            st.caption(data["traffic_status"])
-
-    st.subheader("Video and short-duration candidate performance")
-    with st.form("find_video_form"):
-        video_reference = st.text_input(
-            "Find a channel video by YouTube URL, video ID, or title"
-        )
-        find_video = st.form_submit_button("Find video")
-    if find_video:
-        st.session_state.pop("requested_video_row", None)
-        if not video_reference.strip():
-            st.warning("Enter a YouTube URL, video ID, or title.")
-        else:
-            try:
-                requested_video = youtube_dashboard.fetch_video_dashboard_row(
-                    youtube,
-                    analytics,
-                    video_reference,
-                    start_date,
-                    end_date,
-                    reporting=reporting,
-                    credentials=credentials,
-                )
-            except HttpError as error:
-                status = getattr(error.resp, "status", "unknown")
-                st.error(f"Video lookup failed (HTTP {status}).")
-            except (
-                connector.VideoNotFoundError,
-                ValueError,
-            ) as error:
-                st.error(str(error))
-            except (
-                GoogleAuthError,
-                httplib2.HttpLib2Error,
-                OSError,
-                requests.RequestException,
-            ):
-                st.error("The Google API request failed during video lookup.")
-            else:
-                st.session_state["requested_video_row"] = requested_video
-                st.success(f"Selected channel video: {requested_video['title']}")
-
-    requested_video = st.session_state.get("requested_video_row")
-    if requested_video and st.button(
-        "Clear requested video",
-        key="clear_requested_video",
-    ):
-        st.session_state.pop("requested_video_row", None)
-        st.session_state.pop("pending_metadata_proposal", None)
-        st.rerun()
-    format_filter = st.selectbox(
-        "Format filter",
-        options=(
-            "All",
-            "Short-duration candidate (<=180 sec)",
-            "Long-form (>180 sec)",
-        ),
-    )
-    visible_rows = _visible_video_rows(data["video_rows"], format_filter)
-    if (
-        requested_video
-        and requested_video["video_id"] not in {
-            row["video_id"] for row in visible_rows
-        }
-        and (
-            format_filter == "All"
-            or requested_video["format"] == format_filter
-        )
-    ):
-        visible_rows.append(requested_video)
-    if requested_video:
+        data = st.session_state["dashboard_data"]
         st.caption(
-            "The requested video is included even if it falls outside the recent-upload "
-            "catalogue; its peer comparison still uses only measured catalogue videos."
+            f"Channel `{data['channel_id']}` · {data['period']['start']} through "
+            f"{data['period']['end']}"
         )
-    table_columns = (
-        "title",
-        "published_at",
-        "format",
-        "duration_seconds",
-        *youtube_dashboard.CORE_METRICS,
-        "impressions",
-        "ctr",
-    )
-    st.dataframe(
-        [
-            {
-                column: (
-                    f"{row[column]:,}"
-                    if column == "impressions" and row.get(column) is not None
-                    else f"{row[column]:g}%"
-                    if column == "ctr" and row.get(column) is not None
-                    else "Unavailable"
-                    if column in {"impressions", "ctr"}
-                    else row.get(column)
+        if data["summary"] is None:
+            st.warning(f"Channel summary: {data['summary_status']}")
+        else:
+            summary = data["summary"]
+            columns = st.columns(8)
+            for column, metric in zip(columns, youtube_dashboard.CORE_METRICS):
+                column.metric(
+                    youtube_dashboard.METRIC_LABELS[metric],
+                    _display_metric(summary.get(metric)),
                 )
-                for column in table_columns
-            }
-            for row in visible_rows
-        ],
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "title": st.column_config.TextColumn("Video"),
-            "published_at": st.column_config.TextColumn("Published"),
-            "format": st.column_config.TextColumn("Format (duration-based)"),
-            "duration_seconds": st.column_config.NumberColumn("Duration (sec)"),
-            "averageViewDuration": st.column_config.NumberColumn(
-                "Avg. view duration (sec)"
-            ),
-            "estimatedMinutesWatched": st.column_config.NumberColumn(
-                "Watch time (min)"
-            ),
-            "impressions": st.column_config.TextColumn("Impressions"),
-            "ctr": st.column_config.TextColumn("CTR"),
-        },
-    )
-    st.caption(
-        "Blank Analytics cells mean the report returned no row for that video/date range; "
-        "they are not treated as zero. CTR is YouTube's reported percentage, not an estimate."
-    )
-    with st.expander("Impressions and CTR availability by video"):
-        for row in visible_rows:
-            if row.get("impressions") is None or row.get("ctr") is None:
-                st.markdown(f"**{row['title']}**")
-                if row.get("impressions") is None:
-                    st.write("Impressions:", row["impressions_status"])
-                if row.get("ctr") is None:
-                    st.write("CTR:", row["ctr_status"])
 
-    st.subheader("Metadata optimization candidates")
-    ranking_rows = list(data["video_rows"])
-    if requested_video and requested_video["video_id"] not in {
-        row["video_id"] for row in ranking_rows
-    }:
-        ranking_rows.append(requested_video)
-    ranked = youtube_dashboard.rank_optimization_candidates(ranking_rows)
-    if ranked:
-        for candidate in ranked:
-            st.markdown(
-                f"- [{candidate['title']}]({candidate['url']}) — "
-                f"{candidate['recommendation_evidence']}"
+        with st.expander("Analytics coverage and limitations"):
+            st.write("Thumbnail reach report:", data["reach_status"])
+            st.write(
+                "The YouTube Reporting API reach report supplies thumbnail impressions "
+                "and CTR independently of Analytics reports.query. Daily reports are "
+                "asynchronous; first availability may take up to 48 hours. Reach values "
+                "sum returned video/date rows only; missing rows are not converted to zero."
             )
-    else:
-        st.info(
-            "No measured video has at least three age- and format-matched peers with a "
-            "lower view count than its peer median in this date range. No opportunity "
-            "is inferred from missing data."
-        )
+            st.write("Daily report:", data["daily_status"])
+            st.write("Traffic-source report:", data["traffic_status"])
+            st.write("Video catalogue:", data["catalogue_note"])
+            st.write(
+                "Format is inferred from duration only: <=180 seconds is a short-duration "
+                "candidate, not a confirmed Short; video orientation is not exposed here."
+            )
+            for warning in data["api_warnings"]:
+                st.warning(warning)
 
-    if not visible_rows:
-        st.info("No videos are available in this catalogue/filter.")
-        return
-    selected_labels = {
-        f"{row['published_at'][:10]} · {row['title']} · {row['video_id']}": row["video_id"]
-        for row in visible_rows
-    }
-    visible_video_ids = list(selected_labels.values())
-    default_video_id = next(
-        (
-            candidate["video_id"]
-            for candidate in ranked
-            if candidate["video_id"] in visible_video_ids
-        ),
-        visible_video_ids[0],
-    )
-    if requested_video and requested_video["video_id"] in visible_video_ids:
-        default_video_id = requested_video["video_id"]
-    selected_label = st.selectbox(
-        "Select one video to review metadata",
-        options=list(selected_labels),
-        index=visible_video_ids.index(default_video_id),
-    )
-    selected_id = selected_labels[selected_label]
-    selected_video = next(
-        row for row in visible_rows if row["video_id"] == selected_id
-    )
-    st.markdown(f"[Open selected video]({selected_video['url']})")
-    st.write(
-        "Impressions:",
-        (
-            f"{selected_video['impressions']:,}"
-            if selected_video.get("impressions") is not None
-            else selected_video["impressions_status"]
-        ),
-        "| CTR:",
-        (
-            f"{selected_video['ctr']:g}%"
-            if selected_video.get("ctr") is not None
-            else selected_video["ctr_status"]
-        ),
-        "| Video Analytics:", selected_video["analytics_status"],
-    )
-    try:
-        selected_reports = _selected_analytics_details(
-            analytics,
-            selected_id,
-            start_date,
-            end_date,
-        )
-    except HttpError as error:
-        status = getattr(error.resp, "status", "unknown")
-        st.error(f"Selected-video Analytics request failed (HTTP {status}).")
-    except (
-        GoogleAuthError,
-        httplib2.HttpLib2Error,
-        OSError,
-        requests.RequestException,
-    ):
-        st.error("Selected-video Analytics reports could not be retrieved.")
-    else:
-        with st.expander("Selected-video traffic and audience reports"):
-            st.markdown("**Traffic sources**")
-            if selected_reports["traffic_rows"]:
-                st.dataframe(
-                    selected_reports["traffic_rows"],
-                    hide_index=True,
-                    use_container_width=True,
-                )
-            else:
-                st.caption(selected_reports["traffic_status"])
-            st.markdown("**Audience demographics**")
-            if selected_reports["audience_rows"]:
-                st.dataframe(
-                    selected_reports["audience_rows"],
-                    hide_index=True,
-                    use_container_width=True,
-                )
-            else:
-                st.caption(selected_reports["audience_status"])
-    _render_proposal(selected_video, youtube)
+        st.subheader("Channel views by day")
+        if data["daily_rows"]:
+            st.line_chart({
+                row["day"]: row["views"]
+                for row in data["daily_rows"]
+                if row.get("day") is not None and row.get("views") is not None
+            })
+        else:
+            st.caption(data["daily_status"])
 
-    with st.expander("This session's metadata audit entries"):
-        audit_entries = st.session_state.get("session_audit_records", [])
-        if audit_entries:
-            safe_entries = [
+        with st.expander("Channel traffic sources"):
+            if data["traffic_sources"]:
+                st.dataframe(data["traffic_sources"], hide_index=True, use_container_width=True)
+            else:
+                st.caption(data["traffic_status"])
+
+        st.subheader("Video and short-duration candidate performance")
+        format_filter = st.selectbox(
+            "Format filter",
+            options=(
+                "All",
+                "Short-duration candidate (<=180 sec)",
+                "Long-form (>180 sec)",
+            ),
+        )
+        visible_rows = _visible_video_rows(data["video_rows"], format_filter)
+        table_columns = (
+            "title",
+            "published_at",
+            "format",
+            "duration_seconds",
+            *youtube_dashboard.CORE_METRICS,
+            "impressions",
+            "ctr",
+        )
+        st.dataframe(
+            [
                 {
-                    "timestamp": entry["timestamp"],
-                    "video_id": entry["video_id"],
-                    "url": entry["video_url"],
-                    "proposal_id": entry["proposal_id"],
-                    "result": entry["result"],
+                    column: (
+                        f"{row[column]:,}"
+                        if column == "impressions" and row.get(column) is not None
+                        else f"{row[column]:g}%"
+                        if column == "ctr" and row.get(column) is not None
+                        else "Unavailable"
+                        if column in {"impressions", "ctr"}
+                        else row.get(column)
+                    )
+                    for column in table_columns
                 }
-                for entry in audit_entries
-            ]
-            st.dataframe(safe_entries, hide_index=True, use_container_width=True)
-        else:
-            st.caption("No metadata update has been approved in this session.")
+                for row in visible_rows
+            ],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "title": st.column_config.TextColumn("Video"),
+                "published_at": st.column_config.TextColumn("Published"),
+                "format": st.column_config.TextColumn("Format (duration-based)"),
+                "duration_seconds": st.column_config.NumberColumn("Duration (sec)"),
+                "averageViewDuration": st.column_config.NumberColumn(
+                    "Avg. view duration (sec)"
+                ),
+                "estimatedMinutesWatched": st.column_config.NumberColumn(
+                    "Watch time (min)"
+                ),
+                "impressions": st.column_config.TextColumn("Impressions"),
+                "ctr": st.column_config.TextColumn("CTR"),
+            },
+        )
         st.caption(
-            "Audit entries are in-memory session state only and are lost when this "
-            "session expires. Configure durable private storage before relying on audit history."
+            "Blank Analytics cells mean the report returned no row for that video/date range; "
+            "they are not treated as zero. CTR is YouTube's reported percentage, not an estimate."
         )
+        with st.expander("Impressions and CTR availability by video"):
+            for row in visible_rows:
+                if row.get("impressions") is None or row.get("ctr") is None:
+                    st.markdown(f"**{row['title']}**")
+                    if row.get("impressions") is None:
+                        st.write("Impressions:", row["impressions_status"])
+                    if row.get("ctr") is None:
+                        st.write("CTR:", row["ctr_status"])
 
-    last_result = st.session_state.pop("last_update_result", None)
-    if last_result:
-        st.success(
-            f"Verified update for **{last_result['title']}**: "
-            f"{last_result['url']}"
-        )
+        st.subheader("Metadata optimization candidates")
+        ranked = youtube_dashboard.rank_optimization_candidates(data["video_rows"])
+        if ranked:
+            for candidate in ranked:
+                st.markdown(
+                    f"- [{candidate['title']}]({candidate['url']}) — "
+                    f"{candidate['recommendation_evidence']}"
+                )
+        else:
+            st.info(
+                "No measured video has at least three age- and format-matched peers with a "
+                "lower view count than its peer median in this date range. No opportunity "
+                "is inferred from missing data."
+            )
+
+        if not visible_rows:
+            st.info("No videos are available in this catalogue/filter.")
+
+        with st.expander("This session's metadata audit entries"):
+            audit_entries = st.session_state.get("session_audit_records", [])
+            if audit_entries:
+                safe_entries = [
+                    {
+                        "timestamp": entry["timestamp"],
+                        "video_id": entry["video_id"],
+                        "url": entry["video_url"],
+                        "proposal_id": entry["proposal_id"],
+                        "result": entry["result"],
+                    }
+                    for entry in audit_entries
+                ]
+                st.dataframe(safe_entries, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No metadata update has been approved in this session.")
+            st.caption(
+                "Audit entries are in-memory session state only and are lost when this "
+                "session expires. Configure durable private storage before relying on audit history."
+            )
+
+        last_result = st.session_state.pop("last_update_result", None)
+        if last_result:
+            st.success(
+                f"Verified update for **{last_result['title']}**: "
+                f"{last_result['url']}"
+            )
 
 
 main()
