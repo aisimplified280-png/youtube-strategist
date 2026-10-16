@@ -276,8 +276,8 @@ def _restore_shared_oauth_credentials(token_store, subject):
         return
     try:
         saved = {
-            "youtube": token_store.get_credentials_json(subject, "youtube"),
-            "memory": token_store.get_credentials_json(subject, "memory"),
+            "youtube": token_store.get_credentials_record(subject, "youtube"),
+            "memory": token_store.get_credentials_record(subject, "memory"),
         }
     except Exception:
         st.session_state["oauth_token_store_error"] = (
@@ -293,8 +293,11 @@ def _restore_shared_oauth_credentials(token_store, subject):
         ("youtube", "youtube_credentials_json"),
         ("memory", "memory_credentials_json"),
     ):
-        if saved[purpose]:
-            st.session_state[session_key] = saved[purpose]
+        record = saved[purpose]
+        if record["status"] == "active":
+            st.session_state[session_key] = record["credentials_json"]
+        elif record["status"] in {"revoked", "invalid"}:
+            st.session_state.pop(session_key, None)
 
 
 def _save_shared_oauth_credentials(token_store, subject, purpose, credentials_json):
