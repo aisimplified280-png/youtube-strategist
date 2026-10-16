@@ -107,9 +107,14 @@ workspace. Google rejects a combined consent request containing both YouTube and
 The memory flow requests only the limited `drive.file` scope for the spreadsheet created
 by this app; it does not request the broader `spreadsheets` scope or full Drive access.
 The memory authorization uses the signed-in owner's email as a Google account hint,
-so use the same Google account used to sign in to the app. If the APIs are not enabled or
-Google denies memory access, channel scans continue in the current session and the app
-shows a setup error with a retry action instead of claiming the workbook is ready.
+so use the same Google account used to sign in to the app. Both authorization links return
+to the same browser tab. The host keeps the YouTube and memory grants in separate encrypted
+records in a SQLite vault shared by Streamlit sessions, so finishing one grant does not erase
+the other when a new tab/session is created. The default vault location is the host's temporary
+directory; it is designed to bridge browser tabs within the running app instance, not to be a
+durable database across app restarts or redeployments. If the APIs are not enabled or Google
+denies memory access, channel scans continue in the current session and the app shows a setup
+error with a retry action instead of claiming the workbook is ready.
 
 The action brief distinguishes measured CTR comparisons from view-based or limited-
 evidence review candidates. It recommends actions and next metrics to inspect, but
