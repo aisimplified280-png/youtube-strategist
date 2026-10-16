@@ -1,4 +1,4 @@
-"""Conversational, approval-gated Grok-first YouTube metadata assistant."""
+"""Conversational, approval-gated Groq-first YouTube metadata assistant."""
 
 import json
 import re
@@ -73,16 +73,16 @@ def _transcript_text(video_id):
 
 def _extract_json(text):
     if not isinstance(text, str) or not text.strip():
-        raise ValueError("Gemini returned an empty response.")
+        raise ValueError("The AI provider returned an empty response.")
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^\`\`\`(?:json)?\s*|\s*\`\`\`$", "", cleaned, flags=re.I)
     try:
         result = json.loads(cleaned)
     except json.JSONDecodeError as error:
-        raise ValueError("Gemini returned an invalid structured response. Try again.") from error
+        raise ValueError("The AI provider returned an invalid structured response. Try again.") from error
     if not isinstance(result, dict):
-        raise ValueError("Gemini response must be a JSON object.")
+        raise ValueError("AI provider response must be a JSON object.")
     return result
 
 
@@ -148,7 +148,7 @@ def _gemini_generate(api_key, model, prompt, fallback_models=None):
 
 
 def _groq_generate(api_key, model, prompt, fallback_models=None):
-    """Call Groq's OpenAI-compatible chat endpoint, trying configured Grok models in order."""
+    """Call Groq's OpenAI-compatible chat endpoint, trying configured Groq models in order."""
     if not isinstance(api_key, str) or not api_key.strip():
         raise ValueError("Add [groq].api_key to Streamlit Secrets to enable Groq.")
     candidates = []
