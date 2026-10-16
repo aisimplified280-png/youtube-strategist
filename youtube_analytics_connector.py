@@ -39,9 +39,6 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "data" / "youtube_analytics"
 SCOPES = [
     "https://www.googleapis.com/auth/yt-analytics.readonly",
     "https://www.googleapis.com/auth/youtube.force-ssl",
-    # Used only for the app-owned Strategist Memory spreadsheet.
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.file",
 ]
 
 
