@@ -101,9 +101,9 @@ as completed experiments. The spreadsheet is owned by the authorized Google acco
 To enable the feature, enable **Google Drive API** and **Google Sheets API** in the
 same Google Cloud project as the app's OAuth client. In the app, scan uploads. If the
 existing YouTube session was authorized before the memory feature was added, use the
-reconnect button to grant the new scopes once. The app requests the Sheets scope and
-the limited `drive.file` scope used for files created/opened by this app; it does not
-request full Drive access. If the APIs are not enabled or Google denies access, scans
+reconnect button to grant the new scopes once. The app requests the limited `drive.file` scope for the spreadsheet created
+by this app. The Sheets API supports this per-file scope, so the app avoids requesting
+the broader `spreadsheets` scope or full Drive access. If the APIs are not enabled or Google denies access, scans
 continue to work in the current session and the app reports that memory was not saved.
 
 The action brief distinguishes measured CTR comparisons from view-based or limited-

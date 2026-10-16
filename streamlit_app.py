@@ -25,7 +25,8 @@ import youtube_dashboard
 import strategist_chat
 
 MEMORY_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
+    # Sheets API supports drive.file for the app-created memory spreadsheet.
+    # Avoid the broader spreadsheets scope, which can authorize access to all Sheets.
     "https://www.googleapis.com/auth/drive.file",
 ]
 APP_SCOPES = [*connector.SCOPES, *MEMORY_SCOPES]
@@ -410,8 +411,8 @@ def _start_youtube_authorization(secrets, subject):
         type="primary",
         help=(
             "Google will return to the configured Streamlit app URL. This grants "
-            "Analytics and metadata access plus Sheets access and access to files created "
-            "by this app for private Strategist Memory."
+            "YouTube access and limited Drive file access for the private Strategist Memory "
+            "spreadsheet created by this app."
         ),
     )
     st.caption(
