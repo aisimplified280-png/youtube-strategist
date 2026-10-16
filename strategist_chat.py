@@ -235,19 +235,25 @@ def render_chat(youtube, secrets):
         key="strategist_chat_input",
     )
     if instruction:
+        existing_proposal = st.session_state.get("strategist_chat_proposal")
+        if existing_proposal and existing_proposal.get("target_id") != context["target_id"]:
+            existing_proposal = None
         _append_history(history, "user", instruction)
-        st.session_state.pop("strategist_chat_proposal", None)
         st.session_state.pop("strategist_chat_digest", None)
         with st.chat_message("user"):
             st.markdown(instruction)
         with st.chat_message("assistant"):
             with st.spinner(f"Thinking with {model}..."):
                 try:
+                    prompt_source = (
+                        existing_proposal["proposed"]
+                        if existing_proposal else context["target_snippet"]
+                    )
                     target = {
                         "video_id": context["target_id"],
-                        "title": context["target_snippet"].get("title", ""),
-                        "description": context["target_snippet"].get("description", ""),
-                        "tags": context["target_snippet"].get("tags", []),
+                        "title": prompt_source.get("title", ""),
+                        "description": prompt_source.get("description", ""),
+                        "tags": prompt_source.get("tags", []),
                     }
                     reference = {
                         "video_id": context["reference_id"],
@@ -280,7 +286,10 @@ def render_chat(youtube, secrets):
                             st.markdown(f"- {reason}")
                     st.session_state["strategist_chat_proposal"] = {
                         "target_id": context["target_id"],
-                        "before": deepcopy(context["target_snippet"]),
+                        "before": deepcopy(
+                            existing_proposal["before"]
+                            if existing_proposal else context["target_snippet"]
+                        ),
                         "proposed": proposed,
                         "assistant_message": assistant_message,
                         "rationale": rationale,
