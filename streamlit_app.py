@@ -20,6 +20,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 import dashboard_security
 import youtube_analytics_connector as connector
 import youtube_dashboard
+import strategist_chat
 
 st.set_page_config(
     page_title="AI Simplified Lab YouTube Strategist",
@@ -643,6 +644,10 @@ def main():
     except (ValueError, HttpError):
         st.error("Could not initialize Google's YouTube API clients.")
         return
+
+    with st.container(border=True):
+        strategist_chat.render_chat(youtube, secrets)
+
     yesterday = date.today() - timedelta(days=1)
     default_start, default_end = youtube_dashboard.default_date_range()
     with st.sidebar:
