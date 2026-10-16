@@ -773,8 +773,26 @@ def _render_proposal(video_row, youtube):
 
 
 
+def _save_scan_snapshot_to_memory(memory_credentials, snapshot):
+    """Append one previously scanned snapshot using only the memory OAuth token."""
+    try:
+        store = content_memory.GoogleSheetsMemoryStore.from_credentials(memory_credentials)
+        store.append_scan(snapshot)
+        st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
+        st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
+        st.session_state["content_memory_write_status"] = "saved"
+        st.session_state.pop("content_memory_write_error", None)
+        st.session_state.pop("pending_memory_snapshot", None)
+    except Exception as error:
+        st.session_state["content_memory_write_status"] = "session_only"
+        st.session_state["content_memory_write_error"] = (
+            content_memory.describe_memory_error(error)
+        )
+        st.session_state.pop("content_memory_recent_scans", None)
+
+
 def _persist_opportunity_scan(
-    credentials,
+    memory_credentials,
     start_date,
     end_date,
     recent_ids,
@@ -782,7 +800,7 @@ def _persist_opportunity_scan(
     ctr_available,
     candidates,
 ):
-    """Keep a session fallback and append an evidence-only snapshot to private memory."""
+    """Keep a session fallback and save only via the separate memory token."""
     snapshot = content_memory.build_scan_snapshot(
         start_date=start_date,
         end_date=end_date,
@@ -795,22 +813,18 @@ def _persist_opportunity_scan(
     session_history.insert(0, snapshot)
     del session_history[20:]
 
-    try:
-        store = content_memory.GoogleSheetsMemoryStore.from_credentials(credentials)
-        store.append_scan(snapshot)
-        st.session_state["content_memory_spreadsheet_url"] = store.spreadsheet_url
-        st.session_state["content_memory_recent_scans"] = store.list_recent_scans(limit=8)
-        st.session_state["content_memory_write_status"] = "saved"
+    if memory_credentials is None:
+        st.session_state["pending_memory_snapshot"] = snapshot
+        st.session_state["content_memory_write_status"] = "not_connected"
         st.session_state.pop("content_memory_write_error", None)
-    except Exception as error:
-        st.session_state["content_memory_write_status"] = "session_only"
-        st.session_state["content_memory_write_error"] = (
-            content_memory.describe_memory_error(error)
-        )
         st.session_state.pop("content_memory_recent_scans", None)
+        return
+    _save_scan_snapshot_to_memory(memory_credentials, snapshot)
 
 
-def _render_recent_opportunities(youtube, analytics, reporting, credentials):
+def _render_recent_opportunities(
+    youtube, analytics, reporting, credentials, memory_credentials, secrets, subject
+):
     """Scan recent uploads and present measured, evidence-based metadata-review candidates."""
     st.markdown(
         '<div class="asl-page-heading">'
@@ -952,13 +966,18 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
 
     if should_scan:
         _persist_opportunity_scan(
-            credentials,
+            memory_credentials,
             start_date,
             end_date,
             recent_ids,
             measured_recent,
             ctr_available,
             candidates,
+        )
+    elif memory_credentials and st.session_state.get("pending_memory_snapshot"):
+        _save_scan_snapshot_to_memory(
+            memory_credentials,
+            st.session_state["pending_memory_snapshot"],
         )
 
     st.caption(
@@ -1050,18 +1069,22 @@ def _render_recent_opportunities(youtube, analytics, reporting, credentials):
                     hide_index=True,
                     use_container_width=True,
                 )
+    elif memory_status == "not_connected":
+        st.info(
+            "The scan is ready in this session. Connect private Strategist Memory separately "
+            "to keep the scan history and approved experiment log between sessions."
+        )
+        _start_memory_authorization(secrets, subject)
     elif memory_status == "session_only" and memory_error:
         st.warning(
             "This scan is available in the current session, but durable memory was not saved. "
             + memory_error
         )
-        if st.button(
-            "Reconnect Google after enabling memory APIs",
-            key="reconnect_for_content_memory",
-            use_container_width=True,
-        ):
-            st.session_state.pop("youtube_credentials_json", None)
-            st.rerun()
+        st.caption(
+            "Verify that the Google Drive API and Google Sheets API are enabled, then "
+            "reauthorize the private-memory connection below."
+        )
+        _start_memory_authorization(secrets, subject)
 
     if not ctr_available:
         st.info(
@@ -1143,12 +1166,28 @@ def main():
 
     if st.session_state.pop("oauth_connected_message", False):
         st.success("YouTube authorization connected for this session.")
+    if st.session_state.pop("memory_connected_message", False):
+        st.success("Private Strategist Memory connected separately from YouTube.")
+    youtube_auth_error = st.session_state.pop("youtube_auth_error", None)
+    if youtube_auth_error:
+        st.error(youtube_auth_error)
+    memory_auth_error = st.session_state.pop("memory_auth_error", None)
+    if memory_auth_error:
+        st.error("Private memory authorization failed: " + memory_auth_error)
 
     _handle_youtube_callback(secrets, subject)
-    credentials = _credentials_from_session()
+    credentials = _credentials_from_session(
+        "youtube_credentials_json", connector.SCOPES, "YouTube"
+    )
+    memory_credentials = _credentials_from_session(
+        "memory_credentials_json", MEMORY_SCOPES, "private memory"
+    )
     auth_warning = st.session_state.pop("youtube_auth_warning", None)
     if auth_warning:
         st.warning(auth_warning)
+    memory_auth_warning = st.session_state.pop("memory_auth_warning", None)
+    if memory_auth_warning:
+        st.warning(memory_auth_warning)
 
     with st.sidebar:
         st.markdown(
@@ -1226,8 +1265,13 @@ def main():
         st.divider()
         st.caption("Every YouTube change requires your approval.")
         st.caption(
+            "YouTube and private-memory permissions are authorized separately. "
             "Weekly scans and verified metadata experiments can be saved to a private "
             "Google Sheet. Conversation history remains session-only."
+        )
+        st.caption(
+            "Private memory: connected" if memory_credentials
+            else "Private memory: not connected"
         )
         with st.expander("Account"):
             st.caption(st.user.email)
@@ -1260,9 +1304,22 @@ def main():
             'A focused workspace for improving one video at a time.</p></div>',
             unsafe_allow_html=True,
         )
-        strategist_chat.render_chat(youtube, secrets, credentials=credentials)
+        strategist_chat.render_chat(
+            youtube,
+            secrets,
+            credentials=credentials,
+            memory_credentials=memory_credentials,
+        )
     elif page == "Find videos":
-        _render_recent_opportunities(youtube, analytics, reporting, credentials)
+        _render_recent_opportunities(
+            youtube,
+            analytics,
+            reporting,
+            credentials,
+            memory_credentials,
+            secrets,
+            subject,
+        )
     else:
         st.markdown(
             '<div class="asl-page-heading"><div class="asl-page-title">'
