@@ -173,12 +173,9 @@ def _handle_youtube_callback(secrets, subject):
 
     try:
         flow = _new_google_flow(secrets, state=returned_state)
-        # Pass the exact configured redirect URI explicitly in the token request.
-        # Google requires it to match the URI used when generating the authorization code.
-        flow.fetch_token(
-            code=code,
-            redirect_uri=secrets["youtube_oauth"]["redirect_uri"],
-        )
+        # The Flow already stores the configured redirect URI from _new_google_flow().
+        # Do not pass it again to fetch_token(): requests-oauthlib supplies self.redirect_uri.
+        flow.fetch_token(code=code)
     except (
         ValueError,
         GoogleAuthError,
