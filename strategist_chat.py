@@ -249,7 +249,7 @@ Rules:
 TARGET VIDEO (owner's channel):
 {json.dumps(target, ensure_ascii=False)}
 
-REFERENCE VIDEO (public metadata):
+REFERENCE VIDEO (optional public metadata; an empty object means none was supplied):
 {json.dumps(reference, ensure_ascii=False)}
 
 REFERENCE TRANSCRIPT STATUS: {transcript_status}
@@ -281,17 +281,22 @@ def _youtube_urls_from_message(message):
 def _load_conversation_videos(youtube, secrets, message):
     """Load target/reference links supplied in chat; no setup form is required."""
     urls = _youtube_urls_from_message(message)
-    if len(urls) < 2:
+    if not urls:
         return None, (
-            "To start, send **both video links in one message**: your own AI Simplified Lab "
-            "video first, then the reference video. You can include your instruction too, "
-            "for example: “My video: [URL] Reference: [URL] Make my title more intriguing.”"
+            "Paste **your own YouTube video link** and tell me what you want to improve. "
+            "A reference video is optional. For example: “Improve my title and description.”"
         )
+
     target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
-    reference_id = parse_video_id(urls[1].rstrip(".,!?;:"))
+    reference_id = parse_video_id(urls[1].rstrip(".,!?;:")) if len(urls) >= 2 else None
     target_snippet = connector.fetch_video_snippet(youtube, target_id)
-    reference_snippet = _video_snippet(youtube, reference_id)
-    transcript, transcript_status = _transcript_text(reference_id)
+    if reference_id:
+        reference_snippet = _video_snippet(youtube, reference_id)
+        transcript, transcript_status = _transcript_text(reference_id)
+    else:
+        reference_snippet = {}
+        transcript = ""
+        transcript_status = "No reference video supplied; analyzing the target video on its own."
     context = {
         "target_id": target_id,
         "reference_id": reference_id,
@@ -333,12 +338,13 @@ def render_chat(youtube, secrets):
 
     context = st.session_state.get("strategist_target_reference")
     if context:
+        reference_title = context.get("reference_snippet", {}).get("title") or "No reference (optional)"
         st.caption(
             f"**Working on:** {context['target_snippet'].get('title', '(untitled)')} "
-            f"· **Reference:** {context['reference_snippet'].get('title', '(untitled)')}"
+            f"· **Reference:** {reference_title}"
         )
         with st.popover("Change videos"):
-            st.write("Paste two new links into the chat to switch the target and reference.")
+            st.write("Paste one link to switch your target video, or add a second link to compare with a reference.")
             if st.button("Clear conversation", key="clear_strategist_conversation"):
                 for key in (
                     "strategist_target_reference",
@@ -350,8 +356,8 @@ def render_chat(youtube, secrets):
                 st.rerun()
     else:
         st.info(
-            "Start by pasting two links into the chat: **your channel video first, "
-            "reference video second**. Add an instruction in the same message if you like."
+            "Start with **one link to your own YouTube video**. Tell me what to improve "
+            "in the same message. A second, reference-video link is optional."
         )
 
     history = st.session_state.setdefault("strategist_chat_history", [])
@@ -360,7 +366,7 @@ def render_chat(youtube, secrets):
             st.markdown(turn["content"])
 
     instruction = st.chat_input(
-        "Tell me what to change, or paste your video + reference links…",
+        "Paste your video link and ask for an improvement (reference optional)…",
         key="strategist_chat_input",
     )
     if instruction:
@@ -369,8 +375,15 @@ def render_chat(youtube, secrets):
 
         urls = _youtube_urls_from_message(instruction)
         context = st.session_state.get("strategist_target_reference")
-        is_new_video_pair = len(urls) >= 2
-        if not context or is_new_video_pair:
+        is_new_video_selection = len(urls) >= 2 or (bool(urls) and not context)
+        if len(urls) == 1 and context:
+            try:
+                is_new_video_selection = (
+                    parse_video_id(urls[0].rstrip(".,!?;:")) != context.get("target_id")
+                )
+            except ValueError:
+                is_new_video_selection = True
+        if not context or is_new_video_selection:
             try:
                 context, setup_message = _load_conversation_videos(youtube, secrets, instruction)
             except (ValueError, connector.VideoNotFoundError, connector.MetadataValidationError) as error:
@@ -378,8 +391,8 @@ def render_chat(youtube, secrets):
                 context = None
             except Exception:
                 setup_message = (
-                    "I couldn't load those videos. Check that the first link is your channel "
-                    "video, the second is a public reference, and YouTube access is connected."
+                    "I couldn't load that video. Check that the link points to an accessible "
+                    "YouTube video and that YouTube access is connected. A reference link is optional."
                 )
                 context = None
             if setup_message:
@@ -391,7 +404,7 @@ def render_chat(youtube, secrets):
 
         history = st.session_state.setdefault("strategist_chat_history", [])
 
-        # When two URLs are supplied, remove them from the actual edit instruction.
+        # Remove supplied video links from the instruction; the reference link is optional.
         clean_instruction = instruction
         for url in urls[:2]:
             clean_instruction = clean_instruction.replace(url, " ").strip()
@@ -428,11 +441,14 @@ def render_chat(youtube, secrets):
                         "description": prompt_source.get("description", ""),
                         "tags": prompt_source.get("tags", []),
                     }
-                    reference = {
-                        "video_id": context["reference_id"],
-                        "title": context["reference_snippet"].get("title", ""),
-                        "description": context["reference_snippet"].get("description", ""),
-                    }
+                    reference = (
+                        {
+                            "video_id": context["reference_id"],
+                            "title": context["reference_snippet"].get("title", ""),
+                            "description": context["reference_snippet"].get("description", ""),
+                        }
+                        if context.get("reference_id") else {}
+                    )
                     prompt = _build_prompt(
                         target, reference, context["transcript"],
                         context["transcript_status"], history[:-1], clean_instruction
