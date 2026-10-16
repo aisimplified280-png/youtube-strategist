@@ -2,6 +2,7 @@
 
 import copy
 import difflib
+import html
 import json
 from datetime import date, timedelta
 
@@ -28,8 +29,83 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("AI Simplified Lab")
-st.caption("Your YouTube channel, improved through conversation.")
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 1040px;
+        padding-top: 1.1rem;
+        padding-bottom: 3rem;
+    }
+    .asl-header { margin: 0.15rem 0 1.1rem; }
+    .asl-brand {
+        font-size: .72rem;
+        font-weight: 750;
+        letter-spacing: .16em;
+        opacity: .7;
+        margin-bottom: .35rem;
+    }
+    .asl-page-title {
+        font-size: clamp(1.65rem, 4vw, 2.2rem);
+        line-height: 1.12;
+        font-weight: 780;
+        letter-spacing: -.035em;
+        margin: 0;
+    }
+    .asl-page-subtitle {
+        margin-top: .45rem;
+        margin-bottom: 0;
+        opacity: .72;
+        font-size: .96rem;
+    }
+    .asl-proposal-field {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: normal;
+        background: var(--secondary-background-color);
+        color: var(--text-color);
+        border: 1px solid rgba(128, 128, 128, .25);
+        border-radius: .65rem;
+        padding: .8rem .9rem;
+        line-height: 1.55;
+        font-size: .95rem;
+    }
+    [data-testid="stSegmentedControl"] { width: 100%; margin-bottom: .9rem; }
+    [data-testid="stSegmentedControl"] button {
+        min-height: 2.75rem;
+        justify-content: center;
+    }
+    [data-testid="stButton"] button {
+        min-height: 2.7rem;
+        white-space: normal;
+        line-height: 1.25;
+    }
+    [data-testid="stChatMessage"] {
+        border-radius: .85rem;
+        padding: .75rem .9rem;
+    }
+    @media (max-width: 640px) {
+        .block-container {
+            padding-top: .65rem;
+            padding-bottom: 2rem;
+            padding-left: .75rem;
+            padding-right: .75rem;
+        }
+        .asl-header { margin-bottom: .8rem; }
+        .asl-page-subtitle { font-size: .9rem; }
+        [data-testid="stChatMessage"] { padding: .65rem .7rem; }
+        [data-testid="stSegmentedControl"] button { min-height: 2.9rem; }
+        [data-testid="stDataFrame"] { max-width: 100%; }
+    }
+    </style>
+    <div class="asl-header">
+      <div class="asl-brand">AI SIMPLIFIED LAB</div>
+      <div class="asl-page-title">YouTube Strategist</div>
+      <p class="asl-page-subtitle">Make every video stronger. Review changes before they reach YouTube.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def _read_secrets():
@@ -643,10 +719,18 @@ def main():
         st.error("Could not initialize Google's YouTube API clients.")
         return
 
-    strategist_chat.render_chat(youtube, secrets)
+    page = st.segmented_control(
+        "Workspace",
+        options=["Strategist", "Analytics"],
+        default="Strategist",
+        label_visibility="collapsed",
+        key="primary_workspace",
+    ) or "Strategist"
 
-    with st.expander("Channel analytics (optional)", expanded=False):
-        st.caption("Read-only performance reports. Request all metadata changes in the Strategist chat above.")
+    if page == "Strategist":
+        strategist_chat.render_chat(youtube, secrets)
+    else:
+        st.caption("Channel performance and optimization evidence.")
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
         with st.container():
@@ -735,12 +819,15 @@ def main():
             st.warning(f"Channel summary: {data['summary_status']}")
         else:
             summary = data["summary"]
-            columns = st.columns(8)
-            for column, metric in zip(columns, youtube_dashboard.CORE_METRICS):
-                column.metric(
-                    youtube_dashboard.METRIC_LABELS[metric],
-                    _display_metric(summary.get(metric)),
-                )
+            metrics = list(youtube_dashboard.CORE_METRICS)
+            for offset in range(0, len(metrics), 4):
+                metric_row = metrics[offset:offset + 4]
+                columns = st.columns(len(metric_row))
+                for column, metric in zip(columns, metric_row):
+                    column.metric(
+                        youtube_dashboard.METRIC_LABELS[metric],
+                        _display_metric(summary.get(metric)),
+                    )
 
         with st.expander("Analytics coverage and limitations"):
             st.write("Thumbnail reach report:", data["reach_status"])
