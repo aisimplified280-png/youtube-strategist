@@ -401,9 +401,11 @@ def render_chat(youtube, secrets):
             clean_instruction,
             flags=re.IGNORECASE,
         ).strip(" \t\r\n,;:-")
-        if not clean_instruction or len(urls) >= 2:
-            clean_instruction = clean_instruction or (
+        if not clean_instruction:
+            clean_instruction = (
                 "Analyze my video against the reference and suggest the strongest factual metadata improvements."
+                if context.get("reference_id")
+                else "Analyze my video and suggest the strongest factual metadata improvements."
             )
 
         existing_proposal = st.session_state.get("strategist_chat_proposal")
