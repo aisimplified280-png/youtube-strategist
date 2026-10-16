@@ -247,20 +247,25 @@ writes the line without it.
 MIT. Use it, change it, ship it.
 
 
-### Conversational YouTube Strategist (Gemini)
+### Conversational YouTube Strategist (Grok first, Gemini backup)
 
-The Streamlit dashboard includes an optional conversational metadata editor. It accepts a video URL or ID from the configured owner channel and a public reference video URL. It retrieves available public reference metadata and attempts to retrieve a public transcript; if no transcript is available, it clearly falls back to metadata only. It does not claim to inspect video visuals from a URL.
+The Streamlit dashboard includes a conversational metadata editor that uses xAI Grok as its primary provider and Gemini only as a fallback. It accepts a video URL or ID from the configured owner channel and a public reference video URL. It retrieves available public reference metadata and attempts to retrieve a public transcript; if no transcript is available, it clearly falls back to metadata only. It does not claim to inspect video visuals from a URL.
 
-To enable the chat, create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey) and add the following to Streamlit Community Cloud → Manage app → Settings → Secrets. Keep the key private and never commit it to the repository:
+Add both providers to Streamlit Community Cloud → Manage app → Settings → Secrets. Keep both keys private and never commit them to the repository:
 
 ```toml
+[xai]
+api_key = "YOUR_XAI_API_KEY"
+model = "grok-4.6"
+fallback_models = []
+
 [gemini]
 api_key = "YOUR_GEMINI_API_KEY"
 model = "gemini-3.8-flash"
 fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 ```
 
-The primary model is attempted first. If it hits a model quota/rate limit (HTTP 429), is unavailable (HTTP 404), returns a transient server error (HTTP 5xx), or times out, the chat automatically tries each distinct model in `fallback_models` in order. The UI shows which model answered. If all configured models fail, the chat reports that rather than losing the proposal silently. Authentication/permission errors (HTTP 401/403) stop immediately because changing models will not repair an invalid key or missing access. Keep the fallback list to model IDs currently supported for your Gemini API key; a project-wide quota limit can affect every model, so fallback is best-effort, not a guarantee.
+Create the Grok key in [the xAI Console](https://console.x.ai/) and the Gemini key in [Google AI Studio](https://aistudio.google.com/apikey). Grok is always tried first. If it hits a model quota/rate limit (HTTP 429), is unavailable (HTTP 404), returns a transient server error (HTTP 5xx), times out, or returns an unusable response, the app tries any configured Grok fallback models and then switches to Gemini. Gemini fallback models are tried in order for the same kinds of recoverable failures. The UI shows the provider and model that answered. Authentication/permission failures also allow the other provider to be attempted, since the other provider has separate credentials. If all configured models fail, the app reports that clearly. Fallback is best-effort: project-wide quota limits or invalid keys for both providers can still block a request. API usage and billing are separate for each provider.
 
 The model name is configurable. Gemini API usage and billing/rate limits are separate from a Google AI Pro consumer subscription. The chat sends the target video's title, description, tags, the reference video's public metadata, available reference transcript, and your chat instructions to Gemini.
 
