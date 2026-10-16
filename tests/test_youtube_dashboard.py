@@ -521,7 +521,7 @@ class YoutubeDashboardTests(unittest.TestCase):
                     "video_id": f"peer-{index}",
                     "title": f"Peer {index}",
                     "url": f"https://youtube.com/watch?v=peer-{index}",
-                    "published_at": "2026-10-0{index + 2}",
+                    "published_at": f"2026-10-{index + 2:02d}",
                     "format": "Short-duration candidate (<=180 sec)",
                     "age_days": 7 + index,
                     "views": 150 + index * 20,
