@@ -469,7 +469,7 @@ def _start_youtube_authorization(secrets, subject):
     )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        prompt="select_account consent",
+        prompt="consent",
         login_hint=getattr(st.user, "email", ""),
     )
     st.link_button(
@@ -504,7 +504,7 @@ def _start_memory_authorization(secrets, subject):
     )
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        prompt="select_account consent",
+        prompt="consent",
         login_hint=getattr(st.user, "email", ""),
     )
     st.link_button(
