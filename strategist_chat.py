@@ -389,6 +389,8 @@ def render_chat(youtube, secrets):
                     st.markdown(setup_message)
                 st.rerun()
 
+        history = st.session_state.setdefault("strategist_chat_history", [])
+
         # When two URLs are supplied, remove them from the actual edit instruction.
         clean_instruction = instruction
         for url in urls[:2]:
