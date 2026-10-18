@@ -6,6 +6,7 @@ import difflib
 import html
 import io
 import json
+import re
 from datetime import date, timedelta
 
 import httplib2
@@ -1687,7 +1688,9 @@ def _render_studio_export_analysis():
     )
 
 
-def _render_workspace_connection_gate(page, secrets, subject, api_client_error=None):
+def _render_workspace_connection_gate(
+    page, secrets, subject, api_client_error=None, show_heading=True
+):
     """Keep navigation visible while the owner completes or repairs YouTube authorization."""
     copy = {
         "Strategist": (
@@ -1703,14 +1706,15 @@ def _render_workspace_connection_gate(page, secrets, subject, api_client_error=N
             "metrics, traffic sources, and upload-level performance."
         ),
     }
-    st.markdown(
-        '<div class="asl-page-heading"><div class="asl-page-title">'
-        + html.escape(page)
-        + '</div><p class="asl-page-subtitle">'
-        + html.escape(copy.get(page, copy["Strategist"]))
-        + "</p></div>",
-        unsafe_allow_html=True,
-    )
+    if show_heading:
+        st.markdown(
+            '<div class="asl-page-heading"><div class="asl-page-title">'
+            + html.escape(page)
+            + '</div><p class="asl-page-subtitle">'
+            + html.escape(copy.get(page, copy["Strategist"]))
+            + "</p></div>",
+            unsafe_allow_html=True,
+        )
     with st.container(border=True):
         st.subheader("Connect YouTube to continue")
         st.write(
@@ -1871,11 +1875,16 @@ def main():
             if load_message:
                 st.session_state["optimizer_open_error"] = load_message
             else:
-                st.session_state["strategist_pending_instruction"] = (
+                default_optimizer_instruction = (
                     "Create a proposal to improve this video's title, description, "
                     "relevant hashtags, and tags. Use only facts supported by the target "
                     "transcript and existing metadata. Do not promise CTR or invent chapters. "
                     "Keep the title and description natural and useful for a viewer."
+                )
+                st.session_state["strategist_pending_instruction"] = (
+                    st.session_state.pop(
+                        "studio_export_pending_instruction", default_optimizer_instruction
+                    )
                 )
         except Exception:
             st.session_state["optimizer_open_error"] = (
@@ -2012,9 +2021,22 @@ def main():
                 st.logout()
 
     if not credentials or api_client_error:
-        _render_workspace_connection_gate(
-            page, secrets, subject, api_client_error=api_client_error
-        )
+        if page == "Analytics":
+            st.markdown(
+                '<div class="asl-page-heading"><div class="asl-page-title">'
+                'Channel analytics</div><p class="asl-page-subtitle">'
+                'Upload your own Studio reports for deeper, evidence-based analysis.</p></div>',
+                unsafe_allow_html=True,
+            )
+            _render_studio_export_analysis()
+            _render_workspace_connection_gate(
+                page, secrets, subject, api_client_error=api_client_error,
+                show_heading=False,
+            )
+        else:
+            _render_workspace_connection_gate(
+                page, secrets, subject, api_client_error=api_client_error
+            )
         return
 
     optimizer_error = st.session_state.pop("optimizer_open_error", None)
@@ -2059,6 +2081,7 @@ def main():
             unsafe_allow_html=True,
         )
         st.caption("Read-only performance reports and optimization evidence.")
+        _render_studio_export_analysis()
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
         with st.container():
