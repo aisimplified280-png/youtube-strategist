@@ -44,14 +44,20 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
-    html, body, [class*="css"], [class*="st-"] {
+    html, body {
         font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
         -webkit-font-smoothing: antialiased;
     }
 
+    /* Apply typography to text components without breaking Streamlit's internal icon fonts */
+    .stMarkdown, .stButton button, .stTextInput input, .stTextArea textarea, 
+    .stSelectbox, .stRadio, .stDateInput, [class*="asl-"] {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
     .block-container {
         max-width: 960px;
-        padding-top: 3.25rem;
+        padding-top: 5rem;
         padding-bottom: 5.5rem;
     }
 
