@@ -98,7 +98,7 @@ The primary navigation is a row of three normal Streamlit buttons with additiona
 - **Thumbnail review workflow.** No thumbnail comparison, generation, upload, or thumbnail-change approval flow exists in the app today. It needs a separate design before adding controls; do not present it as already supported.
 - **Retention analysis.** The current Analytics view has average view duration and engagement measures, not a full audience-retention curve or drop-off analysis.
 - **Improve the first-run Analytics state.** Clearly differentiate “no report yet”, delayed Reporting API reach data, missing rows, and genuine zero values. Never fill missing CTR with an estimate.
-- **Expand Studio import formats and metric families.** CSV/TSV/text exports cover the primary workflow; XLSX/ZIP and revenue-specific analysis remain future work.
+- **Expand Studio metric families.** CSV/TSV/TXT and `.xlsx` imports are supported; ZIP bundles and revenue-specific analysis remain future work.
 
 ### P2 — trust and repeat use
 - **Durable conversation and audit history.** Current chat/audit state is session-bound; optional sheet memory covers scans and approved experiments, not every interaction.
@@ -125,6 +125,6 @@ The primary navigation is a row of three normal Streamlit buttons with additiona
 - [ ] No metadata write occurs before approval of the exact proposal.
 - [ ] Find videos and Analytics both provide a direct route to review the selected video in Strategist.
 - [ ] Missing CTR/rows stay unavailable and have a clear explanation.
-- [ ] Studio CSV/TSV exports can be analysed and the selected video's compact metrics can reach Strategist only after an explicit owner action.
+- [ ] Studio CSV/TSV/TXT and `.xlsx` exports can be analysed. One prioritized action is shown at a time; Do it drafts, Skip advances, and YouTube only changes after exact-proposal approval.
 - [ ] Retention-only reports can be attached to an exact video ID, URL, or title; the curve is not treated as a causal explanation.
 - [ ] Mobile navigation buttons remain below the host header and do not render underneath it.
