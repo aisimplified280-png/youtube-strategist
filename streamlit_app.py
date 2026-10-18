@@ -262,7 +262,7 @@ def _render_same_tab_oauth_link(label, authorization_url, help_text):
     safe_label = html.escape(label)
     safe_url = html.escape(authorization_url, quote=True)
     st.markdown(
-        f'<a class="asl-oauth-link" href="{safe_url}" target="_self" rel="noreferrer">'
+        f'<a class="asl-oauth-link" href="{safe_url}" target="_top" rel="noreferrer">'
         f'{safe_label}</a>',
         unsafe_allow_html=True,
     )
