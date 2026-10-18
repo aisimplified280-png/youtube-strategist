@@ -1,8 +1,10 @@
 """Streamlit Community Cloud entry point for AI Simplified Lab YouTube Strategist."""
 
 import copy
+import csv
 import difflib
 import html
+import io
 import json
 from datetime import date, timedelta
 
@@ -24,6 +26,7 @@ import oauth_token_store
 import youtube_analytics_connector as connector
 import youtube_dashboard
 import strategist_chat
+import studio_export_analyzer
 
 # Google rejects combined YouTube + Drive-file authorization requests.
 # Keep these as two separate grants and keep the tokens separate as well.
@@ -1362,6 +1365,326 @@ def _render_recent_opportunities(
                 st.session_state["pending_optimizer_video_url"] = candidate["url"]
                 st.session_state["asl_pending_workspace"] = "Strategist"
                 st.rerun()
+
+
+
+def _render_studio_export_analysis():
+    """Upload, inspect, and analyse Studio exports locally within the current app session."""
+    st.subheader("Upload YouTube Studio exports")
+    st.caption(
+        "Use exported Analytics reports to add real CTR, watch-time, average-viewed and "
+        "retention evidence that may not be available in the connected API reports."
+    )
+    with st.expander("How to export a report from YouTube Studio", expanded=False):
+        st.markdown(
+            "1. Open [YouTube Studio](https://studio.youtube.com/) and select **Analytics**.\n"
+            "2. Open **Advanced mode** or **See more**.\n"
+            "3. Choose the video, date range, breakdown and metrics you want.\n"
+            "4. Select **Export current view** and download CSV (or TSV if offered).\n\n"
+            "Useful reports: Content/video performance with Views, Impressions, CTR, "
+            "Average view duration and Average percentage viewed; a daily report for trends; "
+            "and the audience-retention report for the video's retention curve."
+        )
+        st.caption(
+            "Official instructions: [YouTube Help — Advanced mode and exports]"
+            "(https://support.google.com/youtube/answer/9717005)."
+        )
+
+    uploaded_files = st.file_uploader(
+        "Choose Studio CSV/TSV reports",
+        type=["csv", "tsv", "txt"],
+        accept_multiple_files=True,
+        key="studio_export_uploads",
+        help="You can select multiple exports. Files are parsed in memory and aren't written to disk.",
+    )
+    button_columns = st.columns([1, 1, 2])
+    with button_columns[0]:
+        analyze_clicked = st.button(
+            "Analyze exports",
+            type="primary",
+            use_container_width=True,
+            disabled=not bool(uploaded_files),
+            key="analyze_studio_exports",
+        )
+    with button_columns[1]:
+        clear_clicked = st.button(
+            "Clear analysis",
+            use_container_width=True,
+            disabled=not bool(st.session_state.get("studio_export_reports")),
+            key="clear_studio_exports",
+        )
+    if clear_clicked:
+        st.session_state.pop("studio_export_reports", None)
+        st.session_state.pop("studio_export_evidence_index", None)
+        st.rerun()
+
+    if analyze_clicked and uploaded_files:
+        results = []
+        errors = []
+        for uploaded in uploaded_files:
+            try:
+                parsed = studio_export_analyzer.parse_studio_export(
+                    uploaded.name, uploaded.getvalue()
+                )
+                results.append(studio_export_analyzer.analyze_studio_export(parsed))
+            except studio_export_analyzer.StudioExportError as error:
+                errors.append(f"**{uploaded.name}:** {error}")
+            except Exception:
+                errors.append(
+                    f"**{uploaded.name}:** The file couldn't be analysed safely. "
+                    "Try exporting it again as CSV/TSV."
+                )
+        st.session_state["studio_export_reports"] = results
+        st.session_state["studio_export_evidence_index"] = (
+            studio_export_analyzer.build_evidence_index(results)
+        )
+        st.session_state["studio_export_upload_errors"] = errors
+        st.rerun()
+
+    for error in st.session_state.pop("studio_export_upload_errors", []):
+        st.warning(error)
+
+    reports = st.session_state.get("studio_export_reports", [])
+    if not reports:
+        st.info(
+            "Upload one or more CSV/TSV reports and select **Analyze exports**. "
+            "You can still use the live Analytics dashboard below without uploading anything."
+        )
+        return
+
+    video_count = sum(report.get("video_count", 0) for report in reports)
+    st.caption(
+        f"{len(reports)} report(s) analysed · {video_count} video/report matches · "
+        "source files are not saved by this app"
+    )
+
+    summary_fields = (
+        ("views", "Views"),
+        ("watch_time_minutes", "Watch time (min)"),
+        ("impressions", "Impressions"),
+        ("subscribers_gained", "Subscribers gained"),
+    )
+    combined = {}
+    for key, _ in summary_fields:
+        values = [
+            report["summary"][key]
+            for report in reports
+            if isinstance(report.get("summary", {}).get(key), (int, float))
+        ]
+        if values:
+            combined[key] = sum(values)
+    if combined:
+        metric_columns = st.columns(min(4, len(combined)))
+        display = [(key, label, combined[key]) for key, label in summary_fields if key in combined]
+        for column, (key, label, value) in zip(metric_columns, display):
+            column.metric(label, f"{value:,.0f}")
+        st.caption(
+            "These totals are the sum of each uploaded report. They may overlap if you exported "
+            "the same metric and date range more than once; compare individual files before combining totals."
+        )
+
+    table_rows = []
+    for report_index, report in enumerate(reports):
+        labels = {
+            "retention": "Audience retention",
+            "video_performance": "Video performance / reach",
+            "daily_trend": "Daily trend",
+            "traffic_sources": "Traffic sources",
+            "analytics_table": "Analytics table",
+        }
+        label = labels.get(report.get("report_type"), "Analytics table")
+        title = f"{report['filename']} · {label} · {report['record_count']} rows"
+        with st.expander(title, expanded=report_index == 0):
+            source_metrics = ", ".join(report.get("fields", []))
+            st.caption(f"Detected report type: {label} · Header row: {report['header_row']}")
+            st.caption(f"Recognized fields: {source_metrics or 'none'}")
+            if report.get("ignored_headers"):
+                st.caption(
+                    "Other columns not interpreted automatically: "
+                    + ", ".join(report["ignored_headers"][:16])
+                )
+
+            if report.get("summary"):
+                summary_items = list(report["summary"].items())
+                summary_columns = st.columns(min(4, len(summary_items)))
+                for column, (metric, value) in zip(summary_columns, summary_items):
+                    human_label = {
+                        "views": "Views",
+                        "watch_time_minutes": "Watch time (min)",
+                        "impressions": "Impressions",
+                        "likes": "Likes",
+                        "comments": "Comments",
+                        "shares": "Shares",
+                        "subscribers_gained": "Subscribers gained",
+                        "subscribers_lost": "Subscribers lost",
+                    }.get(metric, metric.replace("_", " ").title())
+                    column.metric(human_label, f"{value:,.0f}")
+
+            retention_rows = report.get("retention_rows", [])
+            absolute_curve = [
+                {
+                    "Elapsed time": row.get("elapsed_label") or str(row.get("elapsed_seconds")),
+                    "Audience retention (%)": row.get("retention_percent"),
+                }
+                for row in retention_rows
+                if isinstance(row.get("retention_percent"), (int, float))
+            ]
+            relative_curve = [
+                {
+                    "Elapsed time": row.get("elapsed_label") or str(row.get("elapsed_seconds")),
+                    "Relative retention index": row.get("relative_retention_index"),
+                }
+                for row in retention_rows
+                if isinstance(row.get("relative_retention_index"), (int, float))
+            ]
+            if absolute_curve:
+                st.markdown("**Audience retention curve**")
+                st.line_chart(
+                    absolute_curve,
+                    x="Elapsed time",
+                    y="Audience retention (%)",
+                    use_container_width=True,
+                )
+            if relative_curve:
+                st.markdown("**Relative retention index**")
+                st.line_chart(
+                    relative_curve,
+                    x="Elapsed time",
+                    y="Relative retention index",
+                    use_container_width=True,
+                )
+                st.caption(
+                    "Relative retention is an index against typical viewing behaviour, not "
+                    "the literal percentage of your viewers still watching."
+                )
+
+            recommendations = report.get("recommendations", [])
+            if recommendations:
+                st.markdown("**What the report suggests reviewing**")
+                for recommendation_index, recommendation in enumerate(recommendations, start=1):
+                    st.markdown(
+                        f"**{recommendation.get('priority', 'Review')} · "
+                        f"{recommendation.get('title', 'Review this report')}**"
+                    )
+                    st.write(recommendation.get("evidence", ""))
+                    st.caption("Next step: " + recommendation.get("action", ""))
+
+            videos = report.get("video_rows", [])
+            if videos:
+                st.markdown("**Video-level metrics found**")
+                visible_metrics = (
+                    ("video_title", "Video"),
+                    ("video_id", "Video ID"),
+                    ("views", "Views"),
+                    ("watch_time_minutes", "Watch time (min)"),
+                    ("average_view_duration_seconds", "Avg. view duration (sec)"),
+                    ("average_view_percentage", "Avg. viewed (%)"),
+                    ("impressions", "Impressions"),
+                    ("ctr_percent", "CTR (%)"),
+                    ("subscribers_gained", "Subs gained"),
+                    ("subscribers_lost", "Subs lost"),
+                    ("date_start", "From"),
+                    ("date_end", "Through"),
+                )
+                selected_metrics = [
+                    (key, label) for key, label in visible_metrics
+                    if any(row.get(key) is not None for row in videos)
+                ]
+                st.dataframe(
+                    [
+                        {
+                            label: (
+                                f"{row[key]:,.2f}" if isinstance(row.get(key), float)
+                                else f"{row[key]:,}" if isinstance(row.get(key), (int, float))
+                                else row.get(key)
+                            )
+                            for key, label in selected_metrics
+                        }
+                        for row in videos
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                table_rows.extend(
+                    {
+                        "Source file": report["filename"],
+                        "Video": row.get("video_title"),
+                        "Video ID": row.get("video_id"),
+                        "Views": row.get("views"),
+                        "Watch time (min)": row.get("watch_time_minutes"),
+                        "Avg view duration (sec)": row.get("average_view_duration_seconds"),
+                        "Avg viewed (%)": row.get("average_view_percentage"),
+                        "Impressions": row.get("impressions"),
+                        "CTR (%)": row.get("ctr_percent"),
+                        "Subs gained": row.get("subscribers_gained"),
+                        "Subs lost": row.get("subscribers_lost"),
+                        "From": row.get("date_start"),
+                        "Through": row.get("date_end"),
+                    }
+                    for row in videos
+                )
+                st.markdown("**Send a selected video to Strategist**")
+                for row_index, row in enumerate(videos[:10]):
+                    action_columns = st.columns([4, 1])
+                    action_columns[0].markdown(
+                        f"**{row.get('video_title') or row.get('video_id') or 'Video row'}**"
+                    )
+                    facts = []
+                    if isinstance(row.get("views"), (int, float)):
+                        facts.append(f"{row['views']:,.0f} views")
+                    if isinstance(row.get("ctr_percent"), (int, float)):
+                        facts.append(f"{row['ctr_percent']:.2f}% CTR")
+                    if isinstance(row.get("average_view_percentage"), (int, float)):
+                        facts.append(f"{row['average_view_percentage']:.1f}% average viewed")
+                    if facts:
+                        action_columns[0].caption(" · ".join(facts))
+                    if action_columns[1].button(
+                        "Review",
+                        key=f"studio_export_review_{report_index}_{row_index}",
+                        use_container_width=True,
+                    ):
+                        video_id = row.get("video_id")
+                        video_title = str(row.get("video_title") or "")
+                        if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id)):
+                            reference = f"https://www.youtube.com/watch?v={video_id}"
+                        elif video_title:
+                            safe_title = video_title.replace("”", "").replace("“", "")
+                            reference = f'video title: “{safe_title}”'
+                        else:
+                            st.warning(
+                                "This report row has neither a video ID nor a title that can "
+                                "identify an owned upload. Use a video URL in Strategist instead."
+                            )
+                            continue
+                        st.session_state["pending_optimizer_video_url"] = reference
+                        st.session_state["studio_export_pending_instruction"] = (
+                            "Review the title, description, relevant hashtags and separate tags "
+                            "using the uploaded Studio performance evidence attached to this video. "
+                            "Explain what the metrics support and what they cannot prove. Do not "
+                            "claim that a metric proves a metadata or thumbnail change caused it."
+                        )
+                        st.session_state["asl_workspace"] = "Strategist"
+                        st.rerun()
+
+    if table_rows:
+        output = io.StringIO()
+        fields = list(table_rows[0])
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(table_rows)
+        st.download_button(
+            "Download analyzed video table (CSV)",
+            data=output.getvalue().encode("utf-8-sig"),
+            file_name="studio_export_analysis.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_studio_export_analysis",
+        )
+    st.caption(
+        "Analysis is based only on columns detected in each upload. It does not infer missing "
+        "CTR, treat missing values as zero, or claim that a correlation proves causation. "
+        "Uploaded files and extracted metrics aren't saved to your Google account by this workflow."
+    )
 
 
 def _render_workspace_connection_gate(page, secrets, subject, api_client_error=None):
