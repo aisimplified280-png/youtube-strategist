@@ -72,8 +72,21 @@ NUMERIC_FIELDS = {
 }
 
 
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
 class StudioExportError(ValueError):
     """Raised when an upload is unsupported or has no recognizable report header."""
+
+
+def safe_csv_export_value(value):
+    """Neutralize spreadsheet formula prefixes in user-visible text before CSV download."""
+    if not isinstance(value, str):
+        return value
+    if value.lstrip(" 	
+").startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
 
 
 def _norm(value: str) -> str:
@@ -209,6 +222,10 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
     suffix = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
     if suffix not in {"csv", "tsv", "txt"}:
         raise StudioExportError("Upload a YouTube Studio CSV or TSV export. Excel workbooks are not supported yet.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise StudioExportError(
+            "This file exceeds the 10 MB per-file limit. Export a narrower date range or split the report."
+        )
     text = _decode_upload(data)
     if not text.strip():
         raise StudioExportError("This file is empty.")
