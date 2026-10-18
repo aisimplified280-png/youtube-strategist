@@ -1376,10 +1376,10 @@ def _render_studio_export_analysis():
         "retention evidence that may not be available in the connected API reports."
     )
     st.caption(
-        "Files are analysed in this session and aren't saved to Drive or disk by this workflow. "
-        "If you select Review in Strategist, only the selected video's compact metrics, source "
-        "file label and date range are included in the configured AI-provider request; the raw "
-        "uploaded file is not sent."
+        "Files are analysed in this session and are not saved to Drive, OneDrive, or disk. "
+        "Excel/OneDrive files must be downloaded and uploaded here; direct Microsoft account "
+        "access is not connected yet. If you choose Do it, only that video's compact metrics, "
+        "source label, and date range are sent to the configured AI provider—the raw file is not sent."
     )
     with st.expander("How to export a report from YouTube Studio", expanded=False):
         st.markdown(
@@ -1397,11 +1397,11 @@ def _render_studio_export_analysis():
         )
 
     uploaded_files = st.file_uploader(
-        "Choose Studio CSV/TSV reports",
-        type=["csv", "tsv", "txt"],
+        "Choose Studio reports (CSV, TSV, or XLSX)",
+        type=["csv", "tsv", "txt", "xlsx"],
         accept_multiple_files=True,
         key="studio_export_uploads",
-        help="You can select multiple exports. Files are parsed in memory and aren't written to disk.",
+        help="Select one or more CSV/TSV reports or Excel .xlsx workbooks. Files are parsed in memory.",
     )
     button_columns = st.columns([1, 1, 2])
     with button_columns[0]:
@@ -1422,6 +1422,7 @@ def _render_studio_export_analysis():
     if clear_clicked:
         st.session_state.pop("studio_export_reports", None)
         st.session_state.pop("studio_export_evidence_index", None)
+        st.session_state.pop("studio_export_skipped_actions", None)
         st.rerun()
 
     if analyze_clicked and uploaded_files:
@@ -1444,6 +1445,7 @@ def _render_studio_export_analysis():
         st.session_state["studio_export_evidence_index"] = (
             studio_export_analyzer.build_evidence_index(results)
         )
+        st.session_state.pop("studio_export_skipped_actions", None)
         st.session_state["studio_export_upload_errors"] = errors
         st.rerun()
 
@@ -1466,8 +1468,8 @@ def _render_studio_export_analysis():
         )
     if not reports:
         st.info(
-            "Upload one or more CSV/TSV reports and select **Analyze exports**. "
-            "You can still use the live Analytics dashboard below without uploading anything."
+            "Upload one or more YouTube Studio CSV/TSV reports or .xlsx workbooks and select "
+            "**Analyze exports**. You can still use the live Analytics dashboard below without uploading anything."
         )
         return
 
@@ -1482,53 +1484,158 @@ def _render_studio_export_analysis():
         "automatically combine totals from different files."
     )
 
-    priority_order = {"High": 0, "Review": 1, "Opportunity": 2, "Monitor": 3, "Context": 4}
+    priority_order = {"High": 0, "Review": 1, "Opportunity": 2}
     export_actions = []
     for report in reports:
         for recommendation in report.get("recommendations", []):
-            export_actions.append((priority_order.get(recommendation.get("priority"), 5),
-                                   report.get("filename", "Studio export"), recommendation))
-    export_actions.sort(key=lambda item: (item[0], item[1], item[2].get("title", "")))
-    if export_actions:
-        st.subheader("Prioritized actions from your exports")
-        st.caption(
-            "These are evidence-backed review ideas, not promises of growth. Start with "
-            "the measured issue and re-check the same metric after any approved experiment."
+            priority = recommendation.get("priority", "Context")
+            video_id = recommendation.get("video_id")
+            video_title = recommendation.get("video_title")
+            if priority not in priority_order or not (video_id or video_title):
+                continue
+            if video_id and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id)):
+                video_id = None
+            if not video_id and not str(video_title or "").strip():
+                continue
+            measured = recommendation.get("measured_metrics") or {}
+            reach = (
+                measured.get("impressions")
+                if measured.get("ctr_percent") is not None
+                else measured.get("views")
+            )
+            try:
+                reach = float(reach) if reach is not None else 0.0
+            except (TypeError, ValueError):
+                reach = 0.0
+            action_id = json.dumps(
+                [
+                    report.get("filename", "Studio export"),
+                    video_id or "",
+                    str(video_title or ""),
+                    recommendation.get("title", ""),
+                    recommendation.get("evidence", ""),
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            export_actions.append({
+                "id": action_id,
+                "priority_rank": priority_order[priority],
+                "priority": priority,
+                "reach": reach,
+                "source_file": report.get("filename", "Studio export"),
+                "video_id": video_id,
+                "video_title": video_title,
+                "recommendation": recommendation,
+            })
+
+    # Within a priority tier, measured reach breaks ties; this is ordering, not a growth score.
+    export_actions.sort(
+        key=lambda item: (
+            item["priority_rank"],
+            -item["reach"],
+            item["source_file"],
+            item["recommendation"].get("title", ""),
         )
-        for action_index, (priority_rank, source_file, recommendation) in enumerate(export_actions[:8]):
-            with st.container(border=True):
-                st.markdown(
-                    f"**{recommendation.get('priority', 'Review')} · "
-                    f"{recommendation.get('title', 'Review this report')}**"
+    )
+    skipped_actions = set(st.session_state.get("studio_export_skipped_actions", []))
+    remaining_actions = [
+        action for action in export_actions if action["id"] not in skipped_actions
+    ]
+    if remaining_actions:
+        action = remaining_actions[0]
+        recommendation = action["recommendation"]
+        measured = recommendation.get("measured_metrics") or {}
+        st.subheader("Your next best action")
+        with st.container(border=True):
+            st.markdown(f"### {recommendation.get('title', 'Review this video')}")
+            st.caption(
+                f"{action['priority']} priority · Evidence from {action['source_file']}"
+            )
+            st.write(recommendation.get("evidence", ""))
+            st.markdown("**Suggested next step**")
+            st.write(recommendation.get("action", "Review this video using its measured performance."))
+            if measured.get("ctr_percent") is not None and measured.get("impressions") is not None:
+                median_ctr = measured.get("median_ctr_percent")
+                comparison = (
+                    f" · upload-set median {median_ctr:.2f}%"
+                    if isinstance(median_ctr, (int, float)) else ""
                 )
-                st.caption(f"Source report: {source_file}")
-                st.write(recommendation.get("evidence", ""))
-                st.caption("Next step: " + recommendation.get("action", ""))
-                video_id = recommendation.get("video_id")
-                video_title = recommendation.get("video_title")
-                if (video_id or video_title) and recommendation.get("priority") in {"High", "Review"}:
-                    if st.button(
-                        "Review in Strategist",
-                        key=f"studio_action_to_strategist_{action_index}",
-                    ):
-                        if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id)):
-                            reference = f"https://www.youtube.com/watch?v={video_id}"
-                        elif video_title:
-                            safe_title = str(video_title).replace("”", "").replace("“", "")
-                            reference = f'video title: “{safe_title}”'
-                        else:
-                            reference = None
-                        if reference:
-                            st.session_state["pending_optimizer_video_url"] = reference
-                            st.session_state["studio_export_pending_instruction"] = (
-                                f"Review this video's metadata using the uploaded Studio evidence. "
-                                f"The measured review signal is: {recommendation.get('title', 'metadata review')}. "
-                                "Explain what the evidence supports and what it cannot prove. "
-                                "Use transcript/current metadata for content claims; do not claim a "
-                                "metric proves that metadata caused the result."
-                            )
-                            st.session_state["asl_workspace"] = "Strategist"
-                            st.rerun()
+                st.caption(
+                    f"Measured: {measured['impressions']:,.0f} impressions · "
+                    f"{measured['ctr_percent']:.2f}% CTR{comparison}. "
+                    "Used to prioritize review, not to predict a CTR increase."
+                )
+            elif measured.get("average_view_percentage") is not None:
+                median_viewed = measured.get("median_average_view_percentage")
+                comparison = (
+                    f" · upload-set median {median_viewed:.1f}%"
+                    if isinstance(median_viewed, (int, float)) else ""
+                )
+                st.caption(
+                    f"Measured: {measured.get('views', 0):,.0f} views · "
+                    f"{measured['average_view_percentage']:.1f}% average viewed{comparison}."
+                )
+            st.caption(
+                "Do it opens Strategist and drafts a proposal. Nothing on YouTube changes until "
+                "you review the exact title, description, and tags and select **Approve and apply**."
+            )
+            do_col, skip_col, rest_col = st.columns([1.5, 1, 2])
+            with do_col:
+                do_action = st.button(
+                    "Do it — build proposal",
+                    key="studio_next_action_do_it",
+                    type="primary",
+                    use_container_width=True,
+                )
+            with skip_col:
+                skip_action = st.button(
+                    "Skip",
+                    key="studio_next_action_skip",
+                    use_container_width=True,
+                )
+            with rest_col:
+                st.caption(
+                    f"{len(remaining_actions)} actionable suggestion(s) remain. "
+                    "Skip advances to the next one."
+                )
+
+            if do_action:
+                if action["video_id"]:
+                    reference = f"https://www.youtube.com/watch?v={action['video_id']}"
+                else:
+                    safe_title = str(action["video_title"]).replace("”", "").replace("“", "")
+                    reference = f'video title: “{safe_title}”'
+                signal = recommendation.get("title", "performance review")
+                st.session_state["pending_optimizer_video_url"] = reference
+                st.session_state["studio_export_pending_instruction"] = (
+                    "Create a complete, ready-to-review optimization proposal for this video. "
+                    f"The highest-priority measured signal is: {signal}. "
+                    f"Evidence: {recommendation.get('evidence', '')} "
+                    "Use the attached Studio metrics only as numeric evidence, not as proof of cause. "
+                    "Use the video's current metadata and target transcript for content facts. "
+                    "Propose a title, description with relevant hashtags, and separate YouTube tags where justified. "
+                    "If the signal concerns retention or pacing, explain that metadata alone may not fix it "
+                    "and include a practical content-level recommendation; do not pretend the app can edit "
+                    "the video or its thumbnail. Do not apply anything. I must approve the exact metadata proposal."
+                )
+                st.session_state["asl_workspace"] = "Strategist"
+                st.rerun()
+            if skip_action:
+                skipped_actions.add(action["id"])
+                st.session_state["studio_export_skipped_actions"] = list(skipped_actions)
+                st.rerun()
+    elif export_actions:
+        st.info("You've reviewed or skipped every actionable suggestion in this upload set.")
+        if st.button("Review suggestions again", key="studio_reset_skipped_actions"):
+            st.session_state.pop("studio_export_skipped_actions", None)
+            st.rerun()
+    else:
+        st.info(
+            "I couldn't rank a video-specific action from these files yet. Upload a Content/Reach "
+            "report with a video title or ID, Views, Impressions, CTR, Average view duration, and "
+            "Average percentage viewed where available. Missing metrics stay unavailable; they are not zero."
+        )
 
     table_rows = []
     for report_index, report in enumerate(reports):
@@ -1542,9 +1649,11 @@ def _render_studio_export_analysis():
         }
         label = labels.get(report.get("report_type"), "Analytics table")
         title = f"{report['filename']} · {label} · {report['record_count']} rows"
-        with st.expander(title, expanded=report_index == 0):
+        with st.expander(title, expanded=False):
             source_metrics = ", ".join(report.get("fields", []))
-            st.caption(f"Detected report type: {label} · Header row: {report['header_row']}")
+            source_sheet = report.get("source_sheet")
+            sheet_note = f" · Worksheet: {source_sheet}" if source_sheet else ""
+            st.caption(f"Detected report type: {label} · Header row: {report['header_row']}{sheet_note}")
             st.caption(f"Recognized fields: {source_metrics or 'none'}")
             if report.get("ignored_headers"):
                 st.caption(
@@ -1724,9 +1833,9 @@ def _render_studio_export_analysis():
             key="download_studio_export_analysis",
         )
     st.caption(
-        "Analysis is based only on columns detected in each upload. It does not infer missing "
-        "CTR, treat missing values as zero, or claim that a correlation proves causation. "
-        "Uploaded files and extracted metrics aren't saved to your Google account by this workflow."
+        "Analysis uses only detected columns. Missing CTR is not inferred or treated as zero, and "
+        "correlation is not treated as causation. Uploaded workbooks and extracted metrics stay in "
+        "this app session; the app does not save them back to Google Drive or OneDrive."
     )
 
 
