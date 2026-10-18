@@ -331,12 +331,11 @@ def _youtube_urls_from_message(message):
 def _youtube_references_from_message(message):
     """Extract YouTube links and bare 11-character video IDs in the order provided."""
     return re.findall(
-        r"https?://(?:www\\.)?(?:youtube\\.com|m\\.youtube\\.com|youtu\\.be)/[^\\s<>()]+"
+        r"https?://(?:www\.)?(?:youtube\.com|m\.youtube\.com|youtu\.be)/[^\s<>()]+"
         r"|(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])",
         message or "",
         flags=re.IGNORECASE,
     )
-
 
 def _load_conversation_videos(youtube, secrets, message):
     """Load target/reference links supplied in chat; no setup form is required."""
