@@ -1480,7 +1480,9 @@ def main():
             '<div class="asl-sidebar-brand">✳ AI Simplified Lab</div>',
             unsafe_allow_html=True,
         )
-        if st.button("New chat", key="asl_new_chat", use_container_width=True):
+        if st.session_state.get("asl_workspace", "Strategist") == "Strategist" and st.button(
+            "New chat", key="asl_new_chat", use_container_width=True
+        ):
             for key in (
                 "strategist_target_reference",
                 "strategist_chat_history",
@@ -1671,16 +1673,6 @@ def main():
             "The YouTube metadata update was verified, but the experiment was not saved "
             "to durable memory. " + experiment_memory_error
         )
-
-    memory_setup_error = st.session_state.get("memory_store_setup_error")
-    if memory_credentials and memory_setup_error:
-        st.error(
-            "Google authorization succeeded, but the memory spreadsheet could not be "
-            "created or verified. " + memory_setup_error
-        )
-        if st.button("Retry spreadsheet setup", key="retry_memory_setup"):
-            st.session_state["memory_store_setup_attempted"] = False
-            st.rerun()
 
     if page == "Strategist":
         st.markdown(
