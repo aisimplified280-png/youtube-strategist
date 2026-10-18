@@ -710,6 +710,21 @@ def build_evidence_index(reports: list[dict]) -> dict:
             if row.get("video_title"):
                 keys.append(title_evidence_key(row["video_title"]))
             matched_curve = next((curves[key] for key in keys if key in curves), [])
+            report_recommendations = report.get("recommendations", [])
+            if report.get("report_type") == "retention":
+                matching_recommendations = report_recommendations[:5]
+            else:
+                matching_recommendations = [
+                    recommendation for recommendation in report_recommendations
+                    if (
+                        (row.get("video_id") and recommendation.get("video_id") == row.get("video_id"))
+                        or (
+                            row.get("video_title")
+                            and recommendation.get("video_title")
+                            and _norm(row["video_title"]) == _norm(recommendation["video_title"])
+                        )
+                    )
+                ][:5]
             evidence = {
                 "source_file": filename,
                 "report_type": report.get("report_type"),
@@ -724,7 +739,7 @@ def build_evidence_index(reports: list[dict]) -> dict:
                 "date_start": row.get("date_start"),
                 "date_end": row.get("date_end"),
                 "retention_curve": matched_curve[:80],
-                "recommendations": report.get("recommendations", [])[:5],
+                "recommendations": matching_recommendations,
             }
             for key in keys:
                 index.setdefault(key, [])
