@@ -337,7 +337,8 @@ def _youtube_references_from_message(message):
         flags=re.IGNORECASE,
     )
     id_pattern = re.compile(
-        r"\b(?:video|target|reference)\s+id\s*[:=]\s*([A-Za-z0-9_-]{11})\b",
+        r"\b(?:(?:video|target|reference)\s+id|(?:my|target|this|the)\s+video)"
+        r"\s*[:=]\s*([A-Za-z0-9_-]{11})\b",
         flags=re.IGNORECASE,
     )
     entries.extend(
@@ -657,7 +658,7 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
             flags=re.IGNORECASE | re.DOTALL,
         )
         clean_instruction = re.sub(
-            r"\b(my video|target video|reference video|reference|target)\s*[:=-]?\s*",
+            r"\b(my video|target video|reference video|this video|the video|reference|target)\s*[:=-]?\s*",
             " ",
             clean_instruction,
             flags=re.IGNORECASE,
