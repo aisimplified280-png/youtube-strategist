@@ -203,6 +203,30 @@ class StudioExportAnalyzerTests(unittest.TestCase):
         self.assertEqual(len(evidence[0]["retention_curve"]), 3)
         self.assertEqual(evidence[0]["source_file"], "retention.csv")
 
+    def test_opportunity_recommendation_keeps_measured_reach_for_ranking(self):
+        videos = [
+            {"video_title": "One", "video_id": "aaaaaaaaaaa", "views": 100,
+             "average_view_percentage": 50.0, "ctr_percent": None, "impressions": None},
+            {"video_title": "Two", "video_id": "bbbbbbbbbbb", "views": 200,
+             "average_view_percentage": 60.0, "ctr_percent": None, "impressions": None},
+            {"video_title": "Three", "video_id": "ccccccccccc", "views": 300,
+             "average_view_percentage": 70.0, "ctr_percent": None, "impressions": None},
+            {"video_title": "Four", "video_id": "ddddddddddd", "views": 400,
+             "average_view_percentage": 80.0, "ctr_percent": None, "impressions": None},
+        ]
+        recommendations = studio._performance_recommendations(videos)
+        opportunities = [
+            item for item in recommendations if item["priority"] == "Opportunity"
+        ]
+        self.assertEqual(len(opportunities), 2)
+        self.assertEqual(
+            max(
+                opportunities,
+                key=lambda item: item["measured_metrics"]["views"],
+            )["measured_metrics"]["views"],
+            400,
+        )
+
     def test_low_ctr_recommendation_uses_only_measured_impressions(self):
         videos = [
             {"video_title": "One", "video_id": "aaaaaaaaaaa", "ctr_percent": 2.0, "impressions": 10000,
