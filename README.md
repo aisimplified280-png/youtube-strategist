@@ -204,17 +204,16 @@ transcription service. Edit or reject any suggestion that does not fit the video
 2. In Google Cloud Console, select or create a project and enable **YouTube Data API v3**,
    **YouTube Analytics API**, and **YouTube Reporting API**. Configure the OAuth consent screen
    with the owner account as a test user while the app is in testing mode.
-3. Create an OAuth client of type **Web application**. For the current Streamlit Community Cloud
-   hosted route, register both full authorized redirect URIs (replace `<app-name>` with your exact
-   deployed hostname):
-   - `https://<app-name>.streamlit.app/~/+/oauth2callback` for Streamlit's Google sign-in.
-   - `https://<app-name>.streamlit.app/~/+/` for the YouTube Analytics/Data API authorization callback.
+3. Create an OAuth client of type **Web application**. Register both exact redirect URIs
+   (replace `<app-name>` with your deployed app hostname):
+   - `https://<app-name>.streamlit.app/~/+/oauth2callback` for Streamlit's built-in Google sign-in.
+   - `https://<app-name>.streamlit.app/~/+/` for the app's separate YouTube Analytics/Data API OAuth flow.
 
-   Streamlit's public documentation has historically shown the unprefixed `/oauth2callback` URI,
-   but a reported Community Cloud routing change requires the hosted `/~/+/` prefix in some deployments.
-   Use the exact external callback route exposed by your deployed app. The same web-client ID and secret
-   are used for both flows. Register `http://localhost:8501/oauth2callback` and
-   `http://localhost:8501/` too only if you will test the app locally.
+   The deployed Community Cloud route prefix is used for these hosted callbacks; the local
+   development URLs remain `http://localhost:8501/oauth2callback` and `http://localhost:8501/`.
+   Use the same Web application client ID and secret for both flows. When the app initiates
+   YouTube or memory authorization, it navigates the top-level browser context to Google so the
+   consent page is not trapped inside the embedded Streamlit app frame.
 4. In Streamlit Community Cloud, create an app from your GitHub repository and set the app file
    path to `streamlit_app.py`. Select Python 3.12 in the deployment's advanced settings. The
    dependencies are in [requirements.txt](requirements.txt).
