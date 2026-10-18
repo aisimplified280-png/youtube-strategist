@@ -35,11 +35,12 @@ class StudioExportAnalyzerTests(unittest.TestCase):
             "Video title\tViews\tImpressions\tImpressions click-through rate\n"
             "One video\t250\t1000\t4.5%\n"
             "Two video\t200\t800\t3.2%\n"
+            "Three video\t200\t900\t2.8%\n"
         ).encode("utf-8")
         parsed = studio.parse_studio_export("reach.tsv", payload)
         report = studio.analyze_studio_export(parsed)
         self.assertEqual(parsed["delimiter"], "tab")
-        self.assertEqual(report["summary"]["views"], 450)
+        self.assertEqual(report["summary"]["views"], 650)
         self.assertNotIn("watch_time_minutes", report["summary"])
         self.assertTrue(any("CTR" in item["evidence"] for item in report["recommendations"]))
 
