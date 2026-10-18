@@ -355,7 +355,7 @@ def _youtube_references_from_message(message):
     bare_id = value.strip().strip('"\'“”')
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", bare_id):
         return [bare_id]
-    return None
+    return []
 
 def _quoted_title_reference(message):
     """Extract an explicitly quoted target title so instructions are not mistaken for a title."""
@@ -639,7 +639,7 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
         for reference_value in urls[:2]:
             clean_instruction = clean_instruction.replace(reference_value, " ").strip()
         clean_instruction = re.sub(
-            r"\b(?:video|target|reference)\s+id\s*[:=]\s*[A-Za-z0-9_-]{11}\b",
+            r"\b(?:video|target|reference)\s+id\s*[:=]?\s*(?:[A-Za-z0-9_-]{11})?",
             " ",
             clean_instruction,
             flags=re.IGNORECASE,
