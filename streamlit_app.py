@@ -1376,6 +1376,12 @@ def _render_studio_export_analysis():
         "Use exported Analytics reports to add real CTR, watch-time, average-viewed and "
         "retention evidence that may not be available in the connected API reports."
     )
+    st.caption(
+        "Files are analysed in this session and aren't saved to Drive or disk by this workflow. "
+        "If you select Review in Strategist, only the selected video's compact metrics, source "
+        "file label and date range are included in the configured AI-provider request; the raw "
+        "uploaded file is not sent."
+    )
     with st.expander("How to export a report from YouTube Studio", expanded=False):
         st.markdown(
             "1. Open [YouTube Studio](https://studio.youtube.com/) and select **Analytics**.\n"
@@ -1446,6 +1452,19 @@ def _render_studio_export_analysis():
         st.warning(error)
 
     reports = st.session_state.get("studio_export_reports", [])
+    if reports and uploaded_files:
+        cached_names = [report.get("filename") for report in reports]
+        selected_names = [uploaded.name for uploaded in uploaded_files]
+        if cached_names != selected_names:
+            st.warning(
+                "Your selected files differ from the last analysis. Select **Analyze exports** "
+                "to replace the results with the current upload selection."
+            )
+    elif reports and not uploaded_files:
+        st.caption(
+            "Showing the last processed analysis from this session. Upload and analyse another "
+            "set, or clear the analysis to remove the displayed results."
+        )
     if not reports:
         st.info(
             "Upload one or more CSV/TSV reports and select **Analyze exports**. "
