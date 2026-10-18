@@ -40,8 +40,21 @@ st.markdown(
     <style>
     .block-container {
         max-width: 980px;
-        padding-top: 1.1rem;
+        /* Keep workspace controls clear of Streamlit's sticky top header. */
+        padding-top: 4.25rem;
         padding-bottom: 5.5rem;
+    }
+    .asl-workspace-nav {
+        margin: .2rem 0 1.35rem;
+        padding-bottom: .7rem;
+        border-bottom: 1px solid rgba(128, 128, 128, .22);
+    }
+    .asl-workspace-nav-label {
+        font-size: .68rem;
+        font-weight: 720;
+        letter-spacing: .13em;
+        opacity: .62;
+        margin: 0 0 .45rem .1rem;
     }
     [data-testid="stSidebar"] {
         border-right: 1px solid rgba(128, 128, 128, .22);
@@ -129,10 +142,19 @@ st.markdown(
     }
     @media (max-width: 640px) {
         .block-container {
-            padding-top: .7rem;
+            /* Streamlit's header still occupies space on narrow screens. */
+            padding-top: 3.65rem;
             padding-bottom: 4.8rem;
             padding-left: .8rem;
             padding-right: .8rem;
+        }
+        .asl-workspace-nav {
+            margin-bottom: 1rem;
+        }
+        .asl-workspace-nav [data-testid="stButton"] button {
+            padding-left: .25rem;
+            padding-right: .25rem;
+            font-size: .84rem;
         }
         .asl-page-heading { margin-bottom: 1rem; }
         .asl-page-subtitle { font-size: .87rem; }
@@ -1540,14 +1562,23 @@ def main():
 
     if st.session_state.get("asl_workspace") not in {"Strategist", "Find videos", "Analytics"}:
         st.session_state["asl_workspace"] = "Strategist"
-    page = st.segmented_control(
-        "Workspace",
-        options=["Strategist", "Find videos", "Analytics"],
-        key="asl_workspace",
-        label_visibility="collapsed",
+    page = st.session_state["asl_workspace"]
+    st.markdown(
+        '<div class="asl-workspace-nav"><div class="asl-workspace-nav-label">'
+        'WORKSPACES</div></div>',
+        unsafe_allow_html=True,
     )
-    if page is None:
-        page = "Strategist"
+    nav_columns = st.columns(3, gap="small")
+    for column, workspace in zip(nav_columns, ("Strategist", "Find videos", "Analytics")):
+        with column:
+            if st.button(
+                workspace,
+                key=f"asl_workspace_nav_{workspace.casefold().replace(' ', '_')}",
+                type="primary" if page == workspace else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state["asl_workspace"] = workspace
+                st.rerun()
 
     with st.sidebar:
         st.caption("YouTube: Connected" if credentials else "YouTube: Not connected")
