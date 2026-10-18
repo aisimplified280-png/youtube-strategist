@@ -1,6 +1,6 @@
 # YouTube Studio Export Analysis
 
-The hosted dashboard's **Analytics** workspace includes an optional uploader for CSV/TSV reports and `.xlsx` Excel workbooks exported from YouTube Studio. Use it when Studio contains a metric or breakdown that is missing from the live API dashboard.
+The hosted dashboard's single **Creator Studio** screen includes an optional importer for CSV/TSV reports and `.xlsx` Excel workbooks exported from YouTube Studio. Use it when Studio contains a metric or breakdown that is missing from the live API dashboard.
 
 ## How to export from Studio
 
@@ -33,14 +33,14 @@ Keep the relevant breakdown column with views, watch time or viewer percentage. 
 - It finds the table header even when Studio has added report-title/date-range lines before it.
 - It parses supported columns and displays which columns were recognized and which were ignored.
 - It keeps separate files separate, warns when a changed file selection has not been re-analysed, and does not silently sum multiple report totals (their date ranges may overlap).
-- It ranks video-specific actions and shows one next-best action at a time. **Do it** opens Strategist to draft a proposal; **Skip** advances without applying a change.
+- It ranks video-specific actions and shows one next-best action at a time. The action card uses a readable video title, shows the measured reason and priority, and offers **Do it** or **Skip**. **Do it** opens the video proposal inline on the same Creator Studio screen; **Skip** advances without applying a change.
 - It keeps detailed report diagnostics collapsed until opened, and provides a per-video metrics table and cleaned CSV download.
-- It can attach selected video metrics to the Strategist context so the AI can use numeric performance evidence while preparing a metadata proposal. A retention curve can also be attached manually to a selected video.
+- It attaches selected video metrics to the inline proposal context so the AI can use numeric performance evidence while preparing metadata. A retention curve can also be attached manually to a selected video.
 - It does not automatically edit, publish, or change any YouTube setting. The existing exact-proposal approval gate still applies.
 
 ## Privacy and evidence boundaries
 
-Uploaded bytes are parsed in the current Streamlit session and this feature does not write source files to disk or Google Drive. Normalized metrics remain in server-side session state until the session ends or the analysis is cleared. **When you choose Review in Strategist, the compact evidence for that video (including source filename/date range and recognized metrics) is sent with the prompt to the configured AI provider (Groq first, Gemini fallback when configured). The raw uploaded file is not sent by this workflow.** Do not upload data you aren't comfortable processing through the app's configured AI provider.
+Uploaded bytes are parsed in the current Streamlit session and this feature does not write source files to disk, Google Drive, or OneDrive. Direct access to Microsoft Excel/OneDrive is not connected; download the workbook first and upload it manually. OneDrive access requires a separately configured Microsoft Graph/OAuth grant. Normalized metrics remain in server-side session state until the session ends or the analysis is cleared. **When you choose Do it, the compact evidence for that video (including source filename/date range and recognized metrics) is sent with the prompt to the configured AI provider (Groq first, Gemini fallback when configured). The raw uploaded file is not sent by this workflow.** Do not upload data you aren't comfortable processing through the app's configured AI provider.
 
 Only recognized metrics are used. Unknown columns are disclosed rather than guessed. CTR is never estimated from views. A metric correlation or relative comparison is never described as proof that a title, thumbnail, edit, or upload time caused a performance result.
 
