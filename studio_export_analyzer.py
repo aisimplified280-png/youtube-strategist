@@ -613,6 +613,12 @@ def _performance_recommendations(videos):
                 ),
                 "video_id": row.get("video_id"),
                 "video_title": row.get("video_title"),
+                "measured_metrics": {
+                    "views": row.get("views"),
+                    "average_view_percentage": row.get("average_view_percentage"),
+                    "median_views": views_midpoint,
+                    "median_average_view_percentage": retention_midpoint,
+                },
             })
 
     if not recommendations:
