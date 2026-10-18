@@ -108,6 +108,49 @@ class StudioExportAnalyzerTests(unittest.TestCase):
         by_title = studio.find_video_evidence(index, None, "AI Basics")
         self.assertEqual(len(by_title), 2)
 
+    def test_traffic_source_breakdown_surfaces_the_leading_reported_source(self):
+        payload = (
+            "Traffic source,Views,Watch time (hours)\n"
+            "Shorts feed,500,20\n"
+            "YouTube Search,200,15\n"
+            "External,100,5\n"
+        ).encode("utf-8")
+        parsed = studio.parse_studio_export("traffic.csv", payload)
+        report = studio.analyze_studio_export(parsed)
+        self.assertEqual(report["report_type"], "traffic_sources")
+        self.assertIn("Shorts feed", report["recommendations"][0]["title"])
+        self.assertIn("62.5%", report["recommendations"][0]["evidence"])
+
+    def test_total_row_is_not_double_counted_with_video_detail(self):
+        payload = (
+            "Video title,Views\n"
+            "Video One,100\n"
+            "Video Two,200\n"
+            "Total,300\n"
+        ).encode("utf-8")
+        report = studio.analyze_studio_export(
+            studio.parse_studio_export("content.csv", payload)
+        )
+        self.assertEqual(report["summary"]["views"], 300)
+        self.assertEqual(report["video_count"], 2)
+
+    def test_manual_retention_attachment_indexes_curve_by_video_id(self):
+        payload = (
+            "Elapsed video time,Audience retention\n"
+            "0:00,100%\n"
+            "0:10,85%\n"
+            "0:20,70%\n"
+        ).encode("utf-8")
+        report = studio.analyze_studio_export(
+            studio.parse_studio_export("retention.csv", payload)
+        )
+        index = studio.build_evidence_index([report])
+        studio.add_manual_retention_evidence(index, report, "https://youtu.be/abcdefghijk")
+        evidence = studio.find_video_evidence(index, "abcdefghijk", None)
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(len(evidence[0]["retention_curve"]), 3)
+        self.assertEqual(evidence[0]["source_file"], "retention.csv")
+
     def test_low_ctr_recommendation_uses_only_measured_impressions(self):
         videos = [
             {"video_title": "One", "video_id": "aaaaaaaaaaa", "ctr_percent": 2.0, "impressions": 10000,
