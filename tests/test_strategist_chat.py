@@ -32,6 +32,97 @@ class StrategistChatTests(unittest.TestCase):
             "Improve the title and description of this video"
         ))
 
+    def test_extract_video_references_accepts_links_and_bare_ids_in_order(self):
+        references = strategist_chat._youtube_references_from_message(
+            "Review https://youtu.be/abcdefghijk against video ID: zyxwvutsrqp"
+        )
+        self.assertEqual(references, ["https://youtu.be/abcdefghijk", "zyxwvutsrqp"])
+
+    def test_extract_video_references_does_not_treat_ordinary_words_as_ids(self):
+        self.assertEqual(
+            strategist_chat._youtube_references_from_message(
+                "Improve description and metadata for my latest upload"
+            ),
+            [],
+        )
+
+    def test_extract_bare_video_id(self):
+        self.assertEqual(
+            strategist_chat._youtube_references_from_message("abcdefghijk"),
+            ["abcdefghijk"],
+        )
+
+    def test_extract_explicit_quoted_title(self):
+        self.assertEqual(
+            strategist_chat._quoted_title_reference(
+                'Improve metadata for video title: "My Exact Video Title"'
+            ),
+            "My Exact Video Title",
+        )
+
+    def test_load_target_video_by_bare_id(self):
+        session_state = {}
+        target_snippet = {"title": "My video", "description": "A test", "tags": []}
+        with patch("strategist_chat.st.session_state", session_state), patch(
+            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
+        ), patch(
+            "strategist_chat._transcript_text",
+            return_value=("", "No accessible transcript; analysis uses public metadata only."),
+        ):
+            context, error = strategist_chat._load_conversation_videos(
+                Mock(), {}, "Improve this video: abcdefghijk"
+            )
+        self.assertIsNone(error)
+        self.assertEqual(context["target_id"], "abcdefghijk")
+
+    def test_load_target_video_by_quoted_title(self):
+        session_state = {}
+        target_snippet = {"title": "My Exact Video Title", "description": "A test", "tags": []}
+        with patch("strategist_chat.st.session_state", session_state), patch(
+            "strategist_chat.connector._resolve_video",
+            return_value={"id": "abcdefghijk", "snippet": target_snippet},
+        ) as resolve_video, patch(
+            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
+        ), patch(
+            "strategist_chat._transcript_text",
+            return_value=("", "No accessible transcript; analysis uses public metadata only."),
+        ):
+            context, error = strategist_chat._load_conversation_videos(
+                Mock(), {}, 'Improve the description for video title: "My Exact Video Title"'
+            )
+        self.assertIsNone(error)
+        self.assertEqual(context["target_id"], "abcdefghijk")
+        resolve_video.assert_called_once()
+        self.assertEqual(resolve_video.call_args.args[1], "My Exact Video Title")
+
+    def test_load_target_title_with_optional_reference_url(self):
+        session_state = {}
+        target_snippet = {"title": "My Exact Video Title", "description": "A test", "tags": []}
+        with patch("strategist_chat.st.session_state", session_state), patch(
+            "strategist_chat.connector._resolve_video",
+            return_value={"id": "abcdefghijk", "snippet": target_snippet},
+        ) as resolve_video, patch(
+            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
+        ), patch(
+            "strategist_chat._video_snippet",
+            return_value={"title": "Public Reference", "description": "Reference"},
+        ), patch(
+            "strategist_chat._transcript_text",
+            side_effect=[
+                ("", "Target transcript unavailable."),
+                ("", "Reference transcript unavailable."),
+            ],
+        ):
+            context, error = strategist_chat._load_conversation_videos(
+                Mock(),
+                {},
+                'Improve video title: "My Exact Video Title" using https://youtu.be/zyxwvutsrqp',
+            )
+        self.assertIsNone(error)
+        self.assertEqual(context["target_id"], "abcdefghijk")
+        self.assertEqual(context["reference_id"], "zyxwvutsrqp")
+        resolve_video.assert_called_once()
+
     def test_load_target_video_without_reference(self):
         session_state = {}
         target_snippet = {"title": "My video", "description": "A test", "tags": []}

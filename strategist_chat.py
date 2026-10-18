@@ -328,17 +328,75 @@ def _youtube_urls_from_message(message):
     )
 
 
+def _youtube_references_from_message(message):
+    """Extract links, explicitly labelled video IDs, or a bare ID entered by itself."""
+    value = message or ""
+    entries = []
+    url_pattern = re.compile(
+        r"https?://(?:www\.)?(?:youtube\.com|m\.youtube\.com|youtu\.be)/[^\s<>()]+",
+        flags=re.IGNORECASE,
+    )
+    id_pattern = re.compile(
+        r"\b(?:(?:video|target|reference)\s+id|(?:my|target|this|the)\s+video)"
+        r"\s*[:=]\s*([A-Za-z0-9_-]{11})\b",
+        flags=re.IGNORECASE,
+    )
+    entries.extend(
+        (match.start(), match.end(), match.group(0))
+        for match in url_pattern.finditer(value)
+    )
+    entries.extend(
+        (match.start(), match.end(), match.group(1))
+        for match in id_pattern.finditer(value)
+    )
+    if entries:
+        entries.sort(key=lambda item: item[0])
+        return [item[2] for item in entries]
+
+    bare_id = value.strip().strip('"\'“”')
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", bare_id):
+        return [bare_id]
+    return []
+
+def _quoted_title_reference(message):
+    """Extract an explicitly quoted target title so instructions are not mistaken for a title."""
+    patterns = (
+        r'\b(?:video|target)\s+title\s*[:=]\s*"(.+?)"(?=\s|$)',
+        r"\b(?:video|target)\s+title\s*[:=]\s*“(.+?)”(?=\s|$)",
+        r'\b(?:my|target)\s+video\s*[:=]\s*"(.+?)"(?=\s|$)',
+        r"\b(?:my|target)\s+video\s*[:=]\s*“(.+?)”(?=\s|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, message or "", flags=re.IGNORECASE | re.DOTALL)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return None
+
 def _load_conversation_videos(youtube, secrets, message):
     """Load target/reference links supplied in chat; no setup form is required."""
-    urls = _youtube_urls_from_message(message)
-    if not urls:
+    urls = _youtube_references_from_message(message)
+    title_reference = _quoted_title_reference(message)
+    if not urls and not title_reference:
         return None, (
-            "Paste **your own YouTube video link** and tell me what you want to improve. "
-            "A reference video is optional. For example: “Improve my title and description.”"
+            "Paste your own YouTube video link or 11-character ID, or use "
+            'video title: "Exact current video title". Then tell me what you want to improve. '
+            "A reference video is optional."
         )
 
-    target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
-    reference_id = parse_video_id(urls[1].rstrip(".,!?;:")) if len(urls) >= 2 else None
+    if title_reference:
+        matched_video = connector._resolve_video(youtube, title_reference)
+        target_id = matched_video.get("id")
+        if not isinstance(target_id, str) or not target_id:
+            raise ValueError("The title match did not return a valid YouTube video ID.")
+        reference_position = 0
+    else:
+        target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
+        reference_position = 1
+    reference_id = (
+        parse_video_id(urls[reference_position].rstrip(".,!?;:"))
+        if len(urls) > reference_position
+        else None
+    )
     target_snippet = connector.fetch_video_snippet(youtube, target_id)
     target_transcript, target_transcript_status = _transcript_text(target_id)
     if reference_id:
@@ -427,7 +485,8 @@ def _apply_error_message(error):
 def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
     """Render a clean, chat-first editor with conversational setup and explicit approval."""
     st.caption(
-        "Paste your video link once, then ask for a better title, description, or tags. "
+        "Paste your video link or 11-character ID once, then ask for a better title, "
+        "description, or tags. "
         "A reference video is optional."
     )
 
@@ -541,16 +600,19 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
         with st.chat_message("user"):
             st.markdown(instruction)
 
-        urls = _youtube_urls_from_message(instruction)
+        urls = _youtube_references_from_message(instruction)
+        title_reference = _quoted_title_reference(instruction)
         context = st.session_state.get("strategist_target_reference")
-        if not context and not urls and _is_channel_opportunity_request(instruction):
+        if not context and not urls and not title_reference and _is_channel_opportunity_request(instruction):
             _append_history(history, "user", instruction)
             st.session_state["channel_analysis_request"] = instruction
             st.session_state["opportunity_auto_run"] = True
             st.session_state["asl_pending_workspace"] = "Find videos"
             st.rerun()
 
-        is_new_video_selection = len(urls) >= 2 or (bool(urls) and not context)
+        is_new_video_selection = (
+            len(urls) >= 2 or (bool(urls) and not context) or bool(title_reference)
+        )
         if len(urls) == 1 and context:
             try:
                 is_new_video_selection = (
@@ -579,23 +641,34 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
 
         history = st.session_state.setdefault("strategist_chat_history", [])
 
-        # Remove supplied video links from the instruction; the reference link is optional.
+        # Remove video selectors from the instruction; they identify context, not an edit request.
         clean_instruction = instruction
-        for url in urls[:2]:
-            clean_instruction = clean_instruction.replace(url, " ").strip()
+        for reference_value in urls[:2]:
+            clean_instruction = clean_instruction.replace(reference_value, " ").strip()
         clean_instruction = re.sub(
-            r"\b(my video|target video|reference video|reference|target)\s*[:=-]?\s*",
+            r"\b(?:video|target|reference)\s+id\s*[:=]?\s*(?:[A-Za-z0-9_-]{11})?",
+            " ",
+            clean_instruction,
+            flags=re.IGNORECASE,
+        )
+        clean_instruction = re.sub(
+            r"\b(?:video|target)\s+title\s*[:=]\s*[\"“].+?[\"”]",
+            " ",
+            clean_instruction,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        clean_instruction = re.sub(
+            r"\b(?:my|target)\s+video\s*[:=]\s*[\"“].+?[\"”]",
+            " ",
+            clean_instruction,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        clean_instruction = re.sub(
+            r"\b(my video|target video|reference video|this video|the video|reference|target)\s*[:=-]?\s*",
             " ",
             clean_instruction,
             flags=re.IGNORECASE,
         ).strip(" \t\r\n,;:-")
-        if not clean_instruction:
-            clean_instruction = (
-                "Analyze my video against the reference and suggest the strongest factual metadata improvements."
-                if context.get("reference_id")
-                else "Analyze my video and suggest the strongest factual metadata improvements."
-            )
-
         existing_proposal = st.session_state.get("strategist_chat_proposal")
         if existing_proposal and existing_proposal.get("target_id") != context["target_id"]:
             existing_proposal = None
@@ -699,28 +772,47 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
             st.markdown("### Review proposal")
             st.caption("Check the exact metadata below. Nothing changes until you approve it.")
 
-            st.markdown("**Title**")
-            st.markdown(
-                '<div class="asl-proposal-field">' +
-                html.escape(str(proposal["proposed"].get("title", ""))) +
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("**Description**")
-            st.markdown(
-                '<div class="asl-proposal-field">' +
-                html.escape(str(proposal["proposed"].get("description", ""))) +
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("**Tags**")
+            proposed_title = str(proposal["proposed"].get("title", ""))
+            proposed_description = str(proposal["proposed"].get("description", ""))
             tags = proposal["proposed"].get("tags", [])
+            tag_characters = len(", ".join(str(tag) for tag in tags))
+
+            st.markdown(f"**Title · {len(proposed_title)}/100 characters**")
             st.markdown(
                 '<div class="asl-proposal-field">' +
-                html.escape(", ".join(tags) if tags else "No tags proposed") +
+                html.escape(proposed_title) +
                 "</div>",
                 unsafe_allow_html=True,
             )
+            if len(proposed_title) > 100:
+                st.warning("This title exceeds YouTube's 100-character title limit.")
+
+            st.markdown(
+                f"**Description + hashtags · {len(proposed_description)}/5,000 characters**"
+            )
+            st.markdown(
+                '<div class="asl-proposal-field">' +
+                html.escape(proposed_description) +
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if len(proposed_description) > 5000:
+                st.warning("This description exceeds YouTube's 5,000-character description limit.")
+
+            st.markdown(
+                f"**YouTube tags (separate field) · {tag_characters}/500 tag characters**"
+            )
+            st.markdown(
+                '<div class="asl-proposal-field">' +
+                html.escape(", ".join(str(tag) for tag in tags) if tags else "No tags proposed") +
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if tag_characters > 500:
+                st.warning(
+                    "The combined tag text exceeds the usual 500-character limit. "
+                    "Ask the Strategist to shorten the tag list before approving."
+                )
 
             with st.expander("Compare with current metadata"):
                 st.markdown("**Current title**")
