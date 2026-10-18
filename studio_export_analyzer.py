@@ -49,6 +49,8 @@ HEADER_ALIASES = {
         "traffic source", "traffic source type", "youtube traffic source",
         "insight traffic source type",
     },
+    "search_term": {"search term", "top search terms", "youtube search term", "search query"},
+    "viewer_percentage": {"viewer percentage", "viewer percentage of total"},
     "geography": {"geography", "country", "country code", "region"},
     "age_group": {"age group", "viewer age", "age"},
     "gender": {"gender", "viewer gender"},
@@ -254,8 +256,8 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
         for field, index in columns.items():
             raw = str(row[index]).strip() if index < len(row) else ""
             label = header_labels.get(field, "")
-            if field in {"video_title", "video_id", "date", "traffic_source", "geography",
-                         "age_group", "gender", "device_type"}:
+            if field in {"video_title", "video_id", "date", "traffic_source", "search_term",
+                         "geography", "age_group", "gender", "device_type"}:
                 record[field] = raw or None
             elif field == "elapsed_time":
                 elapsed = _parse_elapsed(raw)
@@ -300,6 +302,8 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
         report_type = "video_performance"
     elif "traffic_source" in fields:
         report_type = "traffic_sources"
+    elif {"search_term", "geography", "age_group", "gender", "device_type"} & fields:
+        report_type = "breakdown"
     elif "date" in fields and ({"views", "watch_time"} & fields):
         report_type = "daily_trend"
     else:
@@ -496,6 +500,65 @@ def _is_total_row(row):
     return title in {"total", "overall", "all videos", "grand total"}
 
 
+def _breakdown_recommendations(records):
+    dimension = next(
+        (
+            field for field in (
+                "traffic_source", "search_term", "geography",
+                "age_group", "gender", "device_type",
+            )
+            if any(row.get(field) for row in records)
+        ),
+        None,
+    )
+    if not dimension:
+        return []
+    metric = next(
+        (
+            field for field in ("views", "watch_time_minutes", "viewer_percentage")
+            if any(isinstance(row.get(field), (int, float)) for row in records)
+        ),
+        None,
+    )
+    if not metric:
+        return [{
+            "priority": "Context",
+            "title": "A viewer/source breakdown was found, but no comparable metric was recognized",
+            "evidence": f"The report contains {dimension.replace('_', ' ')} values without a recognized views, watch-time or viewer-percentage column.",
+            "action": "Re-export the report with Views or Watch time selected, keeping the same breakdown.",
+        }]
+    groups = defaultdict(float)
+    for row in records:
+        label = row.get(dimension)
+        value = row.get(metric)
+        if label and isinstance(value, (int, float)):
+            groups[str(label)] += value
+    ranked = sorted(groups.items(), key=lambda item: item[1], reverse=True)
+    total = sum(value for _, value in ranked)
+    if not ranked or total <= 0:
+        return []
+    label, value = ranked[0]
+    share = value / total * 100
+    metric_label = {
+        "views": "reported views",
+        "watch_time_minutes": "reported watch time",
+        "viewer_percentage": "reported viewer percentage",
+    }[metric]
+    return [{
+        "priority": "Context",
+        "title": f"Highest reported {dimension.replace('_', ' ')}: {label}",
+        "evidence": (
+            f"{label} has {value:,.1f} {metric_label} ({share:.1f}% of values "
+            f"within this exported breakdown)."
+        ),
+        "action": (
+            "Use this as a research lead: inspect which videos, topics or audience needs "
+            "are associated with this segment. This report alone does not prove that the "
+            "segment caused performance or that it represents every viewer."
+        ),
+    }]
+
+
 def _daily_recommendations(records):
     if any(row.get("video_title") and not _is_total_row(row) for row in records):
         records = [row for row in records if not _is_total_row(row)]
@@ -556,6 +619,8 @@ def analyze_studio_export(parsed: dict) -> dict:
         recommendations = _retention_recommendations(records)
     elif parsed["report_type"] == "video_performance" or videos:
         recommendations = _performance_recommendations(videos)
+    elif parsed["report_type"] in {"traffic_sources", "breakdown"}:
+        recommendations = _breakdown_recommendations(records)
     elif "date" in fields:
         recommendations = _daily_recommendations(records)
 
@@ -603,12 +668,48 @@ def title_evidence_key(title: str) -> str:
     return "title:" + _norm(title)
 
 
+def title_evidence_key(title: str) -> str:
+    """Return the stable, punctuation-normalized key used for title-only matches."""
+    return "title:" + _norm(title)
+
+
+def _retention_curves_by_video(report):
+    curves = defaultdict(list)
+    for row in report.get("rows", []):
+        if not isinstance(row.get("retention_percent"), (int, float)) and not isinstance(
+            row.get("relative_retention_index"), (int, float)
+        ):
+            continue
+        point = {
+            "elapsed": row.get("elapsed_label"),
+            "elapsed_seconds": row.get("elapsed_seconds"),
+            "elapsed_percent": row.get("elapsed_percent"),
+            "retention_percent": row.get("retention_percent"),
+            "relative_retention_index": row.get("relative_retention_index"),
+        }
+        keys = []
+        if row.get("video_id"):
+            keys.append(f"id:{row['video_id']}")
+        if row.get("video_title"):
+            keys.append(title_evidence_key(row["video_title"]))
+        for key in keys:
+            curves[key].append(point)
+    return curves
+
+
 def build_evidence_index(reports: list[dict]) -> dict:
-    """Build an in-memory session index without summing potentially overlapping report periods."""
+    """Build a session index without merging metrics from potentially overlapping report periods."""
     index = {}
     for report in reports:
         filename = report.get("filename")
+        curves = _retention_curves_by_video(report)
         for row in report.get("video_rows", []):
+            keys = []
+            if row.get("video_id"):
+                keys.append(f"id:{row['video_id']}")
+            if row.get("video_title"):
+                keys.append(title_evidence_key(row["video_title"]))
+            matched_curve = next((curves[key] for key in keys if key in curves), [])
             evidence = {
                 "source_file": filename,
                 "report_type": report.get("report_type"),
@@ -622,15 +723,55 @@ def build_evidence_index(reports: list[dict]) -> dict:
                 "subscribers_lost": row.get("subscribers_lost"),
                 "date_start": row.get("date_start"),
                 "date_end": row.get("date_end"),
+                "retention_curve": matched_curve[:80],
+                "recommendations": report.get("recommendations", [])[:5],
             }
-            keys = []
-            if row.get("video_id"):
-                keys.append(f"id:{row['video_id']}")
-            if row.get("video_title"):
-                keys.append(title_evidence_key(row["video_title"]))
             for key in keys:
                 index.setdefault(key, [])
                 index[key].append(evidence)
+    return index
+
+
+def add_manual_retention_evidence(index: dict, report: dict, reference: str) -> dict:
+    """Attach a retention-only file to an explicitly supplied video ID, URL, or exact title."""
+    value = (reference or "").strip()
+    video_id = None
+    match = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", value)
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
+        video_id = value
+    elif match:
+        video_id = match.group(1)
+    title = None if video_id else value.strip('"\'“”')
+    if not video_id and not title:
+        raise StudioExportError("Enter a valid video URL/ID or the exact video title to attach this report.")
+
+    curves = []
+    for row in report.get("retention_rows", []):
+        if not isinstance(row.get("retention_percent"), (int, float)) and not isinstance(
+            row.get("relative_retention_index"), (int, float)
+        ):
+            continue
+        curves.append({
+            "elapsed": row.get("elapsed_label"),
+            "elapsed_seconds": row.get("elapsed_seconds"),
+            "elapsed_percent": row.get("elapsed_percent"),
+            "retention_percent": row.get("retention_percent"),
+            "relative_retention_index": row.get("relative_retention_index"),
+        })
+    if not curves:
+        raise StudioExportError("This report has no recognizable retention curve to attach.")
+
+    evidence = {
+        "source_file": report.get("filename"),
+        "report_type": report.get("report_type"),
+        "date_start": None,
+        "date_end": None,
+        "retention_curve": curves[:80],
+        "recommendations": report.get("recommendations", [])[:5],
+    }
+    key = f"id:{video_id}" if video_id else title_evidence_key(title)
+    index.setdefault(key, [])
+    index[key].append(evidence)
     return index
 
 
