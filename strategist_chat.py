@@ -328,13 +328,24 @@ def _youtube_urls_from_message(message):
     )
 
 
+def _youtube_references_from_message(message):
+    """Extract YouTube links and bare 11-character video IDs in the order provided."""
+    return re.findall(
+        r"https?://(?:www\\.)?(?:youtube\\.com|m\\.youtube\\.com|youtu\\.be)/[^\\s<>()]+"
+        r"|(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])",
+        message or "",
+        flags=re.IGNORECASE,
+    )
+
+
 def _load_conversation_videos(youtube, secrets, message):
     """Load target/reference links supplied in chat; no setup form is required."""
-    urls = _youtube_urls_from_message(message)
+    urls = _youtube_references_from_message(message)
     if not urls:
         return None, (
-            "Paste **your own YouTube video link** and tell me what you want to improve. "
-            "A reference video is optional. For example: “Improve my title and description.”"
+            "Paste **your own YouTube video link or 11-character video ID** and tell me "
+            "what you want to improve. A reference video is optional. For example: "
+            "“Improve my title and description.”"
         )
 
     target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
@@ -427,7 +438,8 @@ def _apply_error_message(error):
 def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
     """Render a clean, chat-first editor with conversational setup and explicit approval."""
     st.caption(
-        "Paste your video link once, then ask for a better title, description, or tags. "
+        "Paste your video link or 11-character ID once, then ask for a better title, "
+        "description, or tags. "
         "A reference video is optional."
     )
 
@@ -541,7 +553,7 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
         with st.chat_message("user"):
             st.markdown(instruction)
 
-        urls = _youtube_urls_from_message(instruction)
+        urls = _youtube_references_from_message(instruction)
         context = st.session_state.get("strategist_target_reference")
         if not context and not urls and _is_channel_opportunity_request(instruction):
             _append_history(history, "user", instruction)
