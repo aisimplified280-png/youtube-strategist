@@ -1,6 +1,6 @@
 # YouTube Studio Export Analysis
 
-The hosted dashboard's **Analytics** workspace includes an optional uploader for CSV/TSV reports exported from YouTube Studio. Use it when Studio contains a metric or breakdown that is missing from the live API dashboard.
+The hosted dashboard's **Analytics** workspace includes an optional uploader for CSV/TSV reports and `.xlsx` Excel workbooks exported from YouTube Studio. Use it when Studio contains a metric or breakdown that is missing from the live API dashboard.
 
 ## How to export from Studio
 
@@ -8,7 +8,7 @@ YouTube's current help page explains that exports are available in Analytics →
 
 https://support.google.com/youtube/answer/9717005
 
-The Studio interface is being updated gradually, so labels may differ slightly by account. Choose the video/channel, date range, breakdown and metrics first, then export the current view as CSV (or TSV when offered). Studio's Advanced Mode exports are limited in row count; use narrower date windows or split by video when the report is too large.
+The Studio interface is being updated gradually, so labels may differ slightly by account. Choose the video/channel, date range, breakdown and metrics first, then export the current view as CSV (or TSV when offered), or save the report as an `.xlsx` workbook if that is the format you have. Studio's Advanced Mode exports are limited in row count; use narrower date windows or split by video when the report is too large.
 
 ## Recommended report types
 
@@ -33,7 +33,8 @@ Keep the relevant breakdown column with views, watch time or viewer percentage. 
 - It finds the table header even when Studio has added report-title/date-range lines before it.
 - It parses supported columns and displays which columns were recognized and which were ignored.
 - It keeps separate files separate, warns when a changed file selection has not been re-analysed, and does not silently sum multiple report totals (their date ranges may overlap).
-- It provides a prioritized action list, a per-video metrics table, and a cleaned CSV of the analysed video table.
+- It ranks video-specific actions and shows one next-best action at a time. **Do it** opens Strategist to draft a proposal; **Skip** advances without applying a change.
+- It keeps detailed report diagnostics collapsed until opened, and provides a per-video metrics table and cleaned CSV download.
 - It can attach selected video metrics to the Strategist context so the AI can use numeric performance evidence while preparing a metadata proposal. A retention curve can also be attached manually to a selected video.
 - It does not automatically edit, publish, or change any YouTube setting. The existing exact-proposal approval gate still applies.
 
@@ -45,6 +46,7 @@ Only recognized metrics are used. Unknown columns are disclosed rather than gues
 
 ## Current scope
 
-- Accepted: CSV, TSV and text-delimited report exports.
-- Not yet supported: Excel workbooks (.xlsx), ZIP bundles, direct YouTube Studio account access, raw video-file uploads, thumbnail uploads, or automatic Studio synchronization.
+- Accepted: CSV, TSV, TXT and Excel `.xlsx` workbooks. Workbook parsing selects the worksheet with the strongest recognizable report header.
+- Not yet supported: ZIP bundles, direct YouTube Studio account access, direct Microsoft Excel/OneDrive browsing, raw video-file uploads, thumbnail uploads, or automatic Studio synchronization.
+- If a report is stored in Microsoft Excel/OneDrive, download the workbook and upload it here. Direct cloud access needs a separate Microsoft sign-in and file permission, which is not currently configured.
 - The parser currently focuses on audience growth and content performance; it does not interpret estimated revenue or monetization-specific columns.
