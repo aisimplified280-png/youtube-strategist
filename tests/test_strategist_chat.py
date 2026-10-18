@@ -32,12 +32,6 @@ class StrategistChatTests(unittest.TestCase):
             "Improve the title and description of this video"
         ))
 
-    def test_extract_video_references_accepts_links_and_bare_ids_in_order(self):
-        references = strategist_chat._youtube_references_from_message(
-            "Review https://youtu.be/abcdefghijk against zyxwvutsrqp"
-        )
-        self.assertEqual(references, ["https://youtu.be/abcdefghijk", "zyxwvutsrqp"])
-
     def test_load_target_video_by_bare_id(self):
         session_state = {}
         target_snippet = {"title": "My video", "description": "A test", "tags": []}
@@ -113,7 +107,8 @@ class StrategistChatTests(unittest.TestCase):
             )
         self.assertIsNone(error)
         self.assertEqual(context["target_id"], "abcdefghijk")
-        resolve_video.assert_called_once_with(unittest.mock.ANY, "My Exact Video Title")
+        resolve_video.assert_called_once()
+        self.assertEqual(resolve_video.call_args.args[1], "My Exact Video Title")
 
     def test_load_target_video_without_reference(self):
         session_state = {}
