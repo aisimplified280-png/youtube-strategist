@@ -888,12 +888,15 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
                 except Exception as error:
                     st.error(_apply_error_message(error))
                 else:
+                    # Persist the verified result across Streamlit reruns so the unified
+                    # Creator Studio can keep the approval confirmation beside the action.
+                    st.session_state["last_update_result"] = result
                     st.success(f"Verified update: {result['title']}")
                     try:
                         if memory_credentials is None:
                             raise content_memory.MemoryStoreError(
-                                "Private Strategist Memory is not connected. Open Find videos "
-                                "and connect memory separately to save this approved experiment."
+                                "Private Strategist Memory is not connected. Open Connections "
+                                "in the sidebar to connect it separately if you want to save this experiment."
                             )
                         memory_store = content_memory.GoogleSheetsMemoryStore.from_credentials(
                             memory_credentials
