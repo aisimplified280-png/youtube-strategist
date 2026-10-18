@@ -2055,7 +2055,25 @@ def main():
             ):
                 st.session_state.pop(key, None)
             st.session_state["asl_pending_workspace"] = "Strategist"
-            st.rerun()
+        # Secondary navigation: Insights and analytics secondary to the main conversation
+        current_view = st.session_state.get("asl_workspace", "Strategist")
+        view_names = {
+            "Strategist": "💬 Strategist (Chat)",
+            "Find videos": "🎯 Video Opportunities",
+            "Analytics": "📊 Channel Analytics",
+        }
+        with st.expander("Insights & Tools", expanded=(current_view != "Strategist")):
+            selected_view = st.radio(
+                "Secondary view",
+                options=("Strategist", "Find videos", "Analytics"),
+                index=("Strategist", "Find videos", "Analytics").index(current_view) if current_view in ("Strategist", "Find videos", "Analytics") else 0,
+                format_func=lambda v: view_names.get(v, v),
+                key="asl_sidebar_view_selector",
+                label_visibility="collapsed",
+            )
+            if selected_view != current_view:
+                st.session_state["asl_workspace"] = selected_view
+                st.rerun()
 
     api_client_error = None
     youtube = analytics = reporting = None
@@ -2107,19 +2125,6 @@ def main():
     if st.session_state.get("asl_workspace") not in {"Strategist", "Find videos", "Analytics"}:
         st.session_state["asl_workspace"] = "Strategist"
     page = st.session_state["asl_workspace"]
-    # Navigation row — no visible "WORKSPACES" heading per UX spec.
-    st.markdown('<div class="asl-workspace-nav"></div>', unsafe_allow_html=True)
-    nav_columns = st.columns(3, gap="small")
-    for column, workspace in zip(nav_columns, ("Strategist", "Find videos", "Analytics")):
-        with column:
-            if st.button(
-                workspace,
-                key=f"asl_workspace_nav_{workspace.casefold().replace(' ', '_')}",
-                type="primary" if page == workspace else "secondary",
-                use_container_width=True,
-            ):
-                st.session_state["asl_workspace"] = workspace
-                st.rerun()
 
     with st.sidebar:
         st.caption("YouTube: Connected" if credentials else "YouTube: Not connected")
@@ -2258,6 +2263,11 @@ def main():
             "The YouTube metadata update was verified, but the experiment was not saved "
             "to durable memory. " + experiment_memory_error
         )
+
+    if page != "Strategist":
+        if st.button("← Back to Strategist conversation", key="asl_return_to_chat"):
+            st.session_state["asl_workspace"] = "Strategist"
+            st.rerun()
 
     if page == "Strategist":
         st.markdown(

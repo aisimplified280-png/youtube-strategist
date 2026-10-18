@@ -202,6 +202,41 @@ class UXRefactorAcceptanceTests(unittest.TestCase):
         session_state.pop(approval_key, None)
         self.assertFalse(session_state.get(approval_key, False))
 
+    def test_top_level_workspace_buttons_removed_and_secondary_nav_added(self):
+        """The 3 equal workspace buttons at the top of the main container must be removed, replaced by secondary sidebar nav."""
+        with open("streamlit_app.py", "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertNotIn("asl_workspace_nav_", content)
+        self.assertIn("asl_sidebar_view_selector", content)
+        self.assertIn("asl_return_to_chat", content)
+
+    def test_conversation_history_preserved_when_loading_video_from_insights(self):
+        """Loading a video for optimization from Insights or Studio exports must not wipe chat history."""
+        from unittest.mock import patch, Mock
+        import strategist_chat
+
+        session_state = {
+            "strategist_chat_history": [
+                {"role": "user", "content": "How is my channel performing overall?"},
+                {"role": "assistant", "content": "Your latest videos have strong retention but low CTR."},
+            ]
+        }
+        target_snippet = make_snippet(title="Insight Candidate Video")
+        with patch("strategist_chat.st.session_state", session_state), patch(
+            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
+        ), patch(
+            "strategist_chat._transcript_text", return_value=("[00:00] Hello world", "Available")
+        ):
+            context, error = strategist_chat._load_conversation_videos(
+                Mock(), {}, "https://youtu.be/abcdefghijk"
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(context["target_id"], "abcdefghijk")
+        # History must NOT be cleared to empty list
+        self.assertEqual(len(session_state["strategist_chat_history"]), 2)
+        self.assertEqual(session_state["strategist_chat_history"][0]["role"], "user")
+
 
 if __name__ == "__main__":
     unittest.main()

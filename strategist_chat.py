@@ -430,7 +430,8 @@ def _load_conversation_videos(youtube, secrets, message):
         "transcript_status": transcript_status,
     }
     st.session_state["strategist_target_reference"] = context
-    st.session_state["strategist_chat_history"] = []
+    # Preserve existing conversation history when opening a video for optimization from Insights
+    st.session_state.setdefault("strategist_chat_history", [])
     st.session_state.pop("strategist_chat_proposal", None)
     st.session_state.pop("strategist_chat_digest", None)
     return context, None
