@@ -211,9 +211,10 @@ transcription service. Edit or reject any suggestion that does not fit the video
 
    The deployed Community Cloud route prefix is used for these hosted callbacks; the local
    development URLs remain `http://localhost:8501/oauth2callback` and `http://localhost:8501/`.
-   Use the same Web application client ID and secret for both flows. When the app initiates
-   YouTube or memory authorization, it navigates the top-level browser context to Google so the
-   consent page is not trapped inside the embedded Streamlit app frame.
+   Use the same Web application client ID and secret for both flows. The app uses Streamlit's
+   supported link-button widget to open YouTube or memory authorization in a separate tab; this
+   avoids top-level navigation blocked by the embedded frame's sandbox. The encrypted shared token
+   store lets that callback session save its grant where the original app tab can read it too.
 4. In Streamlit Community Cloud, create an app from your GitHub repository and set the app file
    path to `streamlit_app.py`. Select Python 3.12 in the deployment's advanced settings. The
    dependencies are in [requirements.txt](requirements.txt).
