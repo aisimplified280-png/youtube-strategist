@@ -468,6 +468,47 @@ def _performance_recommendations(videos):
                 "video_id": row.get("video_id"),
                 "video_title": row.get("video_title"),
             })
+    view_retention_rows = [
+        row for row in videos
+        if isinstance(row.get("views"), (int, float))
+        and isinstance(row.get("average_view_percentage"), (int, float))
+    ]
+    if len(view_retention_rows) >= 3:
+        views_midpoint = median(row["views"] for row in view_retention_rows)
+        retention_midpoint = median(
+            row["average_view_percentage"] for row in view_retention_rows
+        )
+        winners = [
+            row for row in view_retention_rows
+            if row["views"] >= views_midpoint
+            and row["average_view_percentage"] >= retention_midpoint
+        ]
+        for row in sorted(
+            winners,
+            key=lambda item: (
+                item["views"] / max(views_midpoint, 1)
+                + item["average_view_percentage"] / max(retention_midpoint, 1),
+            ),
+            reverse=True,
+        )[:2]:
+            recommendations.append({
+                "priority": "Opportunity",
+                "title": f"Study this stronger-viewing example: {row['video_title']}",
+                "evidence": (
+                    f"{row['views']:,.0f} reported views and "
+                    f"{row['average_view_percentage']:.1f}% average viewed; "
+                    f"the upload-set medians are {views_midpoint:,.0f} views and "
+                    f"{retention_midpoint:.1f}% average viewed."
+                ),
+                "action": (
+                    "Inspect the topic promise, opening structure, and traffic sources for "
+                    "patterns worth testing again. These metrics highlight a candidate to study; "
+                    "they do not prove what caused its performance."
+                ),
+                "video_id": row.get("video_id"),
+                "video_title": row.get("video_title"),
+            })
+
     if not recommendations:
         recommendations.append({
             "priority": "Context",
