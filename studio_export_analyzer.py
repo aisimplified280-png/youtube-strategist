@@ -40,9 +40,9 @@ HEADER_ALIASES = {
         "click through rate", "click-through rate", "video thumbnail impressions ctr",
         "thumbnail click through rate",
     },
-    "subscribers_gained": {"subscribers gained", "subscribers"},
+    "subscribers_gained": {"subscribers gained"},
     "subscribers_lost": {"subscribers lost"},
-    "likes": {"likes", "likes (vs dislikes)"},
+    "likes": {"likes"},
     "comments": {"comments", "comment count"},
     "shares": {"shares", "share count"},
     "traffic_source": {
@@ -58,7 +58,7 @@ HEADER_ALIASES = {
     },
     "retention_percent": {
         "audience retention", "audience retention percentage", "retention rate",
-        "audience watch ratio", "absolute audience retention",
+        "absolute audience retention",
     },
     "relative_retention": {"relative audience retention", "relative retention"},
 }
@@ -474,7 +474,31 @@ def _performance_recommendations(videos):
     return recommendations
 
 
+def _date_sort_key(value):
+    text = str(value or "").strip()
+    candidates = (
+        "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y",
+        "%m-%d-%Y", "%d-%m-%Y", "%b %d, %Y", "%B %d, %Y",
+    )
+    for pattern in candidates:
+        try:
+            return (0, datetime.strptime(text[:len(pattern) + 4], pattern).date().isoformat())
+        except (ValueError, TypeError):
+            continue
+    try:
+        return (0, datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat())
+    except (ValueError, TypeError):
+        return (1, text.casefold())
+
+
+def _is_total_row(row):
+    title = _norm(str(row.get("video_title") or ""))
+    return title in {"total", "overall", "all videos", "grand total"}
+
+
 def _daily_recommendations(records):
+    if any(row.get("video_title") and not _is_total_row(row) for row in records):
+        records = [row for row in records if not _is_total_row(row)]
     by_day = defaultdict(lambda: {"views": 0.0, "watch_time_minutes": 0.0})
     has_views = False
     has_watch = False
@@ -493,21 +517,23 @@ def _daily_recommendations(records):
                     has_views = True
                 if field == "watch_time_minutes":
                     has_watch = True
-    days = sorted(by_day)
+    days = sorted(by_day, key=_date_sort_key)
     recommendations = []
     if len(days) >= 6 and has_views:
         split = max(1, len(days) // 2)
         earlier = days[:split]
         later = days[split:]
-        left = sum(by_day[day]["views"] for day in earlier)
-        right = sum(by_day[day]["views"] for day in later)
+        left_total = sum(by_day[day]["views"] for day in earlier)
+        right_total = sum(by_day[day]["views"] for day in later)
+        left = left_total / len(earlier) if earlier else 0
+        right = right_total / len(later) if later else 0
         if left > 0 and later:
             delta = (right - left) / left * 100
             direction = "increased" if delta > 0 else "decreased"
             recommendations.append({
                 "priority": "Context",
-                "title": f"Views {direction} {abs(delta):.1f}% between the two halves of this export",
-                "evidence": f"Views sum to {left:,.0f} in the earlier half and {right:,.0f} in the later half across {len(days)} reported dates.",
+                "title": f"Average daily views {direction} {abs(delta):.1f}% between the two halves",
+                "evidence": f"Average daily views were {left:,.1f} in the earlier half ({left_total:,.0f} total) and {right:,.1f} in the later half ({right_total:,.0f} total) across {len(days)} reported dates.",
                 "action": "Compare uploads and traffic sources across those periods before attributing the change to any title, thumbnail, or publishing decision.",
             })
     if has_watch and len(days) >= 2 and not recommendations:
@@ -534,6 +560,9 @@ def analyze_studio_export(parsed: dict) -> dict:
         recommendations = _daily_recommendations(records)
 
     numeric_summary = {}
+    summary_records = records
+    if any(row.get("video_title") and not _is_total_row(row) for row in records):
+        summary_records = [row for row in records if not _is_total_row(row)]
     for display_name, key in (
         ("views", "views"),
         ("watch_time_minutes", "watch_time_minutes"),
@@ -544,7 +573,7 @@ def analyze_studio_export(parsed: dict) -> dict:
         ("subscribers_gained", "subscribers_gained"),
         ("subscribers_lost", "subscribers_lost"),
     ):
-        values = [row.get(key) for row in records if isinstance(row.get(key), (int, float))]
+        values = [row.get(key) for row in summary_records if isinstance(row.get(key), (int, float))]
         if values:
             numeric_summary[display_name] = sum(values)
 
