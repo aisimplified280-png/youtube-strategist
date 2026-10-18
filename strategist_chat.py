@@ -280,7 +280,7 @@ rationale (array of strings).
 
 Rules:
 - Return a complete title, description, and separate tags, but conservatism is more important than filling space.
-- The target title, existing target description, target tags, and TARGET TRANSCRIPT are the only evidence for claims about the target video.
+- The target title, existing target description, target tags, and TARGET TRANSCRIPT are the only evidence for claims about the video's content. Use STUDIO PERFORMANCE EVIDENCE only for numeric performance claims.
 - Reference metadata/transcript may inspire general presentation only. Never treat reference content as evidence that the target video covers a feature, step, claim, or example.
 - Never invent video sections, technical details, examples, learning outcomes, quotations, numbers, or promises.
 - NEVER invent timestamps or chapter markers. Do not add a timestamp/chapters section unless the user explicitly asks for chapters/timestamps, and then use only timecodes present in the TARGET TRANSCRIPT.
