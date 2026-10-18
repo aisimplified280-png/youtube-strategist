@@ -207,13 +207,13 @@ transcription service. Edit or reject any suggestion that does not fit the video
 3. Create an OAuth client of type **Web application**. Register both exact redirect URIs
    (replace `<app-name>` with your deployed app hostname):
    - `https://<app-name>.streamlit.app/~/+/oauth2callback` for Streamlit's built-in Google sign-in.
-   - `https://<app-name>.streamlit.app/` for the app's separate YouTube Analytics/Data API OAuth flow.
+   - `https://<app-name>.streamlit.app/~/+/` for the app's separate YouTube Analytics/Data API OAuth flow.
 
-   The `/~/+/oauth2callback` route is for Streamlit's native identity login. The app's separate
-   YouTube authorization uses the regular app root because its callback is handled by
-   `streamlit_app.py` via query parameters; do not use `/~/+/` as its redirect URI. The same
-   Web application client ID and secret are used for both flows. Register
-   `http://localhost:8501/oauth2callback` and `http://localhost:8501/` too only for local testing.
+   The deployed Community Cloud route prefix is used for these hosted callbacks; the local
+   development URLs remain `http://localhost:8501/oauth2callback` and `http://localhost:8501/`.
+   Use the same Web application client ID and secret for both flows. When the app initiates
+   YouTube or memory authorization, it navigates the top-level browser context to Google so the
+   consent page is not trapped inside the embedded Streamlit app frame.
 4. In Streamlit Community Cloud, create an app from your GitHub repository and set the app file
    path to `streamlit_app.py`. Select Python 3.12 in the deployment's advanced settings. The
    dependencies are in [requirements.txt](requirements.txt).
