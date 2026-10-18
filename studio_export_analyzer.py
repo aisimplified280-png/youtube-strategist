@@ -215,10 +215,12 @@ def _decode_upload(data: bytes) -> str:
     raise StudioExportError("Could not decode this file. Export it as CSV or TSV and upload again.")
 
 
-def _excel_cell_text(value):
-    """Convert an Excel cell into text without losing dates or numeric values."""
+def _excel_cell_text(value, number_format=""):
+    """Convert an Excel cell into text without losing dates, numeric values, or percents."""
     if value is None:
         return ""
+    if isinstance(value, (int, float)) and "%" in (number_format or ""):
+        return f"{value * 100:g}%"
     if isinstance(value, datetime):
         if value.time().hour == 0 and value.time().minute == 0 and value.time().second == 0:
             return value.date().isoformat()
@@ -250,8 +252,8 @@ def _read_xlsx_matrix(data: bytes) -> tuple[list[list[str]], str]:
     best_rank = None
     for worksheet in workbook.worksheets:
         matrix = [
-            [_excel_cell_text(value) for value in row]
-            for row in worksheet.iter_rows(values_only=True)
+            [_excel_cell_text(cell.value, cell.number_format) for cell in row]
+            for row in worksheet.iter_rows()
         ]
         best_header = None
         for row_index, row in enumerate(matrix[:60]):
