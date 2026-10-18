@@ -587,10 +587,64 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
         if reload_notice:
             st.info(reload_notice)
     else:
-        st.info(
-            "Start with one link to your YouTube video. Add an instruction in the same "
-            "message; a reference video is optional."
-        )
+        history = st.session_state.setdefault("strategist_chat_history", [])
+        if not history:
+            st.markdown(
+                """
+                <div class="asl-hero-card">
+                    <div class="asl-badge">✨ AI-Powered YouTube Growth</div>
+                    <div class="asl-hero-title">Optimize Video Metadata & Retention</div>
+                    <div class="asl-hero-subtitle">
+                        Paste any YouTube video link below to get started, or select a starter optimization action from your channel.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div class='asl-starter-heading'>⚡ Quick Optimizations</div>", unsafe_allow_html=True)
+            starter_col1, starter_col2 = st.columns(2, gap="small")
+            with starter_col1:
+                if st.button(
+                    "🎯 Fix Low CTR Videos\n\nScan channel for underperforming uploads",
+                    key="starter_low_ctr",
+                    use_container_width=True,
+                ):
+                    st.session_state["channel_analysis_request"] = "Find my lowest CTR videos this month that need improvement"
+                    st.session_state["opportunity_auto_run"] = True
+                    st.session_state["asl_workspace"] = "Find videos"
+                    st.rerun()
+                if st.button(
+                    "⚡ Optimize Latest Upload\n\nReview recent video metadata and title hook",
+                    key="starter_latest_upload",
+                    use_container_width=True,
+                ):
+                    st.session_state["channel_analysis_request"] = "Review my latest upload"
+                    st.session_state["opportunity_auto_run"] = True
+                    st.session_state["asl_workspace"] = "Find videos"
+                    st.rerun()
+            with starter_col2:
+                if st.button(
+                    "🏷️ SEO Keyword & Tag Audit\n\nExtract search-ranked tags from transcript",
+                    key="starter_tags_audit",
+                    use_container_width=True,
+                ):
+                    st.session_state["strategist_pending_instruction"] = (
+                        "Generate search-optimized YouTube tags and hashtags from the video transcript"
+                    )
+                    st.info("Paste your YouTube video link in the chat input below to begin!")
+                if st.button(
+                    "📊 Upload Studio Retention Data\n\nAttach retention curves to guide hooks",
+                    key="starter_studio_export",
+                    use_container_width=True,
+                ):
+                    st.session_state["asl_workspace"] = "Analytics"
+                    st.rerun()
+            st.caption("💡 Simply paste any YouTube link below (watch, short, or bare ID) along with your goal.")
+        else:
+            st.info(
+                "Start with one link to your YouTube video. Add an instruction in the same "
+                "message; a reference video is optional."
+            )
 
     quick_instruction = None
     if context:
