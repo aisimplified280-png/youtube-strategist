@@ -1902,6 +1902,7 @@ def main():
             use_container_width=True,
             column_config={
                 "title": st.column_config.TextColumn("Video"),
+                "views": st.column_config.NumberColumn("Views"),
                 "published_at": st.column_config.TextColumn("Published"),
                 "format": st.column_config.TextColumn("Format (duration-based)"),
                 "duration_seconds": st.column_config.NumberColumn("Duration (sec)"),
