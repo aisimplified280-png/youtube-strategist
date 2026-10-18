@@ -309,10 +309,12 @@ Every response is a proposal only. The app displays current and proposed title, 
 
 The chat history and approval audit are held in the current Streamlit session. They are not durable across session expiry. Do not enter secrets or other sensitive information in the chat.
 
-### Upload YouTube Studio exports
+### YouTube Studio analysis → one next action
 
-The Analytics workspace accepts multiple Studio CSV/TSV exports. Use Advanced Mode / See more → Export current view in YouTube Studio to upload video performance, reach, daily trends, audience retention, traffic source, search term or audience-segment reports. The analyser recognizes known metric headers, identifies retention drops for inspection, compares CTR only against measured impressions, highlights above-median viewing examples worth studying, and creates a prioritized action list plus a downloadable analysed-video table.
+The Analytics workspace accepts multiple Studio CSV/TSV/TXT reports and Excel .xlsx workbooks. Export the current view from YouTube Studio Advanced Mode / See more, or download your existing Excel workbook from OneDrive and upload it. Direct Microsoft account/OneDrive browsing is not connected yet.
 
-Selected performance metrics can be attached to a video's Strategist review. A retention-only export without a video title or ID can be manually associated with an exact video title, ID or URL. Overlapping reports remain separate; the app does not silently combine their totals. Missing CTR remains unavailable, and observed metrics are not treated as proof of causation.
+It identifies supported report columns, compares CTR only when real impressions are available, compares average percentage viewed, inspects audience-retention curves, and surfaces evidence-backed video-specific candidates. Instead of dumping a long list, the app presents **one next-best action at a time**. Choose **Do it — build proposal** to open the selected video in Strategist with compact measured evidence and generate a complete metadata proposal, or **Skip** to move to the next candidate.
 
-Uploaded source files aren't written to disk or Google Drive by this workflow. If **Review in Strategist** is selected, compact metrics, report source and dates are included in the configured AI-provider request; the raw uploaded file is not sent. See the detailed [Studio export guide](STUDIO_EXPORT_GUIDE.md). The current implementation supports CSV/TSV/text-delimited files, not Excel workbooks or ZIP bundles.
+Nothing changes on YouTube until you review the exact proposed title, description/hashtags and separate tags, then choose **Approve and apply**. CTR and viewing comparisons help prioritize a review; they do not prove a metadata change caused a result or predict future performance. Missing metrics remain unavailable, and overlapping source reports are never silently summed.
+
+Uploaded source files aren't written to disk, Google Drive or OneDrive by this workflow. When you select Do it, only that video's compact metrics, report source and dates are included in the configured AI-provider request; the raw workbook is not sent. Retention-only exports can still be associated with an exact video title, ID or URL. See the detailed [Studio export guide](STUDIO_EXPORT_GUIDE.md).
