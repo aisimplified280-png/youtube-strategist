@@ -49,9 +49,8 @@ st.markdown(
         padding-bottom: 5.5rem;
     }
     .asl-workspace-nav {
-        margin: .2rem 0 1.35rem;
-        padding-bottom: .7rem;
-        border-bottom: 1px solid rgba(128, 128, 128, .22);
+        margin: .2rem 0 .45rem;
+        padding-bottom: 0;
     }
     .asl-workspace-nav-label {
         font-size: .68rem;
@@ -1709,7 +1708,13 @@ def _render_studio_export_analysis():
         fields = list(table_rows[0])
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(table_rows)
+        writer.writerows([
+            {
+                key: studio_export_analyzer.safe_csv_export_value(value)
+                for key, value in row.items()
+            }
+            for row in table_rows
+        ])
         st.download_button(
             "Download analyzed video table (CSV)",
             data=output.getvalue().encode("utf-8-sig"),
