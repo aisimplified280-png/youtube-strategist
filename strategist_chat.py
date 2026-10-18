@@ -699,28 +699,47 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
             st.markdown("### Review proposal")
             st.caption("Check the exact metadata below. Nothing changes until you approve it.")
 
-            st.markdown("**Title**")
-            st.markdown(
-                '<div class="asl-proposal-field">' +
-                html.escape(str(proposal["proposed"].get("title", ""))) +
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("**Description**")
-            st.markdown(
-                '<div class="asl-proposal-field">' +
-                html.escape(str(proposal["proposed"].get("description", ""))) +
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("**Tags**")
+            proposed_title = str(proposal["proposed"].get("title", ""))
+            proposed_description = str(proposal["proposed"].get("description", ""))
             tags = proposal["proposed"].get("tags", [])
+            tag_characters = sum(len(str(tag)) for tag in tags)
+
+            st.markdown(f"**Title · {len(proposed_title)}/100 characters**")
             st.markdown(
                 '<div class="asl-proposal-field">' +
-                html.escape(", ".join(tags) if tags else "No tags proposed") +
+                html.escape(proposed_title) +
                 "</div>",
                 unsafe_allow_html=True,
             )
+            if len(proposed_title) > 100:
+                st.warning("This title exceeds YouTube's 100-character title limit.")
+
+            st.markdown(
+                f"**Description + hashtags · {len(proposed_description)}/5,000 characters**"
+            )
+            st.markdown(
+                '<div class="asl-proposal-field">' +
+                html.escape(proposed_description) +
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if len(proposed_description) > 5000:
+                st.warning("This description exceeds YouTube's 5,000-character description limit.")
+
+            st.markdown(
+                f"**YouTube tags (separate field) · {tag_characters}/500 tag characters**"
+            )
+            st.markdown(
+                '<div class="asl-proposal-field">' +
+                html.escape(", ".join(str(tag) for tag in tags) if tags else "No tags proposed") +
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            if tag_characters > 500:
+                st.warning(
+                    "The combined tag text exceeds the usual 500-character limit. "
+                    "Ask the Strategist to shorten the tag list before approving."
+                )
 
             with st.expander("Compare with current metadata"):
                 st.markdown("**Current title**")
