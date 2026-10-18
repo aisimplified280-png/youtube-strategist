@@ -77,6 +77,13 @@ class StudioExportAnalyzerTests(unittest.TestCase):
         with self.assertRaises(studio.StudioExportError):
             studio.parse_studio_export("report.csv", b"hello,world\nfoo,bar\n")
 
+    def test_csv_download_cells_are_safe_for_spreadsheet_opening(self):
+        self.assertEqual(studio.safe_csv_export_value("=HYPERLINK(\"bad\")"),
+                         "'=HYPERLINK(\"bad\")")
+        self.assertEqual(studio.safe_csv_export_value("@handle"), "'@handle")
+        self.assertEqual(studio.safe_csv_export_value("Normal title"), "Normal title")
+        self.assertEqual(studio.safe_csv_export_value(1234), 1234)
+
     def test_empty_file_returns_actionable_error(self):
         with self.assertRaisesRegex(studio.StudioExportError, "empty"):
             studio.parse_studio_export("report.csv", b"")
