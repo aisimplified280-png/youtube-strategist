@@ -42,43 +42,215 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    html, body, [class*="css"], [class*="st-"] {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-font-smoothing: antialiased;
+    }
+
     .block-container {
-        max-width: 980px;
-        /* Keep workspace controls clear of Streamlit's sticky top header. */
-        padding-top: 4.25rem;
+        max-width: 960px;
+        padding-top: 3.25rem;
         padding-bottom: 5.5rem;
     }
-    .asl-workspace-nav {
-        margin: .2rem 0 .45rem;
-        padding-bottom: 0;
-    }
-    .asl-workspace-nav-label {
-        font-size: .68rem;
-        font-weight: 720;
-        letter-spacing: .13em;
-        opacity: .62;
-        margin: 0 0 .45rem .1rem;
-    }
+
+    /* Sidebar aesthetics */
     [data-testid="stSidebar"] {
-        border-right: 1px solid rgba(128, 128, 128, .22);
+        border-right: 1px solid rgba(0, 0, 0, 0.08);
+        background: #fbfcfd;
     }
     [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
-        padding-top: 1rem;
+        padding-top: 1.25rem;
+        padding-left: 1.15rem;
+        padding-right: 1.15rem;
     }
     .asl-sidebar-brand {
-        font-size: .98rem;
-        font-weight: 720;
-        letter-spacing: -.025em;
-        line-height: 1.25;
-        margin: .2rem .15rem 1.1rem;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #111827;
+        margin-bottom: 1.15rem;
     }
-    .asl-sidebar-overline {
-        font-size: .68rem;
-        font-weight: 720;
-        letter-spacing: .13em;
-        opacity: .64;
-        margin: .85rem .1rem .35rem;
+    .asl-brand-badge {
+        background: linear-gradient(135deg, #FF0033 0%, #D80027 100%);
+        color: white;
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        font-weight: 900;
+        box-shadow: 0 2px 8px rgba(255, 0, 51, 0.28);
     }
+    .asl-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        margin: 0.5rem 0 1rem;
+    }
+    .asl-status-pill.connected {
+        background: rgba(16, 185, 129, 0.08);
+        color: #059669;
+        border: 1px solid rgba(16, 185, 129, 0.22);
+    }
+    .asl-status-pill.disconnected {
+        background: rgba(156, 163, 175, 0.08);
+        color: #6B7280;
+        border: 1px solid rgba(156, 163, 175, 0.22);
+    }
+    .asl-pulse-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #10B981;
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+        animation: asl-pulse 2s infinite;
+    }
+    .asl-dot-gray {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #9CA3AF;
+    }
+    @keyframes asl-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+        70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+
+    /* Page heading & hero cards */
+    .asl-page-heading { margin: 0 0 1.5rem 0; }
+    .asl-page-title {
+        font-size: clamp(1.6rem, 3.5vw, 2.1rem);
+        line-height: 1.15;
+        font-weight: 800;
+        letter-spacing: -0.035em;
+        color: #111827;
+        margin: 0;
+    }
+    .asl-page-subtitle {
+        margin-top: 0.45rem;
+        margin-bottom: 0;
+        color: #6B7280;
+        font-size: 0.94rem;
+        line-height: 1.5;
+    }
+    .asl-hero-card {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.9) 100%);
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 16px;
+        padding: 24px 28px;
+        margin-bottom: 22px;
+        box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.03);
+    }
+    .asl-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        background: rgba(255, 0, 51, 0.07);
+        color: #E60026;
+        border: 1px solid rgba(255, 0, 51, 0.16);
+        margin-bottom: 12px;
+    }
+    .asl-hero-title {
+        font-size: 1.35rem;
+        font-weight: 800;
+        letter-spacing: -0.025em;
+        color: #111827;
+        margin-bottom: 6px;
+    }
+    .asl-hero-subtitle {
+        font-size: 0.92rem;
+        color: #4B5563;
+        line-height: 1.55;
+    }
+    .asl-starter-heading {
+        font-size: 0.82rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #9CA3AF;
+        margin: 18px 0 10px;
+    }
+
+    /* Buttons & Interactive Elements */
+    [data-testid="stButton"] button {
+        min-height: 2.65rem;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 0.9rem;
+        line-height: 1.3;
+        transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+        border: 1px solid rgba(0, 0, 0, 0.1);
+    }
+    [data-testid="stButton"] button:hover {
+        border-color: rgba(0, 0, 0, 0.2);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+        transform: translateY(-1px);
+    }
+    [data-testid="stButton"] button[kind="primary"] {
+        background: linear-gradient(135deg, #FF1E44 0%, #D80027 100%) !important;
+        color: white !important;
+        border: none !important;
+        box-shadow: 0 3px 12px rgba(255, 30, 68, 0.25) !important;
+    }
+    [data-testid="stButton"] button[kind="primary"]:hover {
+        filter: brightness(1.05);
+        box-shadow: 0 4px 16px rgba(255, 30, 68, 0.35) !important;
+        transform: translateY(-1px);
+    }
+
+    /* Chat input & messages */
+    [data-testid="stChatInput"] {
+        border-radius: 14px;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+        transition: all 0.2s ease;
+    }
+    [data-testid="stChatInput"]:focus-within {
+        border-color: #FF0033 !important;
+        box-shadow: 0 0 0 3px rgba(255, 0, 51, 0.12) !important;
+    }
+    [data-testid="stChatMessage"] {
+        border: none;
+        background: transparent;
+        padding: 0.5rem 0.15rem;
+    }
+    [data-testid="stExpander"] {
+        border-radius: 12px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.02);
+    }
+
+    /* Proposal diff & fields */
+    .asl-proposal-field {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: normal;
+        background: #F9FAFB;
+        color: #1F2937;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 10px;
+        padding: 12px 14px;
+        line-height: 1.55;
+        font-size: 0.94rem;
+    }
+
     .asl-oauth-link {
         display: flex;
         align-items: center;
@@ -89,7 +261,7 @@ st.markdown(
         margin: .25rem 0 .5rem;
         padding: .65rem .8rem;
         border: 1px solid var(--primary-color);
-        border-radius: .7rem;
+        border-radius: 10px;
         background: var(--primary-color);
         color: white !important;
         font-weight: 650;
@@ -100,70 +272,17 @@ st.markdown(
     }
     .asl-oauth-link:hover { filter: brightness(.94); }
     .asl-oauth-link:focus-visible { outline: 2px solid var(--text-color); outline-offset: 2px; }
-    .asl-page-heading { margin: .15rem 0 1.25rem; }
-    .asl-page-title {
-        font-size: clamp(1.45rem, 3.3vw, 1.95rem);
-        line-height: 1.18;
-        font-weight: 700;
-        letter-spacing: -.035em;
-        margin: 0;
-    }
-    .asl-page-subtitle {
-        margin-top: .4rem;
-        margin-bottom: 0;
-        opacity: .7;
-        font-size: .91rem;
-    }
-    .asl-proposal-field {
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        word-break: normal;
-        background: var(--secondary-background-color);
-        color: var(--text-color);
-        border: 1px solid rgba(128, 128, 128, .2);
-        border-radius: .75rem;
-        padding: .85rem .9rem;
-        line-height: 1.55;
-        font-size: .95rem;
-    }
-    [data-testid="stButton"] button {
-        min-height: 2.65rem;
-        white-space: normal;
-        line-height: 1.25;
-        border-radius: .7rem;
-    }
-    [data-testid="stChatInput"] {
-        border-radius: 1rem;
-    }
-    [data-testid="stChatMessage"] {
-        border: none;
-        background: transparent;
-        padding: .45rem .15rem;
-    }
-    [data-testid="stExpander"] {
-        border-radius: .75rem;
-    }
+
     @media (max-width: 640px) {
         .block-container {
-            /* Streamlit's header still occupies space on narrow screens. */
-            padding-top: 3.65rem;
+            padding-top: 2.5rem;
             padding-bottom: 4.8rem;
-            padding-left: .8rem;
-            padding-right: .8rem;
-        }
-        .asl-workspace-nav {
-            margin-bottom: 1rem;
-        }
-        .asl-workspace-nav [data-testid="stButton"] button {
-            padding-left: .25rem;
-            padding-right: .25rem;
-            font-size: .84rem;
+            padding-left: .85rem;
+            padding-right: .85rem;
         }
         .asl-page-heading { margin-bottom: 1rem; }
-        .asl-page-subtitle { font-size: .87rem; }
+        .asl-page-title { font-size: 1.45rem; }
         .asl-proposal-field { padding: .75rem; font-size: .9rem; }
-        [data-testid="stButton"] button { min-height: 2.85rem; }
-        [data-testid="stChatMessage"] { padding: .3rem 0; }
     }
     </style>
     """,
@@ -2038,7 +2157,7 @@ def main():
 
     with st.sidebar:
         st.markdown(
-            '<div class="asl-sidebar-brand">✳ AI Simplified Lab</div>',
+            '<div class="asl-sidebar-brand"><div class="asl-brand-badge">▶</div><span>AI Simplified Lab</span></div>',
             unsafe_allow_html=True,
         )
         if st.session_state.get("asl_workspace", "Strategist") == "Strategist" and st.button(
@@ -2055,6 +2174,7 @@ def main():
             ):
                 st.session_state.pop(key, None)
             st.session_state["asl_pending_workspace"] = "Strategist"
+            st.rerun()
         # Secondary navigation: Insights and analytics secondary to the main conversation
         current_view = st.session_state.get("asl_workspace", "Strategist")
         view_names = {
@@ -2127,7 +2247,22 @@ def main():
     page = st.session_state["asl_workspace"]
 
     with st.sidebar:
-        st.caption("YouTube: Connected" if credentials else "YouTube: Not connected")
+        if credentials:
+            st.markdown(
+                '<div class="asl-status-pill connected">'
+                '<span class="asl-pulse-dot"></span>'
+                '<span>YouTube Connected</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="asl-status-pill disconnected">'
+                '<span class="asl-dot-gray"></span>'
+                '<span>YouTube Disconnected</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
         with st.expander("Connections", expanded=False):
             if credentials:
                 st.success("YouTube access connected.")
