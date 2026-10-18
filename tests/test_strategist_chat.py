@@ -32,6 +32,27 @@ class StrategistChatTests(unittest.TestCase):
             "Improve the title and description of this video"
         ))
 
+    def test_extract_video_references_accepts_links_and_bare_ids_in_order(self):
+        references = strategist_chat._youtube_references_from_message(
+            "Review https://youtu.be/abcdefghijk against zyxwvutsrqp"
+        )
+        self.assertEqual(references, ["https://youtu.be/abcdefghijk", "zyxwvutsrqp"])
+
+    def test_load_target_video_by_bare_id(self):
+        session_state = {}
+        target_snippet = {"title": "My video", "description": "A test", "tags": []}
+        with patch("strategist_chat.st.session_state", session_state), patch(
+            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
+        ), patch(
+            "strategist_chat._transcript_text",
+            return_value=("", "No accessible transcript; analysis uses public metadata only."),
+        ):
+            context, error = strategist_chat._load_conversation_videos(
+                Mock(), {}, "Improve this video: abcdefghijk"
+            )
+        self.assertIsNone(error)
+        self.assertEqual(context["target_id"], "abcdefghijk")
+
     def test_load_target_video_without_reference(self):
         session_state = {}
         target_snippet = {"title": "My video", "description": "A test", "tags": []}
