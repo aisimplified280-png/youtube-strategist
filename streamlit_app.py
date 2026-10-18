@@ -1560,6 +1560,73 @@ def _render_studio_export_analysis():
                 )
 
             recommendations = report.get("recommendations", [])
+            dimension_fields = (
+                ("traffic_source", "Traffic source"),
+                ("search_term", "Search term"),
+                ("geography", "Geography"),
+                ("age_group", "Age group"),
+                ("gender", "Gender"),
+                ("device_type", "Device type"),
+            )
+            available_dimensions = [
+                (key, label) for key, label in dimension_fields
+                if key in report.get("fields", [])
+            ]
+            if available_dimensions:
+                dimension_rows = []
+                for raw_row in report.get("rows", []):
+                    for key, label in available_dimensions:
+                        if raw_row.get(key):
+                            dimension_rows.append({
+                                "Dimension": label,
+                                "Value": raw_row.get(key),
+                                "Views": raw_row.get("views"),
+                                "Watch time (min)": raw_row.get("watch_time_minutes"),
+                                "Viewer percentage": raw_row.get("viewer_percentage"),
+                                "Impressions": raw_row.get("impressions"),
+                                "CTR (%)": raw_row.get("ctr_percent"),
+                                "Date": raw_row.get("date"),
+                            })
+                if dimension_rows:
+                    st.markdown("**Breakdown rows found**")
+                    st.dataframe(
+                        dimension_rows,
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+            if report.get("report_type") == "retention" and not report.get("video_rows"):
+                st.markdown("**Attach this retention curve to a video**")
+                st.caption(
+                    "Some retention exports contain only the time curve, without a video title or ID. "
+                    "Enter the related video URL, 11-character ID, or exact title so Strategist can "
+                    "use the curve when reviewing that video."
+                )
+                retention_reference = st.text_input(
+                    "Video URL, ID, or exact title",
+                    key=f"studio_retention_reference_{report_index}",
+                )
+                if st.button(
+                    "Attach retention data",
+                    key=f"attach_studio_retention_{report_index}",
+                    disabled=not retention_reference.strip(),
+                ):
+                    try:
+                        evidence_index = st.session_state.get(
+                            "studio_export_evidence_index", {}
+                        )
+                        studio_export_analyzer.add_manual_retention_evidence(
+                            evidence_index, report, retention_reference
+                        )
+                        st.session_state["studio_export_evidence_index"] = evidence_index
+                    except studio_export_analyzer.StudioExportError as error:
+                        st.error(str(error))
+                    else:
+                        st.success(
+                            "Retention evidence attached for use in Strategist. "
+                            "The original file remains in the current session only."
+                        )
+
             if recommendations:
                 st.markdown("**What the report suggests reviewing**")
                 for recommendation_index, recommendation in enumerate(recommendations, start=1):
