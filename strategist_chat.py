@@ -340,15 +340,16 @@ def _youtube_references_from_message(message):
 def _quoted_title_reference(message):
     """Extract an explicitly quoted target title so instructions are not mistaken for a title."""
     patterns = (
-        r"\b(?:video|target)\s+title\s*[:=]\s*["“'](.+?)["”'](?=\s|$)",
-        r"\b(?:my|target)\s+video\s*[:=]\s*["“'](.+?)["”'](?=\s|$)",
+        r'\b(?:video|target)\s+title\s*[:=]\s*"(.+?)"(?=\s|$)',
+        r"\b(?:video|target)\s+title\s*[:=]\s*“(.+?)”(?=\s|$)",
+        r'\b(?:my|target)\s+video\s*[:=]\s*"(.+?)"(?=\s|$)',
+        r"\b(?:my|target)\s+video\s*[:=]\s*“(.+?)”(?=\s|$)",
     )
     for pattern in patterns:
         match = re.search(pattern, message or "", flags=re.IGNORECASE | re.DOTALL)
         if match and match.group(1).strip():
             return match.group(1).strip()
     return None
-
 
 def _load_conversation_videos(youtube, secrets, message):
     """Load target/reference links supplied in chat; no setup form is required."""
