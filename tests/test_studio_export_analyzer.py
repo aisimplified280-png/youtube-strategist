@@ -242,6 +242,65 @@ class StudioExportAnalyzerTests(unittest.TestCase):
         self.assertTrue(any(item.get("video_id") == "aaaaaaaaaaa" for item in recommendations))
         self.assertFalse(any(item.get("video_id") == "ddddddddddd" for item in recommendations))
 
+    def test_studio_table_data_csv_with_content_and_video_title(self):
+        payload = (
+            "Content,Video title,Video publish time,Views,Watch time (hours),Subscribers,Impressions,Impressions click-through rate (%)\n"
+            "WCJF5TmXpuU,LLM Prompt Caching Explained,2026-01-10,1200,45.5,24,8000,4.2\n"
+            "AbCdEfGhIjK,Semantic Search in Practice,2026-01-12,300,12.0,5,3000,1.8\n"
+            "XyZ12345678,Vector DB Fundamentals,2026-01-14,900,30.0,15,6000,3.5\n"
+        ).encode("utf-8")
+        parsed = studio.parse_studio_export("Table data.csv", payload)
+        report = studio.analyze_studio_export(parsed)
+
+        self.assertEqual(parsed["report_type"], "video_performance")
+        self.assertEqual(report["video_count"], 3)
+        first = next(v for v in report["video_rows"] if v["video_id"] == "WCJF5TmXpuU")
+        self.assertEqual(first["video_title"], "LLM Prompt Caching Explained")
+        self.assertEqual(first["ctr_percent"], 4.2)
+        self.assertEqual(first["views"], 1200)
+
+        # Check that CTR underperformance recommendation was ranked
+        rec = next(r for r in report["recommendations"] if r.get("video_id") == "AbCdEfGhIjK")
+        self.assertIn("Semantic Search in Practice", rec["title"])
+        self.assertEqual(rec["priority"], "High")
+
+        # Check diagnostics
+        diag = report["diagnostics"]
+        self.assertTrue(diag["qualifications"]["ctr"]["met"])
+        self.assertEqual(diag["qualifications"]["ctr"]["status"], "Qualified")
+
+    def test_low_ctr_under_one_percent_is_not_scaled_when_header_has_percent(self):
+        payload = (
+            "Video title,Impressions,Impressions click-through rate (%)\n"
+            "Video Low,2000,0.8\n"
+            "Video Med,3000,3.5\n"
+        ).encode("utf-8")
+        parsed = studio.parse_studio_export("reach.csv", payload)
+        report = studio.analyze_studio_export(parsed)
+        low_vid = next(v for v in report["video_rows"] if v["video_title"] == "Video Low")
+        # 0.8% CTR should remain 0.8, not get scaled to 80.0
+        self.assertEqual(low_vid["ctr_percent"], 0.8)
+
+    def test_table_data_views_only_generates_actionable_recommendations(self):
+        payload = (
+            "Content,Video title,Views,Watch time (hours)\n"
+            "vid11111111,Top Upload,1500,60\n"
+            "vid22222222,Medium Upload,800,30\n"
+            "vid33333333,Low Upload,100,4\n"
+        ).encode("utf-8")
+        parsed = studio.parse_studio_export("Table data.csv", payload)
+        report = studio.analyze_studio_export(parsed)
+
+        # Views-only ranking should generate both opportunity and review actions
+        self.assertTrue(any(r["priority"] == "Opportunity" for r in report["recommendations"]))
+        self.assertTrue(any(r["priority"] == "Review" for r in report["recommendations"]))
+        low_rec = next(r for r in report["recommendations"] if r.get("video_id") == "vid33333333")
+        self.assertIn("Low Upload", low_rec["title"])
+
+        diag = report["diagnostics"]
+        self.assertTrue(diag["qualifications"]["views"]["met"])
+        self.assertFalse(diag["qualifications"]["ctr"]["met"])
+
 
 if __name__ == "__main__":
     unittest.main()

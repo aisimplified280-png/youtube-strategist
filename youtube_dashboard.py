@@ -758,7 +758,7 @@ def rank_optimization_candidates(video_rows, *, limit=5):
     recommendations = []
     for video in video_rows:
         views = video.get("views")
-        if not isinstance(views, (int, float)):
+        if not isinstance(views, (int, float)) or views <= 0:
             continue
         peers = [
             peer for peer in video_rows
@@ -831,6 +831,7 @@ def rank_recent_video_opportunities(video_rows, candidate_video_ids, *, limit=8)
         row for row in video_rows
         if row.get("video_id")
         and isinstance(row.get("views"), (int, float))
+        and row["views"] > 0
         and isinstance(row.get("age_days"), (int, float))
         and isinstance(row.get("format"), str)
     ]
