@@ -375,7 +375,7 @@ def _quoted_title_reference(message):
 def _load_conversation_videos(youtube, secrets, message):
     """Load target/reference links supplied in chat; no setup form is required."""
     urls = _youtube_references_from_message(message)
-    title_reference = _quoted_title_reference(message) if not urls else None
+    title_reference = _quoted_title_reference(message)
     if not urls and not title_reference:
         return None, (
             "Paste your own YouTube video link or 11-character ID, or use "
@@ -388,9 +388,15 @@ def _load_conversation_videos(youtube, secrets, message):
         target_id = matched_video.get("id")
         if not isinstance(target_id, str) or not target_id:
             raise ValueError("The title match did not return a valid YouTube video ID.")
+        reference_position = 0
     else:
         target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
-    reference_id = parse_video_id(urls[1].rstrip(".,!?;:")) if len(urls) >= 2 else None
+        reference_position = 1
+    reference_id = (
+        parse_video_id(urls[reference_position].rstrip(".,!?;:"))
+        if len(urls) > reference_position
+        else None
+    )
     target_snippet = connector.fetch_video_snippet(youtube, target_id)
     target_transcript, target_transcript_status = _transcript_text(target_id)
     if reference_id:
