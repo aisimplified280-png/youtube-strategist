@@ -16,34 +16,47 @@ from statistics import median
 
 HEADER_ALIASES = {
     "video_title": {
-        "video title", "content title", "title", "video name", "content",
+        "video title", "content title", "title", "video name", "content", "video",
+        "video headline", "asset", "item",
     },
-    "video_id": {"video id", "content id", "video identifier"},
-    "date": {"date", "day", "report date", "date published"},
-    "views": {"views", "engaged views", "organic views"},
+    "video_id": {
+        "video id", "content id", "video identifier", "videoid", "youtube video id",
+    },
+    "date": {
+        "date", "day", "report date", "date published", "video publish time",
+        "video published time", "publish date",
+    },
+    "views": {"views", "engaged views", "organic views", "view count", "total views"},
     "watch_time": {
         "watch time hours", "watch time (hours)", "watch time minutes",
         "watch time (minutes)", "estimated minutes watched",
-        "estimated minutes watched (minutes)",
+        "estimated minutes watched (minutes)", "watch time", "watch hours",
     },
     "average_view_duration": {
         "average view duration", "avg view duration", "average view duration seconds",
-        "average view duration (seconds)",
+        "average view duration (seconds)", "avg duration", "average duration",
     },
     "average_view_percentage": {
         "average percentage viewed", "average view percentage",
         "average percentage viewed (%)", "average view duration percentage",
+        "avg percentage viewed", "avg view %", "avg view percentage",
+        "percent viewed", "percentage viewed", "average view percentage (%)",
     },
-    "impressions": {"impressions", "thumbnail impressions", "video thumbnail impressions"},
+    "impressions": {
+        "impressions", "thumbnail impressions", "video thumbnail impressions", "total impressions",
+    },
     "ctr": {
         "impressions click through rate", "impressions click-through rate",
         "click through rate", "click-through rate", "video thumbnail impressions ctr",
-        "thumbnail click through rate",
+        "thumbnail click through rate", "ctr", "impressions ctr", "thumbnail ctr",
+        "impressions click-through rate (%)", "impressions click through rate (%)", "ctr (%)",
     },
-    "subscribers_gained": {"subscribers gained"},
+    "subscribers_gained": {
+        "subscribers gained", "subscribers", "subscribers added", "new subscribers",
+    },
     "subscribers_lost": {"subscribers lost"},
     "likes": {"likes"},
-    "comments": {"comments", "comment count"},
+    "comments": {"comments", "comment count", "comments added", "total comments"},
     "shares": {"shares", "share count"},
     "traffic_source": {
         "traffic source", "traffic source type", "youtube traffic source",
@@ -108,15 +121,26 @@ def _map_header(value: str):
         if normalized in aliases:
             return field
     # Common export variants where the label includes a unit or explanatory suffix.
-    if normalized.startswith("average view duration"):
+    if normalized.startswith("average view duration") or normalized.startswith("avg view duration"):
         return "average_view_duration"
-    if normalized.startswith("average percentage viewed"):
+    if (
+        normalized.startswith("average percentage viewed")
+        or normalized.startswith("average view percentage")
+        or normalized.startswith("avg percentage viewed")
+        or normalized.startswith("avg view percentage")
+        or normalized.startswith("percent viewed")
+        or normalized.startswith("percentage viewed")
+    ):
         return "average_view_percentage"
-    if normalized.startswith("impressions click through rate"):
+    if (
+        normalized.startswith("impressions click through rate")
+        or normalized.startswith("video thumbnail impressions ctr")
+        or normalized.startswith("impressions ctr")
+        or normalized == "ctr"
+        or "ctr" in normalized.split()
+    ):
         return "ctr"
-    if normalized.startswith("video thumbnail impressions ctr"):
-        return "ctr"
-    if normalized.startswith("video thumbnail impressions"):
+    if normalized.startswith("video thumbnail impressions") or normalized == "impressions":
         return "impressions"
     if normalized.startswith("estimated minutes watched"):
         return "watch_time"
@@ -130,7 +154,33 @@ def _map_header(value: str):
         return "retention_percent"
     if normalized.startswith("elapsed video time"):
         return "elapsed_time"
+    if normalized in {"subscribers", "subscribers added", "subscribers gained"}:
+        return "subscribers_gained"
+    if normalized in {"comments added", "comments"}:
+        return "comments"
     return None
+
+
+def _map_row_columns(row: list) -> dict[str, int]:
+    """Map a header row to known metric fields, disambiguating multi-identifier exports."""
+    normalized_labels = [_norm(str(label or "")) for label in row]
+
+    has_content = any(norm == "content" for norm in normalized_labels)
+    has_video_title = any(norm in {"video title", "title", "video name"} for norm in normalized_labels)
+    has_video = any(norm == "video" for norm in normalized_labels)
+
+    mapped = {}
+    for column_index, label in enumerate(row):
+        norm = normalized_labels[column_index]
+        if has_content and has_video_title and norm == "content":
+            field = "video_id"
+        elif has_video and has_video_title and norm == "video":
+            field = "video_id"
+        else:
+            field = _map_header(label)
+        if field and field not in mapped:
+            mapped[field] = column_index
+    return mapped
 
 
 def _parse_number(value):
@@ -185,7 +235,13 @@ def _to_percent(value, raw, header):
         return None
     if "%" in str(raw):
         return value
-    # Studio may export decimals for ratio-based metrics; normalize those to displayed percent.
+    # If the column header explicitly specifies percentage/rate with % or percent/percentage,
+    # Studio exports the values already in percentage points (e.g. 0.8 means 0.8%, not 80%).
+    header_str = str(header or "").casefold()
+    if "%" in header_str or "percentage" in header_str or "percent" in header_str:
+        return value
+    # Studio may export raw decimal ratios (e.g., 0.054 for 5.4%) in sheets without %;
+    # only normalize ratios strictly in [0, 1] when the header has no percent notation.
     if 0 <= value <= 1:
         return value * 100
     return value
@@ -257,10 +313,7 @@ def _read_xlsx_matrix(data: bytes) -> tuple[list[list[str]], str]:
         ]
         best_header = None
         for row_index, row in enumerate(matrix[:60]):
-            mapped = {
-                field for label in row
-                if (field := _map_header(label)) is not None
-            }
+            mapped = _map_row_columns(row)
             if len(mapped) < 2:
                 continue
             important = sum(field in mapped for field in (
@@ -316,11 +369,7 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
 
     header_candidates = []
     for index, row in enumerate(matrix[:60]):
-        mapped = {}
-        for column_index, label in enumerate(row):
-            field = _map_header(label)
-            if field and field not in mapped:
-                mapped[field] = column_index
+        mapped = _map_row_columns(row)
         if len(mapped) >= 2:
             # Prefer a complete report header and break ties by reaching one later in preamble.
             important = sum(field in mapped for field in (
@@ -409,7 +458,7 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
     fields = set(columns)
     if "elapsed_time" in fields and ({"retention_percent", "relative_retention"} & fields):
         report_type = "retention"
-    elif "video_title" in fields and ({"views", "impressions", "ctr", "watch_time"} & fields):
+    elif ({"video_title", "video_id"} & fields) and ({"views", "impressions", "ctr", "watch_time"} & fields):
         report_type = "video_performance"
     elif "traffic_source" in fields:
         report_type = "traffic_sources"
@@ -561,13 +610,15 @@ def _format_video_label(title: str | None) -> str:
 
 def _performance_recommendations(videos):
     recommendations = []
+
+    # 1. CTR Recommendations: qualify videos with impressions >= 50 and valid CTR
     ctr_rows = [
         row for row in videos
         if isinstance(row.get("ctr_percent"), (int, float))
         and isinstance(row.get("impressions"), (int, float))
-        and row["impressions"] >= 100
+        and row["impressions"] >= 50
     ]
-    if len(ctr_rows) >= 3:
+    if len(ctr_rows) >= 2:
         midpoint = median(row["ctr_percent"] for row in ctr_rows)
         low_ctr = sorted(
             [row for row in ctr_rows if row["ctr_percent"] < midpoint],
@@ -580,7 +631,7 @@ def _performance_recommendations(videos):
                 "title": f"Review title/thumbnail alignment: {video_label}",
                 "evidence": (
                     f"Reported CTR {row['ctr_percent']:.2f}% is below this upload set's "
-                    f"median ({midpoint:.2f}%) across {len(ctr_rows)} videos with at least 100 impressions."
+                    f"median ({midpoint:.2f}%) across {len(ctr_rows)} videos with at least 50 impressions."
                 ),
                 "action": "Check whether the title and thumbnail communicate one clear, accurate reason to click. Treat this as a review candidate, not proof the packaging caused the difference.",
                 "video_id": row.get("video_id"),
@@ -592,11 +643,33 @@ def _performance_recommendations(videos):
                     "views": row.get("views"),
                 },
             })
+    elif len(ctr_rows) == 1:
+        single = ctr_rows[0]
+        if single["ctr_percent"] < 3.0:
+            video_label = _format_video_label(single.get("video_title"))
+            recommendations.append({
+                "priority": "Review",
+                "title": f"Review title/thumbnail alignment: {video_label}",
+                "evidence": (
+                    f"Reported CTR {single['ctr_percent']:.2f}% across {single['impressions']:,.0f} impressions "
+                    "is below the typical 3.0% threshold."
+                ),
+                "action": "Check whether the title and thumbnail communicate one clear, accurate reason to click. Treat this as a review candidate, not proof the packaging caused the difference.",
+                "video_id": single.get("video_id"),
+                "video_title": single.get("video_title") if single.get("video_title") != "Video title unavailable" else None,
+                "measured_metrics": {
+                    "ctr_percent": single.get("ctr_percent"),
+                    "impressions": single.get("impressions"),
+                    "views": single.get("views"),
+                },
+            })
+
+    # 2. Retention Recommendations: qualify videos with numeric average view percentage
     retention_rows = [
         row for row in videos
         if isinstance(row.get("average_view_percentage"), (int, float))
     ]
-    if len(retention_rows) >= 3:
+    if len(retention_rows) >= 2:
         midpoint = median(row["average_view_percentage"] for row in retention_rows)
         lowest = sorted(retention_rows, key=lambda row: row["average_view_percentage"])[:3]
         for row in lowest:
@@ -620,12 +693,14 @@ def _performance_recommendations(videos):
                     "average_view_duration_seconds": row.get("average_view_duration_seconds"),
                 },
             })
+
+    # 3. View Retention Opportunity Benchmarks
     view_retention_rows = [
         row for row in videos
         if isinstance(row.get("views"), (int, float))
         and isinstance(row.get("average_view_percentage"), (int, float))
     ]
-    if len(view_retention_rows) >= 3:
+    if len(view_retention_rows) >= 2:
         views_midpoint = median(row["views"] for row in view_retention_rows)
         retention_midpoint = median(
             row["average_view_percentage"] for row in view_retention_rows
@@ -668,12 +743,99 @@ def _performance_recommendations(videos):
                 },
             })
 
+    # 4. Views & Watch-Time Tier: active when Views are present (e.g. standard Content Table data.csv)
+    views_rows = [
+        row for row in videos
+        if isinstance(row.get("views"), (int, float)) and row["views"] > 0
+    ]
+    existing_rec_vids = {r.get("video_id") for r in recommendations if r.get("video_id")}
+    existing_rec_titles = {
+        _norm(r.get("video_title")) for r in recommendations if r.get("video_title")
+    }
+
+    if len(views_rows) >= 3 and not recommendations:
+        views_midpoint = median(row["views"] for row in views_rows)
+        # Strongest performers as opportunity benchmarks
+        strong = sorted(
+            [row for row in views_rows if row["views"] >= views_midpoint],
+            key=lambda r: -r["views"],
+        )[:2]
+        for row in strong:
+            video_label = _format_video_label(row.get("video_title"))
+            recommendations.append({
+                "priority": "Opportunity",
+                "title": f"Study this stronger-reach upload: {video_label}",
+                "evidence": (
+                    f"{row['views']:,.0f} reported views; upload-set median is "
+                    f"{views_midpoint:,.0f} views across {len(views_rows)} videos with reported traffic."
+                ),
+                "action": (
+                    "Inspect the topic angle, thumbnail style, and title structure for "
+                    "patterns that resonated with your audience. This identifies a stronger-reach "
+                    "video to study, not proof of cause."
+                ),
+                "video_id": row.get("video_id"),
+                "video_title": row.get("video_title") if row.get("video_title") != "Video title unavailable" else None,
+                "measured_metrics": {
+                    "views": row.get("views"),
+                    "median_views": views_midpoint,
+                    "watch_time_minutes": row.get("watch_time_minutes"),
+                },
+            })
+
+        # Underperforming reach for metadata / packaging review
+        low_views = sorted(
+            [row for row in views_rows if row["views"] < views_midpoint * 0.6],
+            key=lambda r: r["views"],
+        )[:3]
+        for row in low_views:
+            vid = row.get("video_id")
+            vtitle = row.get("video_title")
+            if vid and vid in existing_rec_vids:
+                continue
+            if vtitle and _norm(vtitle) in existing_rec_titles:
+                continue
+            video_label = _format_video_label(vtitle)
+            recommendations.append({
+                "priority": "Review",
+                "title": f"Review discoverability and packaging: {video_label}",
+                "evidence": (
+                    f"{row['views']:,.0f} reported views is below this upload set's "
+                    f"median ({views_midpoint:,.0f} views) across {len(views_rows)} videos with traffic."
+                ),
+                "action": (
+                    "Review the title and description for search clarity and alignment with what viewers search for. "
+                    "Treat this as a review candidate, not proof that metadata caused the difference."
+                ),
+                "video_id": vid,
+                "video_title": vtitle if vtitle != "Video title unavailable" else None,
+                "measured_metrics": {
+                    "views": row.get("views"),
+                    "median_views": views_midpoint,
+                    "watch_time_minutes": row.get("watch_time_minutes"),
+                },
+            })
+
     if not recommendations:
+        evidence_parts = [f"{len(videos)} video row(s) detected in this report."]
+        if ctr_rows:
+            evidence_parts.append(f"{len(ctr_rows)} video(s) met the 50-impression threshold with CTR.")
+        else:
+            evidence_parts.append("0 videos had both CTR and >= 50 impressions.")
+        if retention_rows:
+            evidence_parts.append(f"{len(retention_rows)} video(s) had Average percentage viewed.")
+        else:
+            evidence_parts.append("0 videos had Average percentage viewed.")
+        evidence_str = " ".join(evidence_parts)
+
         recommendations.append({
             "priority": "Context",
-            "title": "Not enough comparable video evidence for a ranked packaging review",
-            "evidence": "This report has fewer than three videos with measured comparison metrics or lacks impression/retention measurements.",
-            "action": "Upload a Content/Reach report with Views, Impressions, CTR, Average view duration and Average percentage viewed where available. Do not treat missing metrics as zero.",
+            "title": "Not enough qualifying video evidence for a ranked action",
+            "evidence": evidence_str,
+            "action": (
+                "To enable packaging/CTR recommendations, export with 'Impressions' and 'Impressions click-through rate (%)' "
+                "(Analytics → Advanced mode → Reach). To enable retention recommendations, export with 'Average percentage viewed (%)'."
+            ),
         })
     return recommendations
 
@@ -810,7 +972,7 @@ def _daily_recommendations(records):
 
 
 def analyze_studio_export(parsed: dict) -> dict:
-    """Return a compact report and grounded actions from one parsed export."""
+    """Return a compact report, grounded actions, and metric qualifications from one parsed export."""
     records = parsed["records"]
     videos = _video_summaries(records)
     fields = set(parsed["fields"])
@@ -842,6 +1004,59 @@ def analyze_studio_export(parsed: dict) -> dict:
         if values:
             numeric_summary[display_name] = sum(values)
 
+    ctr_all = [r for r in videos if isinstance(r.get("ctr_percent"), (int, float))]
+    ctr_qualified = [
+        r for r in ctr_all
+        if isinstance(r.get("impressions"), (int, float)) and r["impressions"] >= 50
+    ]
+    retention_all = [r for r in videos if isinstance(r.get("average_view_percentage"), (int, float))]
+    views_all = [r for r in videos if isinstance(r.get("views"), (int, float)) and r["views"] > 0]
+
+    diagnostics = {
+        "record_count": len(records),
+        "video_count": len(videos),
+        "fields_detected": parsed["fields"],
+        "ignored_headers": parsed["ignored_headers"],
+        "qualifications": {
+            "ctr": {
+                "has_column": "ctr" in fields,
+                "total_with_ctr": len(ctr_all),
+                "total_with_impressions": len([r for r in videos if isinstance(r.get("impressions"), (int, float))]),
+                "qualified_videos": len(ctr_qualified),
+                "min_impressions_required": 50,
+                "min_videos_required": 2,
+                "met": len(ctr_qualified) >= 2,
+                "status": "Qualified" if len(ctr_qualified) >= 2 else (
+                    f"Only {len(ctr_qualified)} video(s) met the 50-impression threshold (min. 2 required)"
+                    if "ctr" in fields
+                    else "Missing column (Impressions click-through rate)"
+                ),
+            },
+            "retention": {
+                "has_column": "average_view_percentage" in fields,
+                "qualified_videos": len(retention_all),
+                "min_videos_required": 2,
+                "met": len(retention_all) >= 2,
+                "status": "Qualified" if len(retention_all) >= 2 else (
+                    f"Only {len(retention_all)} video(s) found (min. 2 required)"
+                    if "average_view_percentage" in fields
+                    else "Missing column (Average percentage viewed)"
+                ),
+            },
+            "views": {
+                "has_column": "views" in fields,
+                "qualified_videos": len(views_all),
+                "min_videos_required": 2,
+                "met": len(views_all) >= 2,
+                "status": "Qualified" if len(views_all) >= 2 else (
+                    f"Only {len(views_all)} video(s) with positive views found (min. 2 required)"
+                    if "views" in fields
+                    else "Missing column (Views)"
+                ),
+            },
+        },
+    }
+
     return {
         "filename": parsed["filename"],
         "source_sheet": parsed.get("source_sheet"),
@@ -860,6 +1075,7 @@ def analyze_studio_export(parsed: dict) -> dict:
             or isinstance(row.get("elapsed_percent"), (int, float))
         ],
         "recommendations": recommendations,
+        "diagnostics": diagnostics,
         "rows": records,
     }
 

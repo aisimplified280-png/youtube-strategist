@@ -1951,11 +1951,43 @@ def _render_studio_export_analysis(youtube=None):
             st.session_state.pop("studio_export_started_actions", None)
             st.rerun()
     else:
-        st.info(
-            "I couldn't rank a video-specific action from these files yet. Upload a Content/Reach "
-            "report with a video title or ID, Views, Impressions, CTR, Average view duration, and "
-            "Average percentage viewed where available. Missing metrics stay unavailable; they are not zero."
-        )
+        with st.container(border=True):
+            st.markdown("### I couldn't rank a video-specific action from these files yet")
+            st.markdown(
+                "The app parsed your uploaded Studio reports, but did not find enough qualifying "
+                "metrics to prioritize a packaging or pacing action."
+            )
+            st.markdown("#### Detected metrics and qualification breakdown")
+            for report in reports:
+                diag = report.get("diagnostics") or {}
+                quals = diag.get("qualifications") or {}
+                r_fields = ", ".join(report.get("fields", [])) or "none"
+                r_filename = report.get("filename", "Report")
+                r_type = report.get("report_type", "analytics_table").replace("_", " ").title()
+                with st.expander(f"📄 {r_filename} ({r_type}) · {report.get('record_count', 0)} rows · {report.get('video_count', 0)} videos", expanded=True):
+                    st.caption(f"**Recognized fields:** {r_fields}")
+                    if report.get("ignored_headers"):
+                        st.caption(f"**Unrecognized columns:** {', '.join(report['ignored_headers'][:8])}")
+                    q_col1, q_col2, q_col3 = st.columns(3)
+                    with q_col1:
+                        ctr_q = quals.get("ctr", {})
+                        st.markdown(f"**CTR & Packaging:** {'✅ Qualified' if ctr_q.get('met') else '❌ Not Met'}")
+                        st.caption(ctr_q.get("status", "No CTR data"))
+                    with q_col2:
+                        ret_q = quals.get("retention", {})
+                        st.markdown(f"**Retention & Pacing:** {'✅ Qualified' if ret_q.get('met') else '❌ Not Met'}")
+                        st.caption(ret_q.get("status", "No retention data"))
+                    with q_col3:
+                        views_q = quals.get("views", {})
+                        st.markdown(f"**Views & Reach:** {'✅ Qualified' if views_q.get('met') else '❌ Not Met'}")
+                        st.caption(views_q.get("status", "No view data"))
+
+            st.markdown("#### How to export actionable reports from YouTube Studio")
+            st.markdown(
+                "- **For Title / Thumbnail CTR recommendations:** In YouTube Studio → **Analytics** → **Advanced Mode** (or *See More*) → select the **Reach** tab (or ensure columns *Impressions* and *Impressions click-through rate (%)* are added) → click **Export current view**.\n"
+                "- **For Retention & Pacing recommendations:** In YouTube Studio → **Analytics** → **Advanced Mode** → select the **Engagement** tab (or ensure *Average percentage viewed (%)* is added) → click **Export current view**.\n"
+                "- Upload the resulting `Table data.csv` to generate specific, evidence-backed recommendations."
+            )
 
     table_rows = []
     for report_index, report in enumerate(reports):
@@ -2825,6 +2857,10 @@ def main():
                         st.write("CTR:", row["ctr_status"])
 
         st.subheader("Videos worth reviewing")
+        zero_views = [
+            row for row in data["video_rows"]
+            if row.get("views") == 0
+        ]
         ranked = youtube_dashboard.rank_optimization_candidates(data["video_rows"])
         if ranked:
             for candidate in ranked:
@@ -2852,7 +2888,12 @@ def main():
             st.info(
                 "No measured video has at least three age- and format-matched peers with a "
                 "lower view count than its peer median in this date range. No opportunity "
-                "is inferred from missing data."
+                "is inferred from missing or zero-view data."
+            )
+        if zero_views:
+            st.caption(
+                f"ℹ️ {len(zero_views)} video(s) had 0 reported views during this period. "
+                "They are excluded from peer underperformance ranking to avoid skewing relative gaps."
             )
 
         if not visible_rows:

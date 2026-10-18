@@ -503,6 +503,45 @@ class YoutubeDashboardTests(unittest.TestCase):
         )
         self.assertNotIn("long", [row["video_id"] for row in ranked])
 
+    def test_rank_optimization_candidates_excludes_zero_views(self):
+        rows = [
+            {
+                "video_id": "zero-view-video",
+                "title": "Zero views dormant video",
+                "url": "https://youtube.com/watch?v=zero-view-video",
+                "format": "Short-duration candidate (<=180 sec)",
+                "age_days": 20,
+                "views": 0,
+                "averageViewDuration": 0,
+            },
+            {
+                "video_id": "target",
+                "title": "Target video with measured traffic",
+                "url": "https://youtube.com/watch?v=target",
+                "format": "Short-duration candidate (<=180 sec)",
+                "age_days": 20,
+                "views": 25,
+                "averageViewDuration": 15,
+            },
+            *[
+                {
+                    "video_id": f"peer-{index}",
+                    "title": f"Peer {index}",
+                    "url": f"https://youtube.com/watch?v=peer-{index}",
+                    "format": "Short-duration candidate (<=180 sec)",
+                    "age_days": 21 + index,
+                    "views": 50 + index * 10,
+                    "averageViewDuration": 20,
+                }
+                for index in range(3)
+            ],
+        ]
+        ranked = youtube_dashboard.rank_optimization_candidates(rows)
+        # zero-view video must NOT be ranked as a candidate
+        self.assertNotIn("zero-view-video", [row["video_id"] for row in ranked])
+        # the measured video with views > 0 should be ranked
+        self.assertEqual(ranked[0]["video_id"], "target")
+
     def test_recent_video_opportunities_prioritize_measured_low_ctr(self):
         rows = [
             {
