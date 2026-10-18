@@ -1459,30 +1459,58 @@ def _render_studio_export_analysis():
         "source files are not saved by this app"
     )
 
-    summary_fields = (
-        ("views", "Views"),
-        ("watch_time_minutes", "Watch time (min)"),
-        ("impressions", "Impressions"),
-        ("subscribers_gained", "Subscribers gained"),
+    st.caption(
+        "Each report stays separate: exported date ranges can overlap, so the app does not "
+        "automatically combine totals from different files."
     )
-    combined = {}
-    for key, _ in summary_fields:
-        values = [
-            report["summary"][key]
-            for report in reports
-            if isinstance(report.get("summary", {}).get(key), (int, float))
-        ]
-        if values:
-            combined[key] = sum(values)
-    if combined:
-        metric_columns = st.columns(min(4, len(combined)))
-        display = [(key, label, combined[key]) for key, label in summary_fields if key in combined]
-        for column, (key, label, value) in zip(metric_columns, display):
-            column.metric(label, f"{value:,.0f}")
+
+    priority_order = {"High": 0, "Review": 1, "Opportunity": 2, "Monitor": 3, "Context": 4}
+    export_actions = []
+    for report in reports:
+        for recommendation in report.get("recommendations", []):
+            export_actions.append((priority_order.get(recommendation.get("priority"), 5),
+                                   report.get("filename", "Studio export"), recommendation))
+    export_actions.sort(key=lambda item: (item[0], item[1], item[2].get("title", "")))
+    if export_actions:
+        st.subheader("Prioritized actions from your exports")
         st.caption(
-            "These totals are the sum of each uploaded report. They may overlap if you exported "
-            "the same metric and date range more than once; compare individual files before combining totals."
+            "These are evidence-backed review ideas, not promises of growth. Start with "
+            "the measured issue and re-check the same metric after any approved experiment."
         )
+        for action_index, (priority_rank, source_file, recommendation) in enumerate(export_actions[:8]):
+            with st.container(border=True):
+                st.markdown(
+                    f"**{recommendation.get('priority', 'Review')} · "
+                    f"{recommendation.get('title', 'Review this report')}**"
+                )
+                st.caption(f"Source report: {source_file}")
+                st.write(recommendation.get("evidence", ""))
+                st.caption("Next step: " + recommendation.get("action", ""))
+                video_id = recommendation.get("video_id")
+                video_title = recommendation.get("video_title")
+                if (video_id or video_title) and recommendation.get("priority") in {"High", "Review"}:
+                    if st.button(
+                        "Review in Strategist",
+                        key=f"studio_action_to_strategist_{action_index}",
+                    ):
+                        if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id)):
+                            reference = f"https://www.youtube.com/watch?v={video_id}"
+                        elif video_title:
+                            safe_title = str(video_title).replace("”", "").replace("“", "")
+                            reference = f'video title: “{safe_title}”'
+                        else:
+                            reference = None
+                        if reference:
+                            st.session_state["pending_optimizer_video_url"] = reference
+                            st.session_state["studio_export_pending_instruction"] = (
+                                f"Review this video's metadata using the uploaded Studio evidence. "
+                                f"The measured review signal is: {recommendation.get('title', 'metadata review')}. "
+                                "Explain what the evidence supports and what it cannot prove. "
+                                "Use transcript/current metadata for content claims; do not claim a "
+                                "metric proves that metadata caused the result."
+                            )
+                            st.session_state["asl_workspace"] = "Strategist"
+                            st.rerun()
 
     table_rows = []
     for report_index, report in enumerate(reports):
@@ -1491,6 +1519,7 @@ def _render_studio_export_analysis():
             "video_performance": "Video performance / reach",
             "daily_trend": "Daily trend",
             "traffic_sources": "Traffic sources",
+            "breakdown": "Audience / search breakdown",
             "analytics_table": "Analytics table",
         }
         label = labels.get(report.get("report_type"), "Analytics table")
@@ -1558,84 +1587,6 @@ def _render_studio_export_analysis():
                     "Relative retention is an index against typical viewing behaviour, not "
                     "the literal percentage of your viewers still watching."
                 )
-
-            recommendations = report.get("recommendations", [])
-            dimension_fields = (
-                ("traffic_source", "Traffic source"),
-                ("search_term", "Search term"),
-                ("geography", "Geography"),
-                ("age_group", "Age group"),
-                ("gender", "Gender"),
-                ("device_type", "Device type"),
-            )
-            available_dimensions = [
-                (key, label) for key, label in dimension_fields
-                if key in report.get("fields", [])
-            ]
-            if available_dimensions:
-                dimension_rows = []
-                for raw_row in report.get("rows", []):
-                    for key, label in available_dimensions:
-                        if raw_row.get(key):
-                            dimension_rows.append({
-                                "Dimension": label,
-                                "Value": raw_row.get(key),
-                                "Views": raw_row.get("views"),
-                                "Watch time (min)": raw_row.get("watch_time_minutes"),
-                                "Viewer percentage": raw_row.get("viewer_percentage"),
-                                "Impressions": raw_row.get("impressions"),
-                                "CTR (%)": raw_row.get("ctr_percent"),
-                                "Date": raw_row.get("date"),
-                            })
-                if dimension_rows:
-                    st.markdown("**Breakdown rows found**")
-                    st.dataframe(
-                        dimension_rows,
-                        hide_index=True,
-                        use_container_width=True,
-                    )
-
-            if report.get("report_type") == "retention" and not report.get("video_rows"):
-                st.markdown("**Attach this retention curve to a video**")
-                st.caption(
-                    "Some retention exports contain only the time curve, without a video title or ID. "
-                    "Enter the related video URL, 11-character ID, or exact title so Strategist can "
-                    "use the curve when reviewing that video."
-                )
-                retention_reference = st.text_input(
-                    "Video URL, ID, or exact title",
-                    key=f"studio_retention_reference_{report_index}",
-                )
-                if st.button(
-                    "Attach retention data",
-                    key=f"attach_studio_retention_{report_index}",
-                    disabled=not retention_reference.strip(),
-                ):
-                    try:
-                        evidence_index = st.session_state.get(
-                            "studio_export_evidence_index", {}
-                        )
-                        studio_export_analyzer.add_manual_retention_evidence(
-                            evidence_index, report, retention_reference
-                        )
-                        st.session_state["studio_export_evidence_index"] = evidence_index
-                    except studio_export_analyzer.StudioExportError as error:
-                        st.error(str(error))
-                    else:
-                        st.success(
-                            "Retention evidence attached for use in Strategist. "
-                            "The original file remains in the current session only."
-                        )
-
-            if recommendations:
-                st.markdown("**What the report suggests reviewing**")
-                for recommendation_index, recommendation in enumerate(recommendations, start=1):
-                    st.markdown(
-                        f"**{recommendation.get('priority', 'Review')} · "
-                        f"{recommendation.get('title', 'Review this report')}**"
-                    )
-                    st.write(recommendation.get("evidence", ""))
-                    st.caption("Next step: " + recommendation.get("action", ""))
 
             videos = report.get("video_rows", [])
             if videos:
