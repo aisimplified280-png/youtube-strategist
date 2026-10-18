@@ -10,7 +10,7 @@ import io
 import math
 import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from statistics import median
 
 
@@ -215,24 +215,102 @@ def _decode_upload(data: bytes) -> str:
     raise StudioExportError("Could not decode this file. Export it as CSV or TSV and upload again.")
 
 
+def _excel_cell_text(value, number_format=""):
+    """Convert an Excel cell into text without losing dates, numeric values, or percents."""
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)) and "%" in (number_format or ""):
+        return f"{value * 100:g}%"
+    if isinstance(value, datetime):
+        if value.time().hour == 0 and value.time().minute == 0 and value.time().second == 0:
+            return value.date().isoformat()
+        return value.isoformat(sep=" ")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _read_xlsx_matrix(data: bytes) -> tuple[list[list[str]], str]:
+    """Read the worksheet that most clearly contains a Studio report table."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError as error:
+        raise StudioExportError(
+            "Excel workbook support is unavailable. Upload CSV/TSV or contact the app owner."
+        ) from error
+    try:
+        workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as error:
+        raise StudioExportError(
+            "This does not look like a valid .xlsx workbook. Open it in Excel and save it as .xlsx, then try again."
+        ) from error
+
+    best_matrix = None
+    best_sheet = None
+    best_rank = None
+    for worksheet in workbook.worksheets:
+        matrix = [
+            [_excel_cell_text(cell.value, cell.number_format) for cell in row]
+            for row in worksheet.iter_rows()
+        ]
+        best_header = None
+        for row_index, row in enumerate(matrix[:60]):
+            mapped = {
+                field for label in row
+                if (field := _map_header(label)) is not None
+            }
+            if len(mapped) < 2:
+                continue
+            important = sum(field in mapped for field in (
+                "video_title", "views", "impressions", "ctr",
+                "elapsed_time", "retention_percent", "relative_retention",
+            ))
+            rank = (len(mapped) * 10 + important, -row_index)
+            if best_header is None or rank > best_header:
+                best_header = rank
+        if best_header is None:
+            continue
+        rank = (best_header[0], best_header[1], len(matrix))
+        if best_rank is None or rank > best_rank:
+            best_rank = rank
+            best_matrix = matrix
+            best_sheet = worksheet.title
+    workbook.close()
+
+    if best_matrix is None:
+        raise StudioExportError(
+            "I couldn't find a YouTube Studio report table in this workbook. Choose a worksheet with video titles/IDs and measurable report columns."
+        )
+    return best_matrix, best_sheet
+
+
 def parse_studio_export(filename: str, data: bytes) -> dict:
-    """Parse one Studio CSV/TSV export and return normalized in-memory records."""
+    """Parse one Studio CSV/TSV/TXT or Excel workbook export in memory."""
     suffix = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
-    if suffix not in {"csv", "tsv", "txt"}:
-        raise StudioExportError("Upload a YouTube Studio CSV or TSV export. Excel workbooks are not supported yet.")
+    if suffix not in {"csv", "tsv", "txt", "xlsx"}:
+        raise StudioExportError(
+            "Upload a YouTube Studio CSV, TSV, TXT, or .xlsx workbook."
+        )
     if len(data) > MAX_UPLOAD_BYTES:
         raise StudioExportError(
             "This file exceeds the 10 MB per-file limit. Export a narrower date range or split the report."
         )
-    text = _decode_upload(data)
-    if not text.strip():
-        raise StudioExportError("This file is empty.")
 
-    delimiter = "\t" if suffix == "tsv" else _detect_delimiter(text)
-    try:
-        matrix = list(csv.reader(io.StringIO(text), delimiter=delimiter))
-    except csv.Error as error:
-        raise StudioExportError("The file could not be parsed as a CSV/TSV report.") from error
+    source_sheet = None
+    if suffix == "xlsx":
+        matrix, source_sheet = _read_xlsx_matrix(data)
+        delimiter = "excel"
+    else:
+        text = _decode_upload(data)
+        if not text.strip():
+            raise StudioExportError("This file is empty.")
+        delimiter = "\t" if suffix == "tsv" else _detect_delimiter(text)
+        try:
+            matrix = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+        except csv.Error as error:
+            raise StudioExportError("The file could not be parsed as a CSV/TSV report.") from error
     if not matrix:
         raise StudioExportError("This file contains no rows.")
 
@@ -327,7 +405,8 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
     return {
         "filename": filename,
         "report_type": report_type,
-        "delimiter": "tab" if delimiter == "\t" else ("semicolon" if delimiter == ";" else "comma"),
+        "delimiter": "excel" if suffix == "xlsx" else ("tab" if delimiter == "\t" else ("semicolon" if delimiter == ";" else "comma")),
+        "source_sheet": source_sheet,
         "header_row": header_index + 1,
         "header_labels": header_labels,
         "fields": sorted(fields),
@@ -461,6 +540,12 @@ def _performance_recommendations(videos):
                 "action": "Check whether the title and thumbnail communicate one clear, accurate reason to click. Treat this as a review candidate, not proof the packaging caused the difference.",
                 "video_id": row.get("video_id"),
                 "video_title": row.get("video_title"),
+                "measured_metrics": {
+                    "ctr_percent": row.get("ctr_percent"),
+                    "impressions": row.get("impressions"),
+                    "median_ctr_percent": midpoint,
+                    "views": row.get("views"),
+                },
             })
     retention_rows = [
         row for row in videos
@@ -482,6 +567,12 @@ def _performance_recommendations(videos):
                 "action": "Compare the opening promise with how quickly the video delivers value. Account for differences in video length and format before drawing conclusions.",
                 "video_id": row.get("video_id"),
                 "video_title": row.get("video_title"),
+                "measured_metrics": {
+                    "views": row.get("views"),
+                    "average_view_percentage": row.get("average_view_percentage"),
+                    "median_average_view_percentage": midpoint,
+                    "average_view_duration_seconds": row.get("average_view_duration_seconds"),
+                },
             })
     view_retention_rows = [
         row for row in videos
@@ -522,6 +613,12 @@ def _performance_recommendations(videos):
                 ),
                 "video_id": row.get("video_id"),
                 "video_title": row.get("video_title"),
+                "measured_metrics": {
+                    "views": row.get("views"),
+                    "average_view_percentage": row.get("average_view_percentage"),
+                    "median_views": views_midpoint,
+                    "median_average_view_percentage": retention_midpoint,
+                },
             })
 
     if not recommendations:
@@ -700,6 +797,7 @@ def analyze_studio_export(parsed: dict) -> dict:
 
     return {
         "filename": parsed["filename"],
+        "source_sheet": parsed.get("source_sheet"),
         "report_type": parsed["report_type"],
         "header_row": parsed["header_row"],
         "headers_detected": parsed["header_labels"],

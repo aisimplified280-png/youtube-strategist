@@ -1,4 +1,7 @@
 import unittest
+from io import BytesIO
+
+from openpyxl import Workbook
 
 import studio_export_analyzer as studio
 
@@ -29,6 +32,32 @@ class StudioExportAnalyzerTests(unittest.TestCase):
         self.assertEqual(first["ctr_percent"], 2.5)
         self.assertEqual(first["subscribers_gained"], 12)
         self.assertTrue(report["recommendations"])
+
+    def test_parses_xlsx_workbook_and_normalizes_percent_cells(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Reach"
+        worksheet.append(["YouTube Studio report"])
+        worksheet.append([
+            "Video title", "Video ID", "Views", "Impressions",
+            "Impressions click-through rate", "Average percentage viewed",
+        ])
+        worksheet.append(["AI Basics", "abcdefghijk", 1000, 5000, 0.025, 0.35])
+        worksheet["E3"].number_format = "0.00%"
+        worksheet["F3"].number_format = "0.0%"
+        payload = BytesIO()
+        workbook.save(payload)
+
+        parsed = studio.parse_studio_export("reach.xlsx", payload.getvalue())
+        report = studio.analyze_studio_export(parsed)
+        self.assertEqual(parsed["delimiter"], "excel")
+        self.assertEqual(parsed["source_sheet"], "Reach")
+        self.assertEqual(parsed["report_type"], "video_performance")
+        self.assertEqual(report["video_count"], 1)
+        video = report["video_rows"][0]
+        self.assertEqual(video["video_id"], "abcdefghijk")
+        self.assertEqual(video["ctr_percent"], 2.5)
+        self.assertEqual(video["average_view_percentage"], 35.0)
 
     def test_parses_tsv_export_and_does_not_invent_missing_metrics(self):
         payload = (
@@ -173,6 +202,30 @@ class StudioExportAnalyzerTests(unittest.TestCase):
         self.assertEqual(len(evidence), 1)
         self.assertEqual(len(evidence[0]["retention_curve"]), 3)
         self.assertEqual(evidence[0]["source_file"], "retention.csv")
+
+    def test_opportunity_recommendation_keeps_measured_reach_for_ranking(self):
+        videos = [
+            {"video_title": "One", "video_id": "aaaaaaaaaaa", "views": 100,
+             "average_view_percentage": 50.0, "ctr_percent": None, "impressions": None},
+            {"video_title": "Two", "video_id": "bbbbbbbbbbb", "views": 200,
+             "average_view_percentage": 60.0, "ctr_percent": None, "impressions": None},
+            {"video_title": "Three", "video_id": "ccccccccccc", "views": 300,
+             "average_view_percentage": 70.0, "ctr_percent": None, "impressions": None},
+            {"video_title": "Four", "video_id": "ddddddddddd", "views": 400,
+             "average_view_percentage": 80.0, "ctr_percent": None, "impressions": None},
+        ]
+        recommendations = studio._performance_recommendations(videos)
+        opportunities = [
+            item for item in recommendations if item["priority"] == "Opportunity"
+        ]
+        self.assertEqual(len(opportunities), 2)
+        self.assertEqual(
+            max(
+                opportunities,
+                key=lambda item: item["measured_metrics"]["views"],
+            )["measured_metrics"]["views"],
+            400,
+        )
 
     def test_low_ctr_recommendation_uses_only_measured_impressions(self):
         videos = [

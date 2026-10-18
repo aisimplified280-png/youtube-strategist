@@ -78,11 +78,11 @@ The primary navigation is a row of three normal Streamlit buttons with additiona
 
 ### 9. Studio export upload and deeper evidence
 
-**Expected flow:** sign in as the owner → open Analytics → download one or more CSV/TSV reports from YouTube Studio Advanced mode / See more → Export current view → upload and analyse → review the prioritized action list and per-file diagnostics → open the selected video in Strategist with that video's numeric export evidence attached.
+**Expected flow:** sign in as the owner → open Analytics → upload a Studio CSV/TSV or `.xlsx` workbook → see one next-best video-specific action ranked by priority and measured reach → choose **Do it** to draft an exact proposal or **Skip** to see the next action → approve the exact proposal before a YouTube metadata write.
 
-**Implemented in this branch:** multi-file in-memory CSV/TSV parsing with preamble/header detection, recognized-versus-ignored column reporting, video performance comparisons, measured CTR reviews, average percentage viewed comparisons, higher-performing examples worth studying, daily view trend comparisons, source/keyword/geography/audience breakdowns, retention-curve charts and adjacent-drop inspection, a manual attachment flow for retention-only files, and a clean CSV download of the analysed per-video table. Overlapping report totals are not silently combined; report data stays split by source and range. Raw files are not written to disk or Google Drive. The AI provider receives only the selected video's compact metrics, source label, and date range when the owner explicitly opens a video in Strategist.
+**Implemented in this branch:** multi-file in-memory CSV/TSV/TXT and `.xlsx` workbook parsing with preamble/header detection, recognized-versus-ignored column reporting, video performance comparisons, measured CTR reviews, average percentage viewed comparisons, higher-performing examples worth studying, daily view trend comparisons, source/keyword/geography/audience breakdowns, retention-curve charts and adjacent-drop inspection, a manual attachment flow for retention-only files, and a clean CSV download of the analysed per-video table. The action queue shows one highest-priority issue, sorts same-priority candidates by measured reach, supports Skip, and routes Do it into the existing approval-gated proposal flow. Overlapping report totals are not silently combined; report data stays split by source and range. Raw files are not written to disk or Google Drive. The AI provider receives only the selected video's compact metrics, source label, and date range when the owner explicitly opens a video in Strategist.
 
-**Limitations:** CSV/TSV/text-delimited exports are supported; Excel workbooks and ZIP bundles are not. Unknown fields are reported but not interpreted. Revenue/monetization-specific columns are not currently analysed. A curve only reveals where audience retention changed, not why viewers left. See STUDIO_EXPORT_GUIDE.md for export instructions and evidence boundaries.
+**Limitations:** CSV/TSV/TXT and `.xlsx` workbooks are supported; ZIP bundles and direct Microsoft Excel/OneDrive account browsing are not. For a cloud-stored workbook, download and upload it; direct Microsoft access needs a separate consent/configuration. Unknown fields are reported but not interpreted. Revenue/monetization-specific columns are not currently analysed. A curve only reveals where audience retention changed, not why viewers left. See STUDIO_EXPORT_GUIDE.md for export instructions and evidence boundaries.
 
 ### 10. Metadata proposal approval, success, and failure
 
@@ -98,7 +98,7 @@ The primary navigation is a row of three normal Streamlit buttons with additiona
 - **Thumbnail review workflow.** No thumbnail comparison, generation, upload, or thumbnail-change approval flow exists in the app today. It needs a separate design before adding controls; do not present it as already supported.
 - **Retention analysis.** The current Analytics view has average view duration and engagement measures, not a full audience-retention curve or drop-off analysis.
 - **Improve the first-run Analytics state.** Clearly differentiate “no report yet”, delayed Reporting API reach data, missing rows, and genuine zero values. Never fill missing CTR with an estimate.
-- **Expand Studio import formats and metric families.** CSV/TSV/text exports cover the primary workflow; XLSX/ZIP and revenue-specific analysis remain future work.
+- **Expand Studio metric families.** CSV/TSV/TXT and `.xlsx` imports are supported; ZIP bundles and revenue-specific analysis remain future work.
 
 ### P2 — trust and repeat use
 - **Durable conversation and audit history.** Current chat/audit state is session-bound; optional sheet memory covers scans and approved experiments, not every interaction.
@@ -125,6 +125,6 @@ The primary navigation is a row of three normal Streamlit buttons with additiona
 - [ ] No metadata write occurs before approval of the exact proposal.
 - [ ] Find videos and Analytics both provide a direct route to review the selected video in Strategist.
 - [ ] Missing CTR/rows stay unavailable and have a clear explanation.
-- [ ] Studio CSV/TSV exports can be analysed and the selected video's compact metrics can reach Strategist only after an explicit owner action.
+- [ ] Studio CSV/TSV/TXT and `.xlsx` exports can be analysed. One prioritized action is shown at a time; Do it drafts, Skip advances, and YouTube only changes after exact-proposal approval.
 - [ ] Retention-only reports can be attached to an exact video ID, URL, or title; the curve is not treated as a causal explanation.
 - [ ] Mobile navigation buttons remain below the host header and do not render underneath it.
