@@ -257,17 +257,19 @@ def _new_google_flow(secrets, *, scopes=None, state=None, code_verifier=None):
     )
 
 
-def _render_same_tab_oauth_link(label, authorization_url, help_text):
-    """Navigate this tab to Google rather than creating an isolated Streamlit session."""
-    safe_label = html.escape(label)
-    safe_url = html.escape(authorization_url, quote=True)
-    st.markdown(
-        f'<a class="asl-oauth-link" href="{safe_url}" target="_top" rel="noreferrer">'
-        f'{safe_label}</a>',
-        unsafe_allow_html=True,
+def _render_oauth_link(label, authorization_url, help_text):
+    """Use Streamlit's supported link widget to open OAuth outside the app iframe."""
+    st.link_button(
+        label,
+        authorization_url,
+        type="primary",
+        use_container_width=True,
+        help=help_text,
     )
-    if help_text:
-        st.caption(help_text)
+    st.caption(
+        "Google authorization opens in a new tab. After consent, the encrypted shared "
+        "token store makes the grant available to the other app tab as well."
+    )
 
 
 def _restore_shared_oauth_credentials(token_store, subject):
@@ -608,7 +610,7 @@ def _start_youtube_authorization(secrets, subject):
         prompt="consent",
         login_hint=getattr(st.user, "email", ""),
     )
-    _render_same_tab_oauth_link(
+    _render_oauth_link(
         "Authorize YouTube Analytics and metadata access",
         authorization_url,
         "Google opens in this tab and returns here. This grant covers YouTube Analytics "
@@ -640,7 +642,7 @@ def _start_memory_authorization(secrets, subject):
         prompt="consent",
         login_hint=getattr(st.user, "email", ""),
     )
-    _render_same_tab_oauth_link(
+    _render_oauth_link(
         "Connect private Strategist Memory",
         authorization_url,
         "Google opens in this tab and returns here. This optional grant requests only "
