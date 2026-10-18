@@ -1636,6 +1636,7 @@ def _render_studio_export_analysis():
         st.info("You've acted on or skipped every actionable suggestion in this upload set.")
         if st.button("Review suggestions again", key="studio_reset_skipped_actions"):
             st.session_state.pop("studio_export_skipped_actions", None)
+            st.session_state.pop("studio_export_started_actions", None)
             st.rerun()
     else:
         st.info(
