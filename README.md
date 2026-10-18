@@ -308,3 +308,11 @@ Model names are configurable. The chat sends the target video's title, descripti
 Every response is a proposal only. The app displays current and proposed title, description and tags. You must explicitly click **Approve and apply this exact proposal** before a change is sent to YouTube. The existing connector re-checks that the target metadata has not changed since review, validates the proposal, applies only supported snippet metadata, and verifies the update. Changing the proposal invalidates the prior approval digest. Transcript retrieval is best-effort; transcript-disabled, private, age-restricted, or otherwise unavailable videos may fall back to public metadata.
 
 The chat history and approval audit are held in the current Streamlit session. They are not durable across session expiry. Do not enter secrets or other sensitive information in the chat.
+
+### Upload YouTube Studio exports
+
+The Analytics workspace accepts multiple Studio CSV/TSV exports. Use Advanced Mode / See more → Export current view in YouTube Studio to upload video performance, reach, daily trends, audience retention, traffic source, search term or audience-segment reports. The analyser recognizes known metric headers, identifies retention drops for inspection, compares CTR only against measured impressions, highlights above-median viewing examples worth studying, and creates a prioritized action list plus a downloadable analysed-video table.
+
+Selected performance metrics can be attached to a video's Strategist review. A retention-only export without a video title or ID can be manually associated with an exact video title, ID or URL. Overlapping reports remain separate; the app does not silently combine their totals. Missing CTR remains unavailable, and observed metrics are not treated as proof of causation.
+
+Uploaded source files aren't written to disk or Google Drive by this workflow. If **Review in Strategist** is selected, compact metrics, report source and dates are included in the configured AI-provider request; the raw uploaded file is not sent. See the detailed [Studio export guide](STUDIO_EXPORT_GUIDE.md). The current implementation supports CSV/TSV/text-delimited files, not Excel workbooks or ZIP bundles.

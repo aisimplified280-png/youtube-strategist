@@ -11,6 +11,7 @@ import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
 
 import content_memory
+import studio_export_analyzer
 import youtube_analytics_connector as connector
 
 
@@ -261,6 +262,7 @@ def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
 def _build_prompt(
     target, reference, transcript, transcript_status, history, instruction,
     *, target_transcript="", target_transcript_status="Target transcript not supplied.",
+    studio_evidence=None,
 ):
     recent = history[-MAX_HISTORY_TURNS:]
     history_text = "\n".join(
@@ -278,7 +280,7 @@ rationale (array of strings).
 
 Rules:
 - Return a complete title, description, and separate tags, but conservatism is more important than filling space.
-- The target title, existing target description, target tags, and TARGET TRANSCRIPT are the only evidence for claims about the target video.
+- The target title, existing target description, target tags, and TARGET TRANSCRIPT are the only evidence for claims about the video's content. Use STUDIO PERFORMANCE EVIDENCE only for numeric performance claims.
 - Reference metadata/transcript may inspire general presentation only. Never treat reference content as evidence that the target video covers a feature, step, claim, or example.
 - Never invent video sections, technical details, examples, learning outcomes, quotations, numbers, or promises.
 - NEVER invent timestamps or chapter markers. Do not add a timestamp/chapters section unless the user explicitly asks for chapters/timestamps, and then use only timecodes present in the TARGET TRANSCRIPT.
@@ -291,6 +293,8 @@ Rules:
 - If the user asks for a focused edit, leave non-requested metadata fields unchanged.
 - If the user asks for a revision, revise the current proposal rather than resetting it.
 - Do not promise views, CTR, virality, or subscriber gains.
+- Studio export evidence is numeric performance context only; never treat it as proof of causation or as evidence about the video's spoken/visual content.
+- Respect the date window and source file attached to each export observation. Different uploads can cover overlapping periods; never sum them unless the report itself represents non-overlapping rows.
 
 TARGET VIDEO (owner's channel; factual source):
 {json.dumps(target, ensure_ascii=False)}
@@ -305,6 +309,9 @@ REFERENCE VIDEO (optional public metadata; an empty object means none was suppli
 REFERENCE TRANSCRIPT STATUS: {transcript_status}
 REFERENCE TRANSCRIPT (may be empty or truncated; never use it to claim what the target video covers):
 {transcript}
+
+STUDIO PERFORMANCE EVIDENCE (numeric observations only; can be missing or cover different periods):
+{json.dumps(studio_evidence or [], ensure_ascii=False)}
 
 RECENT CHAT:
 {history_text}
@@ -399,6 +406,11 @@ def _load_conversation_videos(youtube, secrets, message):
     )
     target_snippet = connector.fetch_video_snippet(youtube, target_id)
     target_transcript, target_transcript_status = _transcript_text(target_id)
+    studio_evidence = studio_export_analyzer.find_video_evidence(
+        st.session_state.get("studio_export_evidence_index", {}),
+        target_id,
+        target_snippet.get("title"),
+    )
     if reference_id:
         reference_snippet = _video_snippet(youtube, reference_id)
         transcript, transcript_status = _transcript_text(reference_id)
@@ -413,6 +425,7 @@ def _load_conversation_videos(youtube, secrets, message):
         "reference_snippet": reference_snippet,
         "target_transcript": target_transcript,
         "target_transcript_status": target_transcript_status,
+        "studio_performance_evidence": studio_evidence,
         "transcript": transcript,
         "transcript_status": transcript_status,
     }
@@ -519,6 +532,16 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
                 context.get("reference_snippet", {}).get("title") or "None (optional)"
             )
             st.caption(f"Reference: {reference_title}")
+            performance_evidence = context.get("studio_performance_evidence", [])
+            if performance_evidence:
+                source_names = ", ".join(dict.fromkeys(
+                    str(item.get("source_file", "Studio export"))
+                    for item in performance_evidence
+                ))
+                st.caption(
+                    f"Studio export evidence attached from {source_names}. "
+                    "Metrics are kept separate by source and date range."
+                )
             with st.popover("Video options"):
                 if st.button(
                     "Reload current video",
@@ -709,6 +732,7 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
                             "target_transcript_status",
                             "Target transcript was not loaded for this session.",
                         ),
+                        studio_evidence=context.get("studio_performance_evidence", []),
                     )
                     result, used_provider, used_model = _generate_with_fallbacks(
                         groq.get("api_key"), groq_model, groq_fallbacks,

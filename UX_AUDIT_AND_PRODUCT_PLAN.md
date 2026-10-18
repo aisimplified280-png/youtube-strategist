@@ -13,7 +13,7 @@ The app should help the channel owner decide **which video to improve, what to c
 2. **Find videos** — the evidence-backed shortlist. Choose a reporting window, see why each upload surfaced, inspect only available measurements, and open the chosen video directly in Strategist.
 3. **Analytics** — the channel overview and searchable performance table. Lead with views, watch time, average view duration, and net subscribers. Keep secondary metrics, coverage detail, and traffic-source detail available but collapsed until requested.
 
-The primary navigation is a visible top segmented control so it is not hidden behind the mobile sidebar. The sidebar is for **Connections** and **Account**. New chat appears only inside the Strategist workflow. Private Google Sheets memory remains optional and collapsed by default.
+The primary navigation is a row of three normal Streamlit buttons with additional top spacing below Streamlit's own sticky header. The segmented control was removed after it appeared underneath the host navigation. The sidebar is for **Connections** and **Account**. New chat appears only inside the Strategist workflow. Private Google Sheets memory remains optional and collapsed by default.
 
 ## Flow audit
 
@@ -76,7 +76,15 @@ The primary navigation is a visible top segmented control so it is not hidden be
 
 **Keep:** date range, daily views trend, format filter based on the actual duration-based label, available impressions/CTR, traffic sources, coverage status, candidate evidence, and session audit records.
 
-### 9. Metadata proposal approval, success, and failure
+### 9. Studio export upload and deeper evidence
+
+**Expected flow:** sign in as the owner → open Analytics → download one or more CSV/TSV reports from YouTube Studio Advanced mode / See more → Export current view → upload and analyse → review the prioritized action list and per-file diagnostics → open the selected video in Strategist with that video's numeric export evidence attached.
+
+**Implemented in this branch:** multi-file in-memory CSV/TSV parsing with preamble/header detection, recognized-versus-ignored column reporting, video performance comparisons, measured CTR reviews, average percentage viewed comparisons, higher-performing examples worth studying, daily view trend comparisons, source/keyword/geography/audience breakdowns, retention-curve charts and adjacent-drop inspection, a manual attachment flow for retention-only files, and a clean CSV download of the analysed per-video table. Overlapping report totals are not silently combined; report data stays split by source and range. Raw files are not written to disk or Google Drive. The AI provider receives only the selected video's compact metrics, source label, and date range when the owner explicitly opens a video in Strategist.
+
+**Limitations:** CSV/TSV/text-delimited exports are supported; Excel workbooks and ZIP bundles are not. Unknown fields are reported but not interpreted. Revenue/monetization-specific columns are not currently analysed. A curve only reveals where audience retention changed, not why viewers left. See STUDIO_EXPORT_GUIDE.md for export instructions and evidence boundaries.
+
+### 10. Metadata proposal approval, success, and failure
 
 **Expected:** clearly show current vs proposed values; allow revisions through chat; any revision invalidates prior approval; approve the exact final proposal; refetch current metadata before writing; update only title, description, and tags; verify saved values; show success only after verification. If the API result is uncertain, direct the user to reload metadata rather than blindly approving a second time.
 
@@ -90,6 +98,7 @@ The primary navigation is a visible top segmented control so it is not hidden be
 - **Thumbnail review workflow.** No thumbnail comparison, generation, upload, or thumbnail-change approval flow exists in the app today. It needs a separate design before adding controls; do not present it as already supported.
 - **Retention analysis.** The current Analytics view has average view duration and engagement measures, not a full audience-retention curve or drop-off analysis.
 - **Improve the first-run Analytics state.** Clearly differentiate “no report yet”, delayed Reporting API reach data, missing rows, and genuine zero values. Never fill missing CTR with an estimate.
+- **Expand Studio import formats and metric families.** CSV/TSV/text exports cover the primary workflow; XLSX/ZIP and revenue-specific analysis remain future work.
 
 ### P2 — trust and repeat use
 - **Durable conversation and audit history.** Current chat/audit state is session-bound; optional sheet memory covers scans and approved experiments, not every interaction.
@@ -116,4 +125,6 @@ The primary navigation is a visible top segmented control so it is not hidden be
 - [ ] No metadata write occurs before approval of the exact proposal.
 - [ ] Find videos and Analytics both provide a direct route to review the selected video in Strategist.
 - [ ] Missing CTR/rows stay unavailable and have a clear explanation.
-- [ ] Mobile navigation does not require opening the sidebar to switch the three main workspaces.
+- [ ] Studio CSV/TSV exports can be analysed and the selected video's compact metrics can reach Strategist only after an explicit owner action.
+- [ ] Retention-only reports can be attached to an exact video ID, URL, or title; the curve is not treated as a causal explanation.
+- [ ] Mobile navigation buttons remain below the host header and do not render underneath it.

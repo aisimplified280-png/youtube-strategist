@@ -168,6 +168,32 @@ class StrategistChatTests(unittest.TestCase):
         self.assertIn("[01:01:01] Hour caption", text)
         self.assertIn("Timestamped transcript available", status)
 
+    def test_prompt_includes_studio_metrics_as_numeric_context_not_causal_proof(self):
+        evidence = [{
+            "source_file": "content.csv",
+            "report_type": "video_performance",
+            "views": 1200,
+            "impressions": 5000,
+            "ctr_percent": 2.4,
+            "date_start": "2026-09-01",
+            "date_end": "2026-09-28",
+        }]
+        prompt = strategist_chat._build_prompt(
+            {"title": "Target", "description": "Existing description", "tags": []},
+            {},
+            "",
+            "No reference transcript.",
+            [],
+            "Review this metadata",
+            target_transcript="",
+            target_transcript_status="Unavailable",
+            studio_evidence=evidence,
+        )
+        self.assertIn("content.csv", prompt)
+        self.assertIn("5000", prompt)
+        self.assertIn("numeric performance context", prompt)
+        self.assertIn("never treat it as proof of causation", prompt)
+
     def test_apply_error_message_explains_stale_metadata_without_hiding_reason(self):
         message = strategist_chat._apply_error_message(
             RuntimeError("Video metadata changed after review. Reload the video and approve a new proposal.")
