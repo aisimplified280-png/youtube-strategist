@@ -329,13 +329,33 @@ def _youtube_urls_from_message(message):
 
 
 def _youtube_references_from_message(message):
-    """Extract YouTube links and bare 11-character video IDs in the order provided."""
-    return re.findall(
-        r"https?://(?:www\.)?(?:youtube\.com|m\.youtube\.com|youtu\.be)/[^\s<>()]+"
-        r"|(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])",
-        message or "",
+    """Extract links, explicitly labelled video IDs, or a bare ID entered by itself."""
+    value = message or ""
+    entries = []
+    url_pattern = re.compile(
+        r"https?://(?:www\.)?(?:youtube\.com|m\.youtube\.com|youtu\.be)/[^\s<>()]+",
         flags=re.IGNORECASE,
     )
+    id_pattern = re.compile(
+        r"\b(?:video|target|reference)\s+id\s*[:=]\s*([A-Za-z0-9_-]{11})\b",
+        flags=re.IGNORECASE,
+    )
+    entries.extend(
+        (match.start(), match.end(), match.group(0))
+        for match in url_pattern.finditer(value)
+    )
+    entries.extend(
+        (match.start(), match.end(), match.group(1))
+        for match in id_pattern.finditer(value)
+    )
+    if entries:
+        entries.sort(key=lambda item: item[0])
+        return [item[2] for item in entries]
+
+    bare_id = value.strip().strip('"\'“”')
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", bare_id):
+        return [bare_id]
+    return None
 
 def _quoted_title_reference(message):
     """Extract an explicitly quoted target title so instructions are not mistaken for a title."""
@@ -614,23 +634,34 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
 
         history = st.session_state.setdefault("strategist_chat_history", [])
 
-        # Remove supplied video links from the instruction; the reference link is optional.
+        # Remove video selectors from the instruction; they identify context, not an edit request.
         clean_instruction = instruction
-        for url in urls[:2]:
-            clean_instruction = clean_instruction.replace(url, " ").strip()
+        for reference_value in urls[:2]:
+            clean_instruction = clean_instruction.replace(reference_value, " ").strip()
+        clean_instruction = re.sub(
+            r"\b(?:video|target|reference)\s+id\s*[:=]\s*[A-Za-z0-9_-]{11}\b",
+            " ",
+            clean_instruction,
+            flags=re.IGNORECASE,
+        )
+        clean_instruction = re.sub(
+            r"\b(?:video|target)\s+title\s*[:=]\s*[\"“].+?[\"”]",
+            " ",
+            clean_instruction,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        clean_instruction = re.sub(
+            r"\b(?:my|target)\s+video\s*[:=]\s*[\"“].+?[\"”]",
+            " ",
+            clean_instruction,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
         clean_instruction = re.sub(
             r"\b(my video|target video|reference video|reference|target)\s*[:=-]?\s*",
             " ",
             clean_instruction,
             flags=re.IGNORECASE,
         ).strip(" \t\r\n,;:-")
-        if not clean_instruction:
-            clean_instruction = (
-                "Analyze my video against the reference and suggest the strongest factual metadata improvements."
-                if context.get("reference_id")
-                else "Analyze my video and suggest the strongest factual metadata improvements."
-            )
-
         existing_proposal = st.session_state.get("strategist_chat_proposal")
         if existing_proposal and existing_proposal.get("target_id") != context["target_id"]:
             existing_proposal = None
