@@ -337,17 +337,37 @@ def _youtube_references_from_message(message):
         flags=re.IGNORECASE,
     )
 
+def _quoted_title_reference(message):
+    """Extract an explicitly quoted target title so instructions are not mistaken for a title."""
+    patterns = (
+        r"\b(?:video|target)\s+title\s*[:=]\s*["“'](.+?)["”'](?=\s|$)",
+        r"\b(?:my|target)\s+video\s*[:=]\s*["“'](.+?)["”'](?=\s|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, message or "", flags=re.IGNORECASE | re.DOTALL)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return None
+
+
 def _load_conversation_videos(youtube, secrets, message):
     """Load target/reference links supplied in chat; no setup form is required."""
     urls = _youtube_references_from_message(message)
-    if not urls:
+    title_reference = _quoted_title_reference(message) if not urls else None
+    if not urls and not title_reference:
         return None, (
-            "Paste **your own YouTube video link or 11-character video ID** and tell me "
-            "what you want to improve. A reference video is optional. For example: "
-            "“Improve my title and description.”"
+            "Paste your own YouTube video link or 11-character ID, or use "
+            'video title: "Exact current video title". Then tell me what you want to improve. '
+            "A reference video is optional."
         )
 
-    target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
+    if title_reference:
+        matched_video = connector._resolve_video(youtube, title_reference)
+        target_id = matched_video.get("id")
+        if not isinstance(target_id, str) or not target_id:
+            raise ValueError("The title match did not return a valid YouTube video ID.")
+    else:
+        target_id = parse_video_id(urls[0].rstrip(".,!?;:"))
     reference_id = parse_video_id(urls[1].rstrip(".,!?;:")) if len(urls) >= 2 else None
     target_snippet = connector.fetch_video_snippet(youtube, target_id)
     target_transcript, target_transcript_status = _transcript_text(target_id)
@@ -553,15 +573,18 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
             st.markdown(instruction)
 
         urls = _youtube_references_from_message(instruction)
+        title_reference = _quoted_title_reference(instruction)
         context = st.session_state.get("strategist_target_reference")
-        if not context and not urls and _is_channel_opportunity_request(instruction):
+        if not context and not urls and not title_reference and _is_channel_opportunity_request(instruction):
             _append_history(history, "user", instruction)
             st.session_state["channel_analysis_request"] = instruction
             st.session_state["opportunity_auto_run"] = True
             st.session_state["asl_pending_workspace"] = "Find videos"
             st.rerun()
 
-        is_new_video_selection = len(urls) >= 2 or (bool(urls) and not context)
+        is_new_video_selection = (
+            len(urls) >= 2 or (bool(urls) and not context) or bool(title_reference)
+        )
         if len(urls) == 1 and context:
             try:
                 is_new_video_selection = (
