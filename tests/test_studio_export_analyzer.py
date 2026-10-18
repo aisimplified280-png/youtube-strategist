@@ -134,6 +134,22 @@ class StudioExportAnalyzerTests(unittest.TestCase):
         self.assertEqual(report["summary"]["views"], 300)
         self.assertEqual(report["video_count"], 2)
 
+    def test_retention_curve_is_indexed_when_export_includes_video_title(self):
+        payload = (
+            "Video title,Elapsed video time,Audience retention\n"
+            "AI Basics,0:00,100%\n"
+            "AI Basics,0:10,82%\n"
+            "AI Basics,0:20,65%\n"
+        ).encode("utf-8")
+        report = studio.analyze_studio_export(
+            studio.parse_studio_export("retention.csv", payload)
+        )
+        index = studio.build_evidence_index([report])
+        evidence = studio.find_video_evidence(index, None, "AI Basics")
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(len(evidence[0]["retention_curve"]), 3)
+        self.assertEqual(evidence[0]["retention_curve"][1]["retention_percent"], 82)
+
     def test_manual_retention_attachment_indexes_curve_by_video_id(self):
         payload = (
             "Elapsed video time,Audience retention\n"
