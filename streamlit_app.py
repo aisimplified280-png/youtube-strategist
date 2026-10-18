@@ -759,16 +759,48 @@ def _selected_analytics_details(analytics, video_id, start_date, end_date):
 
 def _render_proposal(video_row, youtube):
     video_id = video_row["video_id"]
+    video_title = video_row.get("title", video_id)
     snippet = video_row["snippet"]
     rejected_video_ids = st.session_state.setdefault("rejected_video_ids", set())
     if video_id in rejected_video_ids:
-        st.info("This video's proposal was rejected. No YouTube changes were made.")
+        st.info(f"The proposal for **{video_title}** was rejected. No YouTube changes were made.")
         if st.button(
             "Prepare a new proposal",
             key=f"new_proposal_{video_id}",
         ):
             rejected_video_ids.remove(video_id)
             st.rerun()
+        return
+
+    # --- Inline success result: shown immediately where the proposal was, not at page bottom ---
+    inline_result = st.session_state.pop(f"inline_update_result_{video_id}", None)
+    if inline_result is not None:
+        result_value = inline_result.get("result", "")
+        title_applied = inline_result.get("title", video_title)
+        url_applied = inline_result.get("url", "")
+        if result_value == "success":
+            st.success(
+                f"✓ **{title_applied}** — metadata updated and verified on YouTube."
+                + (f"  [Open video]({url_applied})" if url_applied else "")
+            )
+        elif result_value == "no changes":
+            st.info(f"No metadata changes were needed for **{title_applied}**.")
+        else:
+            # Verification mismatch or unknown outcome — do not claim success
+            st.warning(
+                f"YouTube accepted the update for **{title_applied}**, but "
+                "post-update verification found different values. Reload the video's "
+                "metadata before retrying."
+                + (f"  [Check on YouTube]({url_applied})" if url_applied else "")
+            )
+        if st.button("Prepare a new proposal", key=f"new_proposal_after_result_{video_id}"):
+            st.rerun()
+        return
+
+    # --- Idempotency guard: block duplicate approval while an update is in progress ---
+    approval_key = f"approval_in_progress_{video_id}"
+    if st.session_state.get(approval_key):
+        st.info("Applying the approved metadata update… please wait.")
         return
 
     pending = st.session_state.get("pending_metadata_proposal")
@@ -837,12 +869,17 @@ def _render_proposal(video_row, youtube):
             description_key, proposed.get("description", "")
         )
         st.session_state.setdefault(tags_key, "\n".join(proposed.get("tags", [])))
-        title_value = st.text_area("Proposed title", key=title_key, height=80)
+        title_value = st.text_area(
+            f"Proposed title ({len(st.session_state.get(title_key, ''))}/100 chars)",
+            key=title_key, height=80,
+        )
         description_value = st.text_area(
-            "Proposed complete description", key=description_key, height=240
+            f"Proposed description + hashtags ({len(st.session_state.get(description_key, ''))}/5000 chars)",
+            key=description_key, height=240,
         )
         tags_value = st.text_area(
-            "Proposed YouTube tags (one per line)", key=tags_key, height=120
+            "Proposed YouTube tags — separate field, one per line",
+            key=tags_key, height=120,
         )
 
     proposed_tags = [
@@ -866,21 +903,21 @@ def _render_proposal(video_row, youtube):
         st.warning(f"Proposal validation: {validation_error}")
     if has_unsaved_edits:
         st.warning(
-            "The displayed proposal has been edited. Save the edits to create a new "
-            "proposal; any previous approval is invalidated."
+            "The displayed proposal has been edited. Save edits to create a new "
+            "proposal — any previous approval is invalidated."
         )
 
-    with st.expander("Readable metadata diff", expanded=True):
-        before_text = json.dumps(
-            connector._metadata_snapshot(pending["before"]),
-            indent=2,
-            ensure_ascii=False,
-        ).splitlines()
-        after_text = json.dumps(
-            connector._metadata_snapshot(live_proposed),
-            indent=2,
-            ensure_ascii=False,
-        ).splitlines()
+    # Human-readable field comparison is the default view; JSON diff is optional.
+    before_snap = connector._metadata_snapshot(pending["before"])
+    live_snap = connector._metadata_snapshot(live_proposed)
+    changed_fields = [f for f in ("title", "description", "tags") if before_snap.get(f) != live_snap.get(f)]
+    if changed_fields:
+        st.caption(f"Changed fields: {', '.join(changed_fields)}")
+    else:
+        st.caption("No metadata changes from the current YouTube values.")
+    with st.expander("View technical diff", expanded=False):
+        before_text = json.dumps(before_snap, indent=2, ensure_ascii=False).splitlines()
+        after_text = json.dumps(live_snap, indent=2, ensure_ascii=False).splitlines()
         diff = difflib.unified_diff(
             before_text,
             after_text,
@@ -890,36 +927,40 @@ def _render_proposal(video_row, youtube):
         )
         st.code("\n".join(diff) or "(no metadata changes)", language="diff")
 
-    if st.button(
-        "Save edits as a new proposal",
-        key=f"save_proposal_{video_id}",
-        disabled=not has_unsaved_edits,
-    ):
-        try:
-            connector._validate_metadata(live_proposed)
-        except connector.MetadataValidationError as error:
-            st.error(str(error))
-        else:
-            pending["proposed"] = live_proposed
-            pending["digest"] = live_digest
-            pending["explanation"] = (
-                "Edited by the owner. Re-review this exact proposal before applying."
-            )
-            st.session_state["pending_metadata_proposal"] = pending
-            st.rerun()
+    save_col, approve_col, reject_col = st.columns([1.4, 1.8, 1])
+    with save_col:
+        if st.button(
+            "Save edits",
+            key=f"save_proposal_{video_id}",
+            disabled=not has_unsaved_edits,
+            use_container_width=True,
+        ):
+            try:
+                connector._validate_metadata(live_proposed)
+            except connector.MetadataValidationError as error:
+                st.error(str(error))
+            else:
+                pending["proposed"] = live_proposed
+                pending["digest"] = live_digest
+                pending["explanation"] = (
+                    "Edited by the owner. Re-review this exact proposal before applying."
+                )
+                st.session_state["pending_metadata_proposal"] = pending
+                st.rerun()
 
-    approve_column, reject_column = st.columns(2)
-    with approve_column:
+    with approve_col:
         approved = st.button(
-            "Approve and apply this exact proposal",
+            "Approve and apply",
             type="primary",
             key=f"approve_proposal_{video_id}",
             disabled=has_unsaved_edits or validation_error is not None,
+            use_container_width=True,
         )
-    with reject_column:
+    with reject_col:
         rejected = st.button(
             "Reject proposal",
             key=f"reject_proposal_{video_id}",
+            use_container_width=True,
         )
 
     if rejected:
@@ -927,50 +968,62 @@ def _render_proposal(video_row, youtube):
         rejected_video_ids.add(video_id)
         for key in (title_key, description_key, tags_key):
             st.session_state.pop(key, None)
-        st.info("Proposal rejected. No YouTube changes were made.")
+        st.info(f"Proposal rejected for **{video_title}**. No YouTube changes were made.")
         st.rerun()
 
     if approved:
         if live_digest != pending["digest"]:
-            st.error("The proposal changed. Save and review it before approving.")
+            st.error("The proposal changed since approval was clicked. Save and re-review it.")
             return
-        try:
-            result = connector.apply_approved_dashboard_proposal(
-                youtube,
-                video_id,
-                pending["before"],
-                pending["proposed"],
-                pending["digest"],
-                audit_callback=_append_session_audit,
-            )
-        except HttpError as error:
-            status = getattr(error.resp, "status", "unknown")
-            st.error(
-                f"YouTube API rejected the approved update (HTTP {status}). "
-                "Check access, OAuth scopes, or quota; no success is claimed."
-            )
-        except (
-            GoogleAuthError,
-            httplib2.HttpLib2Error,
-            OSError,
-            requests.RequestException,
-        ):
-            st.error(
-                "The YouTube update could not be completed because the Google API "
-                "request failed. No automatic retry was attempted."
-            )
-        except (
-            connector.MetadataValidationError,
-            connector.VideoNotFoundError,
-            RuntimeError,
-            ValueError,
-        ) as error:
-            st.error(str(error))
-        else:
-            st.session_state["pending_metadata_proposal"] = None
-            st.session_state["last_update_result"] = result
-            st.session_state.pop("dashboard_data_key", None)
-            st.rerun()
+        # Set idempotency guard before the API call to prevent double execution on rapid reruns.
+        st.session_state[approval_key] = True
+        with st.spinner(f"Applying approved metadata for **{video_title}**…"):
+            try:
+                result = connector.apply_approved_dashboard_proposal(
+                    youtube,
+                    video_id,
+                    pending["before"],
+                    pending["proposed"],
+                    pending["digest"],
+                    audit_callback=_append_session_audit,
+                )
+            except HttpError as error:
+                status = getattr(error.resp, "status", "unknown")
+                st.session_state.pop(approval_key, None)
+                st.error(
+                    f"YouTube API rejected the approved update (HTTP {status}). "
+                    "The proposal is preserved. Check access, OAuth scopes, or quota."
+                )
+                return
+            except (
+                GoogleAuthError,
+                httplib2.HttpLib2Error,
+                OSError,
+                requests.RequestException,
+            ):
+                st.session_state.pop(approval_key, None)
+                st.error(
+                    "The update request failed due to a network or API error. "
+                    "The proposal is preserved. Retry when the connection is stable."
+                )
+                return
+            except (
+                connector.MetadataValidationError,
+                connector.VideoNotFoundError,
+                RuntimeError,
+                ValueError,
+            ) as error:
+                st.session_state.pop(approval_key, None)
+                st.error(str(error))
+                return
+        # Success: clear proposal and guard, store inline result, clear stale dashboard cache.
+        st.session_state.pop(approval_key, None)
+        st.session_state.pop("pending_metadata_proposal", None)
+        st.session_state[f"inline_update_result_{video_id}"] = result
+        st.session_state.pop("dashboard_data_key", None)
+        for key in (title_key, description_key, tags_key):
+            st.session_state.pop(key, None)
+        st.rerun()
 
 
 
@@ -2054,11 +2107,8 @@ def main():
     if st.session_state.get("asl_workspace") not in {"Strategist", "Find videos", "Analytics"}:
         st.session_state["asl_workspace"] = "Strategist"
     page = st.session_state["asl_workspace"]
-    st.markdown(
-        '<div class="asl-workspace-nav"><div class="asl-workspace-nav-label">'
-        'WORKSPACES</div></div>',
-        unsafe_allow_html=True,
-    )
+    # Navigation row — no visible "WORKSPACES" heading per UX spec.
+    st.markdown('<div class="asl-workspace-nav"></div>', unsafe_allow_html=True)
     nav_columns = st.columns(3, gap="small")
     for column, workspace in zip(nav_columns, ("Strategist", "Find videos", "Analytics")):
         with column:
@@ -2325,13 +2375,14 @@ def main():
                     return
             st.session_state["dashboard_data"] = dashboard_data
             st.session_state["dashboard_data_key"] = data_key
-            st.session_state.pop("pending_metadata_proposal", None)
-            st.session_state.pop("requested_video_row", None)
+            # Only clear the pending proposal and selected video if there is no
+            # active proposal — preserves context across normal data refreshes.
+            if not st.session_state.get("pending_metadata_proposal"):
+                st.session_state.pop("requested_video_row", None)
 
         data = st.session_state["dashboard_data"]
         st.caption(
-            f"Channel `{data['channel_id']}` · {data['period']['start']} through "
-            f"{data['period']['end']}"
+            f"Period: {data['period']['start']} through {data['period']['end']}"
         )
         if data["summary"] is None:
             st.warning(f"Channel summary: {data['summary_status']}")
@@ -2514,11 +2565,10 @@ def main():
             if audit_entries:
                 safe_entries = [
                     {
-                        "timestamp": entry["timestamp"],
-                        "video_id": entry["video_id"],
-                        "url": entry["video_url"],
-                        "proposal_id": entry["proposal_id"],
-                        "result": entry["result"],
+                        "Time (UTC)": entry["timestamp"],
+                        "Video": entry.get("approved_changes", {}).get("title") or entry["video_id"],
+                        "Open on YouTube": entry["video_url"],
+                        "Result": entry["result"],
                     }
                     for entry in audit_entries
                 ]
@@ -2530,12 +2580,9 @@ def main():
                 "session expires. Configure durable private storage before relying on audit history."
             )
 
-        last_result = st.session_state.pop("last_update_result", None)
-        if last_result:
-            st.success(
-                f"Verified update for **{last_result['title']}**: "
-                f"{last_result['url']}"
-            )
+        # Inline results are displayed next to the proposal card, not at page bottom.
+        # last_update_result is kept for any legacy references but not re-shown here.
+        st.session_state.pop("last_update_result", None)
 
 
 main()
