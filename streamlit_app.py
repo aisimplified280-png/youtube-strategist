@@ -613,8 +613,8 @@ def _start_youtube_authorization(secrets, subject):
     _render_oauth_link(
         "Authorize YouTube Analytics and metadata access",
         authorization_url,
-        "Google opens in this tab and returns here. This grant covers YouTube Analytics "
-        "and metadata permissions only.",
+        "Google opens in a new tab. This grant covers YouTube Analytics and metadata "
+        "permissions only.",
     )
     st.caption(
         "YouTube authorization is stored separately from the optional private-memory connection."
@@ -645,9 +645,9 @@ def _start_memory_authorization(secrets, subject):
     _render_oauth_link(
         "Connect private Strategist Memory",
         authorization_url,
-        "Google opens in this tab and returns here. This optional grant requests only "
-        "the limited drive.file permission for the private spreadsheet; it does not request "
-        "YouTube scopes in the same consent.",
+        "Google opens in a new tab. This optional grant requests only the limited drive.file "
+        "permission for the private spreadsheet; it does not request YouTube scopes in the "
+        "same consent.",
     )
 
 def _verify_private_memory_workbook(memory_credentials):
@@ -1342,11 +1342,87 @@ def _render_recent_opportunities(
                 st.rerun()
 
 
+def _render_workspace_connection_gate(page, secrets, subject, api_client_error=None):
+    """Keep navigation visible while the owner completes or repairs YouTube authorization."""
+    copy = {
+        "Strategist": (
+            "Connect your channel to review a video's current metadata and prepare an "
+            "approval-gated title, description, hashtag, and tag proposal."
+        ),
+        "Find videos": (
+            "Connect your channel to compare recent uploads and identify which videos "
+            "have enough measured evidence to deserve a metadata review."
+        ),
+        "Analytics": (
+            "Connect your channel to load measured views, watch time, available reach "
+            "metrics, traffic sources, and upload-level performance."
+        ),
+    }
+    st.markdown(
+        '<div class="asl-page-heading"><div class="asl-page-title">'
+        + html.escape(page)
+        + '</div><p class="asl-page-subtitle">'
+        + html.escape(copy.get(page, copy["Strategist"]))
+        + "</p></div>",
+        unsafe_allow_html=True,
+    )
+    with st.container(border=True):
+        st.subheader("Connect YouTube to continue")
+        st.write(
+            "You are signed in, but Google sign-in and YouTube API permission are separate. "
+            "Your workspace is available now; channel data and metadata actions unlock after "
+            "the YouTube permission is completed."
+        )
+        if api_client_error:
+            st.warning(api_client_error)
+        _start_youtube_authorization(secrets, subject)
+        st.caption(
+            "Authorization opens in a new tab. Keep this workspace open. After you finish "
+            "Google consent, return here and refresh the connection status."
+        )
+        if st.button(
+            "Refresh connection status",
+            key="refresh_youtube_connection",
+            use_container_width=True,
+        ):
+            st.rerun()
+
+
 def main():
     secrets = _read_secrets()
     if not getattr(st.user, "is_logged_in", False):
-        st.info("Sign in with the configured Google account to access this dashboard.")
-        st.button("Sign in with Google", on_click=st.login)
+        st.markdown(
+            '<div class="asl-page-heading"><div class="asl-page-title">'
+            'AI Simplified Lab</div><p class="asl-page-subtitle">'
+            'Your private YouTube optimization workspace.</p></div>',
+            unsafe_allow_html=True,
+        )
+        st.write(
+            "Review your channel, find videos worth improving, and prepare safer metadata "
+            "changes—with your approval required before anything is updated."
+        )
+        feature_columns = st.columns(3)
+        with feature_columns[0]:
+            st.markdown("**Strategist**")
+            st.caption("Improve titles, descriptions, hashtags, and separate YouTube tags.")
+        with feature_columns[1]:
+            st.markdown("**Find videos**")
+            st.caption("Surface uploads worth reviewing using measured channel evidence.")
+        with feature_columns[2]:
+            st.markdown("**Analytics**")
+            st.caption("Understand views, watch time, audience response, and available reach data.")
+        st.info(
+            "Sign in with the configured, verified Google account. Channel data stays hidden "
+            "until you sign in and connect YouTube."
+        )
+        login_columns = st.columns([1, 2, 1])
+        with login_columns[1]:
+            st.button(
+                "Sign in with Google",
+                on_click=st.login,
+                type="primary",
+                use_container_width=True,
+            )
         return
 
     subject = _owner_identity(secrets)
@@ -1418,33 +1494,29 @@ def main():
             st.session_state["asl_pending_workspace"] = "Strategist"
             st.rerun()
 
-    if not credentials:
-        st.info(
-            "Connect YouTube to read channel performance and prepare approved metadata changes."
-        )
-        _start_youtube_authorization(secrets, subject)
-        with st.sidebar:
-            with st.expander("Account"):
-                st.caption(st.user.email)
-                st.button("Sign out", on_click=st.logout, key="asl_signout_unconnected")
-        return
+    api_client_error = None
+    youtube = analytics = reporting = None
+    if credentials:
+        st.session_state["session_access_warning_shown"] = True
+        try:
+            youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+            analytics = build(
+                "youtubeAnalytics", "v2", credentials=credentials, cache_discovery=False
+            )
+            reporting = build(
+                "youtubereporting", "v1", credentials=credentials, cache_discovery=False
+            )
+        except (ValueError, HttpError):
+            api_client_error = (
+                "Google's YouTube API clients could not be initialized. "
+                "Refresh the connection or reconnect YouTube."
+            )
 
-    st.session_state["session_access_warning_shown"] = True
-
-    try:
-        youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
-        analytics = build(
-            "youtubeAnalytics", "v2", credentials=credentials, cache_discovery=False
-        )
-        reporting = build(
-            "youtubereporting", "v1", credentials=credentials, cache_discovery=False
-        )
-    except (ValueError, HttpError):
-        st.error("Could not initialize Google's YouTube API clients.")
-        return
-
-    pending_video_url = st.session_state.pop("pending_optimizer_video_url", None)
+    pending_video_url = (
+        st.session_state.get("pending_optimizer_video_url") if youtube else None
+    )
     if pending_video_url:
+        st.session_state.pop("pending_optimizer_video_url", None)
         try:
             _, load_message = strategist_chat._load_conversation_videos(
                 youtube, secrets, pending_video_url
@@ -1464,89 +1536,130 @@ def main():
             )
         st.session_state["asl_workspace"] = "Strategist"
 
+    if st.session_state.get("asl_workspace") not in {"Strategist", "Find videos", "Analytics"}:
+        st.session_state["asl_workspace"] = "Strategist"
+    page = st.segmented_control(
+        "Workspace",
+        options=["Strategist", "Find videos", "Analytics"],
+        key="asl_workspace",
+        label_visibility="collapsed",
+    )
+    if page is None:
+        page = "Strategist"
+
     with st.sidebar:
-        st.markdown('<div class="asl-sidebar-overline">WORKSPACE</div>', unsafe_allow_html=True)
-        page = st.radio(
-            "Workspace",
-            options=["Strategist", "Find videos", "Analytics"],
-            key="asl_workspace",
-            label_visibility="collapsed",
-        )
-        st.divider()
-        st.caption("Every YouTube change requires your approval.")
-        st.caption(
-            "YouTube and private-memory permissions are authorized separately. "
-            "Weekly scans and verified metadata experiments can be saved to a private "
-            "Google Sheet. Conversation history remains session-only."
-        )
-        if memory_credentials and st.session_state.get("content_memory_store_verified"):
-            st.caption("Private memory: connected and verified")
-            memory_url = st.session_state.get("content_memory_spreadsheet_url")
-            if memory_url:
-                st.link_button(
-                    "Open memory spreadsheet",
-                    memory_url,
+        st.caption("YouTube: Connected" if credentials else "YouTube: Not connected")
+        with st.expander("Connections", expanded=False):
+            if credentials:
+                st.success("YouTube access connected.")
+                if st.button(
+                    "Disconnect YouTube",
+                    key="asl_sidebar_disconnect",
                     use_container_width=True,
+                ):
+                    try:
+                        if token_store is not None:
+                            token_store.delete_credentials(subject, "youtube")
+                    except Exception:
+                        st.session_state["oauth_token_store_error"] = (
+                            "YouTube was disconnected in this tab, but the shared token "
+                            "store could not be updated. Reopen the app and verify its connection state."
+                        )
+                    for key in (
+                        "youtube_credentials_json",
+                        "dashboard_data",
+                        "opportunity_data",
+                        "opportunity_data_key",
+                        "dashboard_data_key",
+                    ):
+                        st.session_state.pop(key, None)
+                    st.rerun()
+            else:
+                st.caption(
+                    "Connect YouTube from the selected workspace. It stays visible while "
+                    "Google authorization runs in a separate tab."
                 )
-        elif memory_credentials:
-            st.caption("Private memory: authorized; setup needs attention")
-        else:
-            st.caption("Private memory: not connected")
-            memory_url = st.session_state.get("content_memory_spreadsheet_url")
-            if memory_url:
-                st.link_button("Open last memory spreadsheet", memory_url, use_container_width=True)
-            _start_memory_authorization(secrets, subject)
-        st.caption(
-            "Use the same Google account as app sign-in. YouTube access and Drive memory "
-            "are separate Google permission grants."
-        )
-        if memory_credentials and st.button(
-            "Disconnect private memory",
-            key="asl_memory_disconnect",
-            use_container_width=True,
-        ):
-            try:
-                if token_store is not None:
-                    token_store.delete_credentials(subject, "memory")
-            except Exception:
-                st.session_state["oauth_token_store_error"] = (
-                    "Private memory was disconnected in this tab, but the shared token "
-                    "store could not be updated. Reopen the app and verify its connection state."
+
+            st.divider()
+            if memory_credentials:
+                if st.session_state.get("content_memory_store_verified"):
+                    st.caption("Private Strategist Memory: connected and verified")
+                    memory_url = st.session_state.get("content_memory_spreadsheet_url")
+                    if memory_url:
+                        st.link_button(
+                            "Open memory spreadsheet",
+                            memory_url,
+                            use_container_width=True,
+                        )
+                else:
+                    st.warning(
+                        "Private memory is authorized, but its spreadsheet needs attention."
+                    )
+                    memory_setup_error = st.session_state.get("memory_store_setup_error")
+                    if memory_setup_error:
+                        st.caption(memory_setup_error)
+                    if st.button("Retry spreadsheet setup", key="retry_memory_setup"):
+                        st.session_state["memory_store_setup_attempted"] = False
+                        st.rerun()
+                if st.button(
+                    "Disconnect private memory",
+                    key="asl_memory_disconnect",
+                    use_container_width=True,
+                ):
+                    try:
+                        if token_store is not None:
+                            token_store.delete_credentials(subject, "memory")
+                    except Exception:
+                        st.session_state["oauth_token_store_error"] = (
+                            "Private memory was disconnected in this tab, but the shared token "
+                            "store could not be updated. Reopen the app and verify its connection state."
+                        )
+                    for key in (
+                        "memory_credentials_json",
+                        "memory_store_setup_attempted",
+                        "content_memory_store_verified",
+                        "content_memory_spreadsheet_url",
+                        "content_memory_recent_scans",
+                        "memory_connection_pending_verification",
+                        "memory_connected_message",
+                        "memory_store_setup_error",
+                    ):
+                        st.session_state.pop(key, None)
+                    st.session_state["content_memory_write_status"] = "not_connected"
+                    st.rerun()
+            elif credentials:
+                st.caption(
+                    "Optional: use Google Sheets to keep scan history and approved metadata "
+                    "experiments beyond this session."
                 )
-            for key in (
-                "memory_credentials_json",
-                "memory_store_setup_attempted",
-                "content_memory_store_verified",
-                "content_memory_spreadsheet_url",
-                "content_memory_recent_scans",
-                "memory_connection_pending_verification",
-                "memory_connected_message",
-                "memory_store_setup_error",
-            ):
-                st.session_state.pop(key, None)
-            st.session_state["content_memory_write_status"] = "not_connected"
-            st.session_state["asl_workspace"] = "Find videos"
-            st.rerun()
-        with st.expander("Account"):
+                memory_url = st.session_state.get("content_memory_spreadsheet_url")
+                if memory_url:
+                    st.link_button(
+                        "Open last memory spreadsheet",
+                        memory_url,
+                        use_container_width=True,
+                    )
+                _start_memory_authorization(secrets, subject)
+                st.caption(
+                    "Uses a separate, limited Google permission. Conversation history "
+                    "remains session-only."
+                )
+            else:
+                st.caption(
+                    "Private Strategist Memory is optional and becomes useful after "
+                    "YouTube is connected."
+                )
+
+        with st.expander("Account", expanded=False):
             st.caption(st.user.email)
             if st.button("Sign out", key="asl_sidebar_signout", use_container_width=True):
                 st.logout()
-            if st.button(
-                "Disconnect YouTube",
-                key="asl_sidebar_disconnect",
-                use_container_width=True,
-            ):
-                try:
-                    if token_store is not None:
-                        token_store.delete_credentials(subject, "youtube")
-                except Exception:
-                    st.session_state["oauth_token_store_error"] = (
-                        "YouTube was disconnected in this tab, but the shared token store "
-                        "could not be updated. Reopen the app and verify its connection state."
-                    )
-                st.session_state.pop("youtube_credentials_json", None)
-                st.session_state.pop("dashboard_data", None)
-                st.rerun()
+
+    if not credentials or api_client_error:
+        _render_workspace_connection_gate(
+            page, secrets, subject, api_client_error=api_client_error
+        )
+        return
 
     optimizer_error = st.session_state.pop("optimizer_open_error", None)
     if optimizer_error:
