@@ -83,11 +83,9 @@ def safe_csv_export_value(value):
     """Neutralize spreadsheet formula prefixes in user-visible text before CSV download."""
     if not isinstance(value, str):
         return value
-    if value.lstrip(" 	
-").startswith(("=", "+", "-", "@")):
+    if value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
         return "'" + value
     return value
-
 
 def _norm(value: str) -> str:
     value = (value or "").replace("\ufeff", "").strip().casefold()
