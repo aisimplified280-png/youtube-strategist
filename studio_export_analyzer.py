@@ -403,7 +403,7 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
     return {
         "filename": filename,
         "report_type": report_type,
-        "delimiter": "excel" if suffix == "xlsx" else ("tab" if delimiter == "\\t" else ("semicolon" if delimiter == ";" else "comma")),
+        "delimiter": "excel" if suffix == "xlsx" else ("tab" if delimiter == "\t else ("semicolon" if delimiter == ";" else "comma")),
         "source_sheet": source_sheet,
         "header_row": header_index + 1,
         "header_labels": header_labels,
