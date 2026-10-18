@@ -1716,25 +1716,33 @@ def main():
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
         with st.container():
-            st.caption("Choose the reporting window")
-            start_date = st.date_input(
-                "Start date",
-                value=default_start,
-                max_value=yesterday,
-                key="dashboard_start_date",
-            )
-            end_date = st.date_input(
-                "End date",
-                value=default_end,
-                max_value=yesterday,
-                key="dashboard_end_date",
-            )
-            video_limit = st.selectbox(
-                "Recent uploads to analyze",
-                options=(25, 50, 100, 200, 250),
-                index=2,
-            )
-            refresh_reports = st.button("Refresh channel reports")
+            filter_columns = st.columns([1.2, 1.2, 1, 1])
+            with filter_columns[0]:
+                start_date = st.date_input(
+                    "From",
+                    value=default_start,
+                    max_value=yesterday,
+                    key="dashboard_start_date",
+                )
+            with filter_columns[1]:
+                end_date = st.date_input(
+                    "Through",
+                    value=default_end,
+                    max_value=yesterday,
+                    key="dashboard_end_date",
+                )
+            with filter_columns[2]:
+                video_limit = st.selectbox(
+                    "Recent uploads",
+                    options=(25, 50, 100, 200, 250),
+                    index=2,
+                )
+            with filter_columns[3]:
+                st.caption(" ")
+                refresh_reports = st.button(
+                    "Refresh reports",
+                    use_container_width=True,
+                )
         if refresh_reports:
             st.session_state.pop("dashboard_data_key", None)
         if start_date > end_date:
@@ -1801,11 +1809,28 @@ def main():
             st.warning(f"Channel summary: {data['summary_status']}")
         else:
             summary = data["summary"]
-            metrics = list(youtube_dashboard.CORE_METRICS)
-            for offset in range(0, len(metrics), 4):
-                metric_row = metrics[offset:offset + 4]
-                columns = st.columns(len(metric_row))
-                for column, metric in zip(columns, metric_row):
+            gained = summary.get("subscribersGained")
+            lost = summary.get("subscribersLost")
+            net_subscribers = (
+                gained - lost
+                if isinstance(gained, (int, float)) and isinstance(lost, (int, float))
+                else None
+            )
+            primary_metrics = (
+                ("Views", summary.get("views")),
+                ("Watch time (minutes)", summary.get("estimatedMinutesWatched")),
+                ("Avg. view duration (seconds)", summary.get("averageViewDuration")),
+                ("Net subscribers", net_subscribers),
+            )
+            metric_columns = st.columns(4)
+            for column, (label, value) in zip(metric_columns, primary_metrics):
+                column.metric(label, _display_metric(value))
+            with st.expander("More channel metrics"):
+                detail_metrics = (
+                    "subscribersGained", "subscribersLost", "likes", "comments", "shares"
+                )
+                detail_columns = st.columns(len(detail_metrics))
+                for column, metric in zip(detail_columns, detail_metrics):
                     column.metric(
                         youtube_dashboard.METRIC_LABELS[metric],
                         _display_metric(summary.get(metric)),
@@ -1859,8 +1884,9 @@ def main():
             "title",
             "published_at",
             "format",
-            "duration_seconds",
-            *youtube_dashboard.CORE_METRICS,
+            "views",
+            "estimatedMinutesWatched",
+            "averageViewDuration",
             "impressions",
             "ctr",
         )
@@ -1901,6 +1927,22 @@ def main():
             "Blank Analytics cells mean the report returned no row for that video/date range; "
             "they are not treated as zero. CTR is YouTube's reported percentage, not an estimate."
         )
+        with st.expander("More video metrics: likes, comments, shares, subscribers"):
+            st.dataframe(
+                [
+                    {
+                        "Video": row.get("title"),
+                        "Likes": row.get("likes"),
+                        "Comments": row.get("comments"),
+                        "Shares": row.get("shares"),
+                        "Subscribers gained": row.get("subscribersGained"),
+                        "Subscribers lost": row.get("subscribersLost"),
+                    }
+                    for row in visible_rows
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
         with st.expander("Impressions and CTR availability by video"):
             for row in visible_rows:
                 if row.get("impressions") is None or row.get("ctr") is None:
@@ -1910,14 +1952,24 @@ def main():
                     if row.get("ctr") is None:
                         st.write("CTR:", row["ctr_status"])
 
-        st.subheader("Metadata optimization candidates")
+        st.subheader("Videos worth reviewing")
         ranked = youtube_dashboard.rank_optimization_candidates(data["video_rows"])
         if ranked:
             for candidate in ranked:
-                st.markdown(
-                    f"- [{candidate['title']}]({candidate['url']}) — "
-                    f"{candidate['recommendation_evidence']}"
-                )
+                with st.container(border=True):
+                    action_columns = st.columns([3, 1])
+                    action_columns[0].markdown(
+                        f"**[{candidate['title']}]({candidate['url']})**"
+                    )
+                    action_columns[0].caption(candidate["recommendation_evidence"])
+                    if action_columns[1].button(
+                        "Review metadata",
+                        key=f"analytics_optimize_{candidate['video_id']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["pending_optimizer_video_url"] = candidate["url"]
+                        st.session_state["asl_workspace"] = "Strategist"
+                        st.rerun()
         else:
             st.info(
                 "No measured video has at least three age- and format-matched peers with a "
