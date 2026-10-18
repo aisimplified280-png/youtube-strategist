@@ -1424,6 +1424,7 @@ def _render_studio_export_analysis():
         st.session_state.pop("studio_export_reports", None)
         st.session_state.pop("studio_export_evidence_index", None)
         st.session_state.pop("studio_export_skipped_actions", None)
+        st.session_state.pop("studio_export_started_actions", None)
         st.rerun()
 
     if analyze_clicked and uploaded_files:
@@ -1447,6 +1448,7 @@ def _render_studio_export_analysis():
             studio_export_analyzer.build_evidence_index(results)
         )
         st.session_state.pop("studio_export_skipped_actions", None)
+        st.session_state.pop("studio_export_started_actions", None)
         st.session_state["studio_export_upload_errors"] = errors
         st.rerun()
 
@@ -1540,8 +1542,10 @@ def _render_studio_export_analysis():
         )
     )
     skipped_actions = set(st.session_state.get("studio_export_skipped_actions", []))
+    started_actions = set(st.session_state.get("studio_export_started_actions", []))
     remaining_actions = [
-        action for action in export_actions if action["id"] not in skipped_actions
+        action for action in export_actions
+        if action["id"] not in skipped_actions and action["id"] not in started_actions
     ]
     if remaining_actions:
         action = remaining_actions[0]
@@ -1608,6 +1612,8 @@ def _render_studio_export_analysis():
                     safe_title = str(action["video_title"]).replace("”", "").replace("“", "")
                     reference = f'video title: “{safe_title}”'
                 signal = recommendation.get("title", "performance review")
+                started_actions.add(action["id"])
+                st.session_state["studio_export_started_actions"] = list(started_actions)
                 st.session_state["pending_optimizer_video_url"] = reference
                 st.session_state["studio_export_pending_instruction"] = (
                     "Create a complete, ready-to-review optimization proposal for this video. "
@@ -1627,7 +1633,7 @@ def _render_studio_export_analysis():
                 st.session_state["studio_export_skipped_actions"] = list(skipped_actions)
                 st.rerun()
     elif export_actions:
-        st.info("You've reviewed or skipped every actionable suggestion in this upload set.")
+        st.info("You've acted on or skipped every actionable suggestion in this upload set.")
         if st.button("Review suggestions again", key="studio_reset_skipped_actions"):
             st.session_state.pop("studio_export_skipped_actions", None)
             st.rerun()
