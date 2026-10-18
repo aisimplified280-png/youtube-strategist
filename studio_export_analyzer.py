@@ -668,11 +668,6 @@ def title_evidence_key(title: str) -> str:
     return "title:" + _norm(title)
 
 
-def title_evidence_key(title: str) -> str:
-    """Return the stable, punctuation-normalized key used for title-only matches."""
-    return "title:" + _norm(title)
-
-
 def _retention_curves_by_video(report):
     curves = defaultdict(list)
     for row in report.get("rows", []):
@@ -756,6 +751,8 @@ def add_manual_retention_evidence(index: dict, report: dict, reference: str) -> 
         video_id = value
     elif match:
         video_id = match.group(1)
+    elif "://" in value:
+        raise StudioExportError("The supplied video URL did not contain a recognizable video ID.")
     title = None if video_id else value.strip('"\'“”')
     if not video_id and not title:
         raise StudioExportError("Enter a valid video URL/ID or the exact video title to attach this report.")
