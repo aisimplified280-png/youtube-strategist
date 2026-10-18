@@ -1401,7 +1401,8 @@ def _render_studio_export_analysis():
         type=["csv", "tsv", "txt", "xlsx"],
         accept_multiple_files=True,
         key="studio_export_uploads",
-        help="Select one or more CSV/TSV reports or Excel .xlsx workbooks. Files are parsed in memory.",
+        help="Select CSV/TSV reports or Excel .xlsx workbooks. Files are parsed in memory.",
+        max_upload_size=10,
     )
     button_columns = st.columns([1, 1, 2])
     with button_columns[0]:
