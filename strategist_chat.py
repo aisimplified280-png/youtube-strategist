@@ -769,7 +769,7 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
             proposed_title = str(proposal["proposed"].get("title", ""))
             proposed_description = str(proposal["proposed"].get("description", ""))
             tags = proposal["proposed"].get("tags", [])
-            tag_characters = sum(len(str(tag)) for tag in tags)
+            tag_characters = len(", ".join(str(tag) for tag in tags))
 
             st.markdown(f"**Title · {len(proposed_title)}/100 characters**")
             st.markdown(
