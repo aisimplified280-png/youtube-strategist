@@ -1527,16 +1527,33 @@ def _render_studio_export_analysis(youtube=None):
         )
     )
 
-    title_lookup = {}
-    lookup_ids = list(dict.fromkeys(
-        action["video_id"] for action in export_actions
-        if action.get("video_id")
-        and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(action["video_id"]))
-        and (
-            not str(action.get("video_title") or "").strip()
-            or str(action.get("video_title") or "").strip() == str(action["video_id"])
-        )
-    ))
+    title_lookup = dict(st.session_state.get("studio_export_title_lookup", {}))
+    title_candidates = []
+    all_report_video_rows = [
+        row for report in reports for row in report.get("video_rows", [])
+    ]
+    for row in all_report_video_rows:
+        video_id = str(row.get("video_id") or "")
+        raw_title = str(row.get("video_title") or "").strip()
+        if (
+            video_id
+            and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+            and (not raw_title or raw_title == video_id)
+        ):
+            title_candidates.append(video_id)
+    for action in export_actions:
+        video_id = str(action.get("video_id") or "")
+        raw_title = str(action.get("video_title") or "").strip()
+        if (
+            video_id
+            and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+            and (not raw_title or raw_title == video_id)
+        ):
+            title_candidates.append(video_id)
+    lookup_ids = [
+        video_id for video_id in dict.fromkeys(title_candidates)
+        if video_id not in title_lookup
+    ]
     if youtube and lookup_ids:
         for offset in range(0, min(len(lookup_ids), 100), 50):
             batch = lookup_ids[offset:offset + 50]
@@ -1550,6 +1567,7 @@ def _render_studio_export_analysis(youtube=None):
                 snippet = item.get("snippet", {})
                 if snippet.get("title"):
                     title_lookup[item.get("id")] = snippet["title"]
+        st.session_state["studio_export_title_lookup"] = title_lookup
 
     for action in export_actions:
         raw_title = str(action.get("video_title") or "").strip()
@@ -1808,12 +1826,16 @@ def _render_studio_export_analysis(youtube=None):
                     }
                     for row in videos
                 )
-                st.markdown("**Send a selected video to Strategist**")
+                st.markdown("**Choose another video to optimize**")
                 for row_index, row in enumerate(videos[:10]):
                     action_columns = st.columns([4, 1])
-                    action_columns[0].markdown(
-                        f"**{row.get('video_title') or row.get('video_id') or 'Video row'}**"
-                    )
+                    row_video_id = str(row.get("video_id") or "")
+                    row_title = str(row.get("video_title") or "").strip()
+                    if not row_title or row_title == row_video_id:
+                        row_title = title_lookup.get(row_video_id, "")
+                    if not row_title or row_title == row_video_id:
+                        row_title = "Video title unavailable"
+                    action_columns[0].markdown("**" + html.escape(row_title) + "**")
                     facts = []
                     if isinstance(row.get("views"), (int, float)):
                         facts.append(f"{row['views']:,.0f} views")
@@ -1838,7 +1860,7 @@ def _render_studio_export_analysis(youtube=None):
                         else:
                             st.warning(
                                 "This report row has neither a video ID nor a title that can "
-                                "identify an owned upload. Use a video URL in Strategist instead."
+                                "identify an owned upload. Open **Optimize another video** above and paste its link."
                             )
                             continue
                         st.session_state["pending_optimizer_video_url"] = reference
@@ -1848,7 +1870,10 @@ def _render_studio_export_analysis(youtube=None):
                             "Explain what the metrics support and what they cannot prove. Do not "
                             "claim that a metric proves a metadata or thumbnail change caused it."
                         )
-                        st.session_state["asl_workspace"] = "Strategist"
+                        st.session_state["studio_export_active_action_id"] = None
+                        st.session_state["studio_inline_optimizer_active"] = True
+                        st.session_state.pop("last_update_result", None)
+                        st.session_state["asl_workspace"] = "Analytics"
                         st.rerun()
 
     if table_rows:
@@ -2580,7 +2605,10 @@ def main():
                         use_container_width=True,
                     ):
                         st.session_state["pending_optimizer_video_url"] = candidate["url"]
-                        st.session_state["asl_workspace"] = "Strategist"
+                        st.session_state["studio_export_active_action_id"] = None
+                        st.session_state["studio_inline_optimizer_active"] = True
+                        st.session_state.pop("last_update_result", None)
+                        st.session_state["asl_workspace"] = "Analytics"
                         st.rerun()
         else:
             st.info(
@@ -2595,13 +2623,34 @@ def main():
         with st.expander("This session's metadata audit entries"):
             audit_entries = st.session_state.get("session_audit_records", [])
             if audit_entries:
+                audit_titles = dict(st.session_state.get("studio_export_title_lookup", {}))
+                audit_ids = [
+                    str(entry.get("video_id") or "")
+                    for entry in audit_entries
+                    if entry.get("video_id")
+                    and str(entry.get("video_id")) not in audit_titles
+                    and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(entry.get("video_id")))
+                ]
+                if youtube and audit_ids:
+                    try:
+                        unique_audit_ids = list(dict.fromkeys(audit_ids))
+                        for offset in range(0, min(len(unique_audit_ids), 100), 50):
+                            batch = unique_audit_ids[offset:offset + 50]
+                            response = youtube.videos().list(
+                                part="snippet", id=",".join(batch), maxResults=len(batch)
+                            ).execute()
+                            for item in response.get("items", []):
+                                title = item.get("snippet", {}).get("title")
+                                if title:
+                                    audit_titles[item["id"]] = title
+                        st.session_state["studio_export_title_lookup"] = audit_titles
+                    except Exception:
+                        pass
                 safe_entries = [
                     {
-                        "timestamp": entry["timestamp"],
-                        "video_id": entry["video_id"],
-                        "url": entry["video_url"],
-                        "proposal_id": entry["proposal_id"],
-                        "result": entry["result"],
+                        "Updated at": entry.get("timestamp"),
+                        "Video": audit_titles.get(str(entry.get("video_id") or ""), "Updated video"),
+                        "Result": entry.get("result", "Unknown"),
                     }
                     for entry in audit_entries
                 ]
