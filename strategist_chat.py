@@ -523,15 +523,26 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
     if context:
         with st.container(border=True):
             st.caption("CURRENT VIDEO")
-            video_title = str(context["target_snippet"].get("title", "(untitled)"))
+            raw_title = str(context["target_snippet"].get("title", "")).strip()
+            if not raw_title or re.fullmatch(r"[A-Za-z0-9_-]{11}", raw_title) or "://" in raw_title:
+                video_title = "Video title unavailable"
+            else:
+                video_title = raw_title
             st.markdown(
                 '<div style="font-size:1.02rem;font-weight:650;line-height:1.4;'
                 'overflow-wrap:anywhere;">' + html.escape(video_title) + "</div>",
                 unsafe_allow_html=True,
             )
-            reference_title = (
-                context.get("reference_snippet", {}).get("title") or "None (optional)"
-            )
+            if video_title == "Video title unavailable":
+                target_url = f"https://www.youtube.com/watch?v={context['target_id']}"
+                st.caption(f"[Open on YouTube]({target_url}) · Video title could not be retrieved from YouTube metadata.")
+            raw_ref_title = str(context.get("reference_snippet", {}).get("title") or "").strip()
+            if raw_ref_title and not re.fullmatch(r"[A-Za-z0-9_-]{11}", raw_ref_title) and "://" not in raw_ref_title:
+                reference_title = raw_ref_title
+            elif context.get("reference_id"):
+                reference_title = "Video title unavailable"
+            else:
+                reference_title = "None (optional)"
             st.caption(f"Reference: {reference_title}")
             performance_evidence = context.get("studio_performance_evidence", [])
             if performance_evidence:
@@ -895,9 +906,12 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
 
             with st.expander("Compare with current metadata"):
                 st.markdown("**Current title**")
+                before_title = str(proposal["before"].get("title", "")).strip()
+                if not before_title or re.fullmatch(r"[A-Za-z0-9_-]{11}", before_title):
+                    before_title = "Video title unavailable"
                 st.markdown(
                     '<div class="asl-proposal-field">' +
-                    html.escape(str(proposal["before"].get("title", ""))) +
+                    html.escape(before_title) +
                     "</div>",
                     unsafe_allow_html=True,
                 )

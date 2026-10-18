@@ -349,7 +349,25 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
         for field, index in columns.items():
             raw = str(row[index]).strip() if index < len(row) else ""
             label = header_labels.get(field, "")
-            if field in {"video_title", "video_id", "date", "traffic_source", "search_term",
+            if field == "video_title":
+                if raw and re.fullmatch(r"[A-Za-z0-9_-]{11}", raw):
+                    if not record.get("video_id"):
+                        record["video_id"] = raw
+                    record["video_title"] = None
+                else:
+                    record["video_title"] = raw or None
+            elif field == "video_id":
+                if raw:
+                    match = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", raw)
+                    if re.fullmatch(r"[A-Za-z0-9_-]{11}", raw):
+                        record["video_id"] = raw
+                    elif match:
+                        record["video_id"] = match.group(1)
+                    else:
+                        record["video_id"] = raw
+                else:
+                    record["video_id"] = None
+            elif field in {"date", "traffic_source", "search_term",
                          "geography", "age_group", "gender", "device_type"}:
                 record[field] = raw or None
             elif field == "elapsed_time":
@@ -443,9 +461,28 @@ def _video_summaries(records):
     result = []
     for (key_type, key_value), rows in groups.items():
         first = rows[0]
+        valid_title = None
+        for r in rows:
+            t = r.get("video_title")
+            if t and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(t).strip()) and "://" not in str(t):
+                valid_title = str(t).strip()
+                break
+        valid_id = None
+        for r in rows:
+            vid = r.get("video_id")
+            if vid and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(vid).strip()):
+                valid_id = str(vid).strip()
+                break
+        if not valid_id:
+            for r in rows:
+                t = r.get("video_title")
+                if t and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(t).strip()):
+                    valid_id = str(t).strip()
+                    break
+
         item = {
-            "video_id": first.get("video_id"),
-            "video_title": first.get("video_title") or first.get("video_id"),
+            "video_id": valid_id or first.get("video_id"),
+            "video_title": valid_title,
             "row_count": len(rows),
         }
         for field in ("views", "watch_time_minutes", "impressions", "subscribers_gained",
@@ -515,6 +552,13 @@ def _retention_recommendations(records):
     return recommendations
 
 
+def _format_video_label(title: str | None) -> str:
+    val = str(title or "").strip()
+    if val and not re.fullmatch(r"[A-Za-z0-9_-]{11}", val) and "://" not in val:
+        return val
+    return "Video title unavailable"
+
+
 def _performance_recommendations(videos):
     recommendations = []
     ctr_rows = [
@@ -530,16 +574,17 @@ def _performance_recommendations(videos):
             key=lambda row: (row["ctr_percent"], -row["impressions"]),
         )[:5]
         for row in low_ctr[:3]:
+            video_label = _format_video_label(row.get("video_title"))
             recommendations.append({
                 "priority": "High" if row["impressions"] >= 1000 else "Review",
-                "title": f"Review title/thumbnail alignment: {row['video_title']}",
+                "title": f"Review title/thumbnail alignment: {video_label}",
                 "evidence": (
                     f"Reported CTR {row['ctr_percent']:.2f}% is below this upload set's "
                     f"median ({midpoint:.2f}%) across {len(ctr_rows)} videos with at least 100 impressions."
                 ),
                 "action": "Check whether the title and thumbnail communicate one clear, accurate reason to click. Treat this as a review candidate, not proof the packaging caused the difference.",
                 "video_id": row.get("video_id"),
-                "video_title": row.get("video_title"),
+                "video_title": row.get("video_title") if row.get("video_title") != "Video title unavailable" else None,
                 "measured_metrics": {
                     "ctr_percent": row.get("ctr_percent"),
                     "impressions": row.get("impressions"),
@@ -557,16 +602,17 @@ def _performance_recommendations(videos):
         for row in lowest:
             if row["average_view_percentage"] >= midpoint:
                 continue
+            video_label = _format_video_label(row.get("video_title"))
             recommendations.append({
                 "priority": "Review",
-                "title": f"Review opening and pacing: {row['video_title']}",
+                "title": f"Review opening and pacing: {video_label}",
                 "evidence": (
                     f"Average percentage viewed is {row['average_view_percentage']:.1f}%, "
                     f"below this export's median ({midpoint:.1f}%) across {len(retention_rows)} videos."
                 ),
                 "action": "Compare the opening promise with how quickly the video delivers value. Account for differences in video length and format before drawing conclusions.",
                 "video_id": row.get("video_id"),
-                "video_title": row.get("video_title"),
+                "video_title": row.get("video_title") if row.get("video_title") != "Video title unavailable" else None,
                 "measured_metrics": {
                     "views": row.get("views"),
                     "average_view_percentage": row.get("average_view_percentage"),
@@ -597,9 +643,10 @@ def _performance_recommendations(videos):
             ),
             reverse=True,
         )[:2]:
+            video_label = _format_video_label(row.get("video_title"))
             recommendations.append({
                 "priority": "Opportunity",
-                "title": f"Study this stronger-viewing example: {row['video_title']}",
+                "title": f"Study this stronger-viewing example: {video_label}",
                 "evidence": (
                     f"{row['views']:,.0f} reported views and "
                     f"{row['average_view_percentage']:.1f}% average viewed; "
@@ -612,7 +659,7 @@ def _performance_recommendations(videos):
                     "they do not prove what caused its performance."
                 ),
                 "video_id": row.get("video_id"),
-                "video_title": row.get("video_title"),
+                "video_title": row.get("video_title") if row.get("video_title") != "Video title unavailable" else None,
                 "measured_metrics": {
                     "views": row.get("views"),
                     "average_view_percentage": row.get("average_view_percentage"),

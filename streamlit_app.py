@@ -44,14 +44,20 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
-    html, body, [class*="css"], [class*="st-"] {
+    html, body {
         font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
         -webkit-font-smoothing: antialiased;
     }
 
+    /* Apply typography to text components without breaking Streamlit's internal icon fonts */
+    .stMarkdown, .stButton button, .stTextInput input, .stTextArea textarea, 
+    .stSelectbox, .stRadio, .stDateInput, [class*="asl-"] {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
     .block-container {
         max-width: 960px;
-        padding-top: 3.25rem;
+        padding-top: 5rem;
         padding-bottom: 5.5rem;
     }
 
@@ -830,6 +836,98 @@ def _display_metric(value):
     return "Unavailable" if value is None else f"{value:,}"
 
 
+def _resolve_video_title(video_id: str | None = None, title_hint: str | None = None, youtube=None) -> str:
+    """Resolve a human-readable video title without ever returning a raw video ID.
+
+    Lookup priority:
+    1. title_hint if non-empty, not a URL, and not an 11-char video ID.
+    2. Session video_title_cache keyed by video_id.
+    3. Catalogue video rows in st.session_state (opportunity_data, dashboard_data, strategist context).
+    4. Authenticated YouTube API fetch (via videos().list snippet).
+    5. Fallback: 'Video title unavailable'.
+    """
+    clean_hint = str(title_hint or "").strip()
+    if clean_hint and clean_hint != "Video title unavailable":
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", clean_hint) and "://" not in clean_hint:
+            if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id).strip()):
+                clean_id = str(video_id).strip()
+                try:
+                    cache = st.session_state.setdefault("video_title_cache", {})
+                    cache[clean_id] = clean_hint
+                except Exception:
+                    pass
+            return clean_hint
+
+    clean_id = str(video_id or "").strip()
+    if not clean_id or not re.fullmatch(r"[A-Za-z0-9_-]{11}", clean_id):
+        match = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", clean_id)
+        if match:
+            clean_id = match.group(1)
+        else:
+            return "Video title unavailable"
+
+    try:
+        cache = st.session_state.setdefault("video_title_cache", {})
+    except Exception:
+        cache = {}
+
+    if clean_id in cache:
+        cached_title = cache[clean_id]
+        if cached_title and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(cached_title).strip()):
+            return str(cached_title).strip()
+
+    # Check strategist_target_reference
+    try:
+        strat_ctx = st.session_state.get("strategist_target_reference")
+        if strat_ctx and strat_ctx.get("target_id") == clean_id:
+            t = strat_ctx.get("target_snippet", {}).get("title")
+            if t and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(t).strip()) and "://" not in str(t):
+                cache[clean_id] = str(t).strip()
+                return cache[clean_id]
+    except Exception:
+        pass
+
+    # Check dashboard_data
+    try:
+        dash_data = st.session_state.get("dashboard_data", {})
+        for row in dash_data.get("video_rows", []):
+            if row.get("video_id") == clean_id:
+                t = row.get("title")
+                if t and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(t).strip()) and "://" not in str(t):
+                    cache[clean_id] = str(t).strip()
+                    return cache[clean_id]
+    except Exception:
+        pass
+
+    # Check opportunity_data
+    try:
+        opp_data = st.session_state.get("opportunity_data", {})
+        for row in opp_data.get("video_rows", []):
+            if row.get("video_id") == clean_id:
+                t = row.get("title")
+                if t and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(t).strip()) and "://" not in str(t):
+                    cache[clean_id] = str(t).strip()
+                    return cache[clean_id]
+    except Exception:
+        pass
+
+    # Fetch from authenticated YouTube API if client is available
+    if youtube is not None:
+        try:
+            resp = youtube.videos().list(part="snippet", id=clean_id).execute()
+            items = resp.get("items", [])
+            if items:
+                snippet = items[0].get("snippet", {})
+                t = snippet.get("title")
+                if t and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(t).strip()) and "://" not in str(t):
+                    cache[clean_id] = str(t).strip()
+                    return cache[clean_id]
+        except Exception:
+            pass
+
+    return "Video title unavailable"
+
+
 def _visible_video_rows(rows, format_filter):
     if format_filter == "All":
         return rows
@@ -878,7 +976,7 @@ def _selected_analytics_details(analytics, video_id, start_date, end_date):
 
 def _render_proposal(video_row, youtube):
     video_id = video_row["video_id"]
-    video_title = video_row.get("title", video_id)
+    video_title = _resolve_video_title(video_id, title_hint=video_row.get("title"), youtube=youtube)
     snippet = video_row["snippet"]
     rejected_video_ids = st.session_state.setdefault("rejected_video_ids", set())
     if video_id in rejected_video_ids:
@@ -895,7 +993,7 @@ def _render_proposal(video_row, youtube):
     inline_result = st.session_state.pop(f"inline_update_result_{video_id}", None)
     if inline_result is not None:
         result_value = inline_result.get("result", "")
-        title_applied = inline_result.get("title", video_title)
+        title_applied = _resolve_video_title(video_id, title_hint=inline_result.get("title"), youtube=youtube)
         url_applied = inline_result.get("url", "")
         if result_value == "success":
             st.success(
@@ -1501,7 +1599,14 @@ def _render_recent_opportunities(
 
     for candidate in candidates:
         with st.container(border=True):
-            st.write(candidate.get("title", "(untitled)"))
+            cand_title = _resolve_video_title(
+                candidate.get("video_id"),
+                title_hint=candidate.get("title"),
+                youtube=youtube,
+            )
+            st.write(cand_title)
+            if cand_title == "Video title unavailable" and candidate.get("url"):
+                st.caption(f"[Open on YouTube]({candidate['url']}) · Video title could not be retrieved")
             st.caption(
                 f"Published {candidate.get('published_at', 'date unavailable')[:10]} · "
                 f"{candidate.get('format', 'Format unavailable')}"
@@ -1540,7 +1645,7 @@ def _render_recent_opportunities(
 
 
 
-def _render_studio_export_analysis():
+def _render_studio_export_analysis(youtube=None):
     """Upload, inspect, and analyse Studio exports locally within the current app session."""
     st.subheader("Upload YouTube Studio exports")
     st.caption(
@@ -1659,6 +1764,25 @@ def _render_studio_export_analysis():
         "automatically combine totals from different files."
     )
 
+    # Resolve video titles across reports using catalogue, session cache, and authenticated API
+    for report in reports:
+        for row in report.get("video_rows", []):
+            vid = row.get("video_id")
+            resolved = _resolve_video_title(vid, title_hint=row.get("video_title"), youtube=youtube)
+            if resolved != "Video title unavailable":
+                row["video_title"] = resolved
+        for recommendation in report.get("recommendations", []):
+            vid = recommendation.get("video_id")
+            vtitle = recommendation.get("video_title")
+            resolved = _resolve_video_title(vid, title_hint=vtitle, youtube=youtube)
+            if resolved != "Video title unavailable":
+                recommendation["video_title"] = resolved
+            rec_title = recommendation.get("title", "")
+            if ": " in rec_title:
+                prefix, _, old_target = rec_title.rpartition(": ")
+                if old_target == "Video title unavailable" or re.fullmatch(r"[A-Za-z0-9_-]{11}", old_target):
+                    recommendation["title"] = f"{prefix}: {resolved}"
+
     priority_order = {"High": 0, "Review": 1, "Opportunity": 2}
     export_actions = []
     for report in reports:
@@ -1670,7 +1794,10 @@ def _render_studio_export_analysis():
                 continue
             if video_id and not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id)):
                 video_id = None
-            if not video_id and not str(video_title or "").strip():
+            resolved_title = _resolve_video_title(video_id, title_hint=video_title, youtube=youtube)
+            if resolved_title != "Video title unavailable":
+                video_title = resolved_title
+            elif not video_id:
                 continue
             measured = recommendation.get("measured_metrics") or {}
             reach = (
@@ -1729,6 +1856,10 @@ def _render_studio_export_analysis():
             st.caption(
                 f"{action['priority']} priority · Evidence from {action['source_file']}"
             )
+            if recommendation.get("title", "").endswith("Video title unavailable") or action.get("video_title") in (None, "Video title unavailable"):
+                if action.get("video_id"):
+                    action_url = f"https://www.youtube.com/watch?v={action['video_id']}"
+                    st.caption(f"Video title could not be retrieved from YouTube metadata. [Open on YouTube]({action_url})")
             st.write(recommendation.get("evidence", ""))
             st.markdown("**Suggested next step**")
             st.write(recommendation.get("action", "Review this video using its measured performance."))
@@ -1778,28 +1909,37 @@ def _render_studio_export_analysis():
                 )
 
             if do_action:
-                if action["video_id"]:
-                    reference = f"https://www.youtube.com/watch?v={action['video_id']}"
-                else:
-                    safe_title = str(action["video_title"]).replace("”", "").replace("“", "")
+                vid = action.get("video_id")
+                vtitle = action.get("video_title")
+                resolved_title = _resolve_video_title(vid, title_hint=vtitle, youtube=youtube)
+                if vid:
+                    reference = f"https://www.youtube.com/watch?v={vid}"
+                elif resolved_title and resolved_title != "Video title unavailable":
+                    safe_title = str(resolved_title).replace("”", "").replace("“", "")
                     reference = f'video title: “{safe_title}”'
-                signal = recommendation.get("title", "performance review")
-                started_actions.add(action["id"])
-                st.session_state["studio_export_started_actions"] = list(started_actions)
-                st.session_state["pending_optimizer_video_url"] = reference
-                st.session_state["studio_export_pending_instruction"] = (
-                    "Create a complete, ready-to-review optimization proposal for this video. "
-                    f"The highest-priority measured signal is: {signal}. "
-                    f"Evidence: {recommendation.get('evidence', '')} "
-                    "Use the attached Studio metrics only as numeric evidence, not as proof of cause. "
-                    "Use the video's current metadata and target transcript for content facts. "
-                    "Propose a title, description with relevant hashtags, and separate YouTube tags where justified. "
-                    "If the signal concerns retention or pacing, explain that metadata alone may not fix it "
-                    "and include a practical content-level recommendation; do not pretend the app can edit "
-                    "the video or its thumbnail. Do not apply anything. I must approve the exact metadata proposal."
-                )
-                st.session_state["asl_workspace"] = "Strategist"
-                st.rerun()
+                else:
+                    reference = None
+
+                if not reference:
+                    st.error("Cannot proceed: this suggestion has no valid video URL or recognizable title.")
+                else:
+                    signal = recommendation.get("title", "performance review")
+                    started_actions.add(action["id"])
+                    st.session_state["studio_export_started_actions"] = list(started_actions)
+                    st.session_state["pending_optimizer_video_url"] = reference
+                    st.session_state["studio_export_pending_instruction"] = (
+                        "Create a complete, ready-to-review optimization proposal for this video. "
+                        f"The highest-priority measured signal is: {signal}. "
+                        f"Evidence: {recommendation.get('evidence', '')} "
+                        "Use the attached Studio metrics only as numeric evidence, not as proof of cause. "
+                        "Use the video's current metadata and target transcript for content facts. "
+                        "Propose a title, description with relevant hashtags, and separate YouTube tags where justified. "
+                        "If the signal concerns retention or pacing, explain that metadata alone may not fix it "
+                        "and include a practical content-level recommendation; do not pretend the app can edit "
+                        "the video or its thumbnail. Do not apply anything. I must approve the exact metadata proposal."
+                    )
+                    st.session_state["asl_workspace"] = "Strategist"
+                    st.rerun()
             if skip_action:
                 skipped_actions.add(action["id"])
                 st.session_state["studio_export_skipped_actions"] = list(skipped_actions)
@@ -1952,9 +2092,15 @@ def _render_studio_export_analysis():
                 st.markdown("**Send a selected video to Strategist**")
                 for row_index, row in enumerate(videos[:10]):
                     action_columns = st.columns([4, 1])
-                    action_columns[0].markdown(
-                        f"**{row.get('video_title') or row.get('video_id') or 'Video row'}**"
-                    )
+                    vid = row.get("video_id")
+                    raw_title = row.get("video_title")
+                    row_title = _resolve_video_title(vid, title_hint=raw_title, youtube=youtube)
+                    if row_title != "Video title unavailable":
+                        action_columns[0].markdown(f"**{row_title}**")
+                    else:
+                        yt_link = f" · [Open on YouTube](https://www.youtube.com/watch?v={vid})" if vid else ""
+                        action_columns[0].markdown(f"**Video title unavailable**{yt_link}")
+                        action_columns[0].caption("The title could not be retrieved from YouTube metadata.")
                     facts = []
                     if isinstance(row.get("views"), (int, float)):
                         facts.append(f"{row['views']:,.0f} views")
@@ -1970,15 +2116,15 @@ def _render_studio_export_analysis():
                         use_container_width=True,
                     ):
                         video_id = row.get("video_id")
-                        video_title = str(row.get("video_title") or "")
+                        resolved_title = _resolve_video_title(video_id, title_hint=row.get("video_title"), youtube=youtube)
                         if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id)):
                             reference = f"https://www.youtube.com/watch?v={video_id}"
-                        elif video_title:
-                            safe_title = video_title.replace("”", "").replace("“", "")
+                        elif resolved_title and resolved_title != "Video title unavailable":
+                            safe_title = resolved_title.replace("”", "").replace("“", "")
                             reference = f'video title: “{safe_title}”'
                         else:
                             st.warning(
-                                "This report row has neither a video ID nor a title that can "
+                                "This report row has neither a valid video URL nor a title that can "
                                 "identify an owned upload. Use a video URL in Strategist instead."
                             )
                             continue
@@ -2377,7 +2523,7 @@ def main():
                 'Upload your own Studio reports for deeper, evidence-based analysis.</p></div>',
                 unsafe_allow_html=True,
             )
-            _render_studio_export_analysis()
+            _render_studio_export_analysis(youtube=None)
             _render_workspace_connection_gate(
                 page, secrets, subject, api_client_error=api_client_error,
                 show_heading=False,
@@ -2435,7 +2581,7 @@ def main():
             unsafe_allow_html=True,
         )
         st.caption("Read-only performance reports and optimization evidence.")
-        _render_studio_export_analysis()
+        _render_studio_export_analysis(youtube=youtube)
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
         with st.container():
@@ -2656,7 +2802,7 @@ def main():
             st.dataframe(
                 [
                     {
-                        "Video": row.get("title"),
+                        "Video": _resolve_video_title(row.get("video_id"), title_hint=row.get("title"), youtube=youtube),
                         "Likes": row.get("likes"),
                         "Comments": row.get("comments"),
                         "Shares": row.get("shares"),
@@ -2671,7 +2817,8 @@ def main():
         with st.expander("Impressions and CTR availability by video"):
             for row in visible_rows:
                 if row.get("impressions") is None or row.get("ctr") is None:
-                    st.markdown(f"**{row['title']}**")
+                    row_display_title = _resolve_video_title(row.get("video_id"), title_hint=row.get("title"), youtube=youtube)
+                    st.markdown(f"**{row_display_title}**")
                     if row.get("impressions") is None:
                         st.write("Impressions:", row["impressions_status"])
                     if row.get("ctr") is None:
@@ -2682,9 +2829,15 @@ def main():
         if ranked:
             for candidate in ranked:
                 with st.container(border=True):
+                    cand_title = _resolve_video_title(
+                        candidate.get("video_id"),
+                        title_hint=candidate.get("title"),
+                        youtube=youtube,
+                    )
+                    cand_url = candidate.get("url") or f"https://www.youtube.com/watch?v={candidate.get('video_id')}"
                     action_columns = st.columns([3, 1])
                     action_columns[0].markdown(
-                        f"**[{candidate['title']}]({candidate['url']})**"
+                        f"**[{cand_title}]({cand_url})**"
                     )
                     action_columns[0].caption(candidate["recommendation_evidence"])
                     if action_columns[1].button(
@@ -2711,7 +2864,11 @@ def main():
                 safe_entries = [
                     {
                         "Time (UTC)": entry["timestamp"],
-                        "Video": entry.get("approved_changes", {}).get("title") or entry["video_id"],
+                        "Video": _resolve_video_title(
+                            entry.get("video_id"),
+                            title_hint=entry.get("approved_changes", {}).get("title"),
+                            youtube=youtube,
+                        ),
                         "Open on YouTube": entry["video_url"],
                         "Result": entry["result"],
                     }
@@ -2730,4 +2887,5 @@ def main():
         st.session_state.pop("last_update_result", None)
 
 
-main()
+if __name__ == "__main__":
+    main()
