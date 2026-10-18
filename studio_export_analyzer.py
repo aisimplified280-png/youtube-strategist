@@ -170,9 +170,9 @@ def _is_percent_label(header):
 def _to_percent(value, raw, header):
     if value is None:
         return None
-    if "%" in str(raw) or _is_percent_label(header):
+    if "%" in str(raw):
         return value
-    # CSVs can represent percentages as decimal ratios even when the displayed label omits %.
+    # Studio may export decimals for ratio-based metrics; normalize those to displayed percent.
     if 0 <= value <= 1:
         return value * 100
     return value
@@ -569,8 +569,13 @@ def analyze_studio_export(parsed: dict) -> dict:
     }
 
 
+def title_evidence_key(title: str) -> str:
+    """Return the stable, punctuation-normalized key used for title-only matches."""
+    return "title:" + _norm(title)
+
+
 def build_evidence_index(reports: list[dict]) -> dict:
-    """Build a small session-only performance evidence index, keyed by ID and normalized title."""
+    """Build an in-memory session index without summing potentially overlapping report periods."""
     index = {}
     for report in reports:
         filename = report.get("filename")
@@ -589,8 +594,31 @@ def build_evidence_index(reports: list[dict]) -> dict:
                 "date_start": row.get("date_start"),
                 "date_end": row.get("date_end"),
             }
+            keys = []
             if row.get("video_id"):
-                index[f"id:{row['video_id']}"] = evidence
+                keys.append(f"id:{row['video_id']}")
             if row.get("video_title"):
-                index[f"title:{_norm(row['video_title'])}"] = evidence
+                keys.append(title_evidence_key(row["video_title"]))
+            for key in keys:
+                index.setdefault(key, [])
+                index[key].append(evidence)
     return index
+
+
+def find_video_evidence(index: dict, video_id: str | None, title: str | None) -> list[dict]:
+    """Return de-duplicated source records matched by exact ID first, title second."""
+    matches = []
+    keys = [f"id:{video_id}"] if video_id else []
+    if title:
+        keys.append(title_evidence_key(title))
+    seen = set()
+    for key in keys:
+        for item in index.get(key, []):
+            identity = (
+                item.get("source_file"), item.get("date_start"),
+                item.get("date_end"), item.get("report_type"),
+            )
+            if identity not in seen:
+                seen.add(identity)
+                matches.append(item)
+    return matches
