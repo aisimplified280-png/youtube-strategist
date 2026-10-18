@@ -48,17 +48,6 @@ st.markdown(
         padding-top: 4.25rem;
         padding-bottom: 5.5rem;
     }
-    .asl-workspace-nav {
-        margin: .2rem 0 .45rem;
-        padding-bottom: 0;
-    }
-    .asl-workspace-nav-label {
-        font-size: .68rem;
-        font-weight: 720;
-        letter-spacing: .13em;
-        opacity: .62;
-        margin: 0 0 .45rem .1rem;
-    }
     [data-testid="stSidebar"] {
         border-right: 1px solid rgba(128, 128, 128, .22);
     }
@@ -150,14 +139,6 @@ st.markdown(
             padding-bottom: 4.8rem;
             padding-left: .8rem;
             padding-right: .8rem;
-        }
-        .asl-workspace-nav {
-            margin-bottom: 1rem;
-        }
-        .asl-workspace-nav [data-testid="stButton"] button {
-            padding-left: .25rem;
-            padding-right: .25rem;
-            font-size: .84rem;
         }
         .asl-page-heading { margin-bottom: 1rem; }
         .asl-page-subtitle { font-size: .87rem; }
@@ -1368,114 +1349,118 @@ def _render_recent_opportunities(
 
 
 
-def _render_studio_export_analysis():
+def _render_studio_export_analysis(youtube=None):
     """Upload, inspect, and analyse Studio exports locally within the current app session."""
-    st.subheader("Upload YouTube Studio exports")
-    st.caption(
-        "Use exported Analytics reports to add real CTR, watch-time, average-viewed and "
-        "retention evidence that may not be available in the connected API reports."
-    )
-    st.caption(
-        "Files are analysed in this session and are not saved to Drive, OneDrive, or disk. "
-        "Excel/OneDrive files must be downloaded and uploaded here; direct Microsoft account "
-        "access is not connected yet. If you choose Do it, only that video's compact metrics, "
-        "source label, and date range are sent to the configured AI provider—the raw file is not sent."
-    )
-    with st.expander("How to export a report from YouTube Studio", expanded=False):
-        st.markdown(
-            "1. Open [YouTube Studio](https://studio.youtube.com/) and select **Analytics**.\n"
-            "2. Open **Advanced mode** or **See more**.\n"
-            "3. Choose the video, date range, breakdown and metrics you want.\n"
-            "4. Select **Export current view** and download CSV (or TSV if offered).\n\n"
-            "Useful reports: Content/video performance with Views, Impressions, CTR, "
-            "Average view duration and Average percentage viewed; a daily report for trends; "
-            "and the audience-retention report for the video's retention curve."
+    with st.expander(
+        "Import or refresh YouTube Studio reports",
+        expanded=not bool(st.session_state.get("studio_export_reports")),
+    ):
+        st.subheader("Upload YouTube Studio exports")
+        st.caption(
+            "Use exported Analytics reports to add real CTR, watch-time, average-viewed and "
+            "retention evidence that may not be available in the connected API reports."
         )
         st.caption(
-            "Official instructions: [YouTube Help — Advanced mode and exports]"
-            "(https://support.google.com/youtube/answer/9717005)."
+            "Files are analysed in this session and are not saved to Drive, OneDrive, or disk. "
+            "Excel/OneDrive files must be downloaded and uploaded here; direct Microsoft account "
+            "access is not connected yet. If you choose Do it, only that video's compact metrics, "
+            "source label, and date range are sent to the configured AI provider—the raw file is not sent."
         )
-
-    uploaded_files = st.file_uploader(
-        "Choose Studio reports (CSV, TSV, or XLSX)",
-        type=["csv", "tsv", "txt", "xlsx"],
-        accept_multiple_files=True,
-        key="studio_export_uploads",
-        help="Select CSV/TSV reports or Excel .xlsx workbooks. Files are parsed in memory.",
-        max_upload_size=10,
-    )
-    button_columns = st.columns([1, 1, 2])
-    with button_columns[0]:
-        analyze_clicked = st.button(
-            "Analyze exports",
-            type="primary",
-            use_container_width=True,
-            disabled=not bool(uploaded_files),
-            key="analyze_studio_exports",
-        )
-    with button_columns[1]:
-        clear_clicked = st.button(
-            "Clear analysis",
-            use_container_width=True,
-            disabled=not bool(st.session_state.get("studio_export_reports")),
-            key="clear_studio_exports",
-        )
-    if clear_clicked:
-        st.session_state.pop("studio_export_reports", None)
-        st.session_state.pop("studio_export_evidence_index", None)
-        st.session_state.pop("studio_export_skipped_actions", None)
-        st.session_state.pop("studio_export_started_actions", None)
-        st.rerun()
-
-    if analyze_clicked and uploaded_files:
-        results = []
-        errors = []
-        for uploaded in uploaded_files:
-            try:
-                parsed = studio_export_analyzer.parse_studio_export(
-                    uploaded.name, uploaded.getvalue()
-                )
-                results.append(studio_export_analyzer.analyze_studio_export(parsed))
-            except studio_export_analyzer.StudioExportError as error:
-                errors.append(f"**{uploaded.name}:** {error}")
-            except Exception:
-                errors.append(
-                    f"**{uploaded.name}:** The file couldn't be analysed safely. "
-                    "Try exporting it again as CSV/TSV."
-                )
-        st.session_state["studio_export_reports"] = results
-        st.session_state["studio_export_evidence_index"] = (
-            studio_export_analyzer.build_evidence_index(results)
-        )
-        st.session_state.pop("studio_export_skipped_actions", None)
-        st.session_state.pop("studio_export_started_actions", None)
-        st.session_state["studio_export_upload_errors"] = errors
-        st.rerun()
-
-    for error in st.session_state.pop("studio_export_upload_errors", []):
-        st.warning(error)
-
-    reports = st.session_state.get("studio_export_reports", [])
-    if reports and uploaded_files:
-        cached_names = [report.get("filename") for report in reports]
-        selected_names = [uploaded.name for uploaded in uploaded_files]
-        if cached_names != selected_names:
-            st.warning(
-                "Your selected files differ from the last analysis. Select **Analyze exports** "
-                "to replace the results with the current upload selection."
+        with st.expander("How to export a report from YouTube Studio", expanded=False):
+            st.markdown(
+                "1. Open [YouTube Studio](https://studio.youtube.com/) and select **Analytics**.\n"
+                "2. Open **Advanced mode** or **See more**.\n"
+                "3. Choose the video, date range, breakdown and metrics you want.\n"
+                "4. Select **Export current view** and download CSV (or TSV if offered).\n\n"
+                "Useful reports: Content/video performance with Views, Impressions, CTR, "
+                "Average view duration and Average percentage viewed; a daily report for trends; "
+                "and the audience-retention report for the video's retention curve."
             )
-    elif reports and not uploaded_files:
-        st.caption(
-            "Showing the last processed analysis from this session. Upload and analyse another "
-            "set, or clear the analysis to remove the displayed results."
+            st.caption(
+                "Official instructions: [YouTube Help — Advanced mode and exports]"
+                "(https://support.google.com/youtube/answer/9717005)."
+            )
+    
+        uploaded_files = st.file_uploader(
+            "Choose Studio reports (CSV, TSV, or XLSX)",
+            type=["csv", "tsv", "txt", "xlsx"],
+            accept_multiple_files=True,
+            key="studio_export_uploads",
+            help="Select CSV/TSV reports or Excel .xlsx workbooks. Files are parsed in memory.",
+            max_upload_size=10,
         )
-    if not reports:
-        st.info(
-            "Upload one or more YouTube Studio CSV/TSV reports or .xlsx workbooks and select "
-            "**Analyze exports**. You can still use the live Analytics dashboard below without uploading anything."
-        )
-        return
-
+        button_columns = st.columns([1, 1, 2])
+        with button_columns[0]:
+            analyze_clicked = st.button(
+                "Analyze exports",
+                type="primary",
+                use_container_width=True,
+                disabled=not bool(uploaded_files),
+                key="analyze_studio_exports",
+            )
+        with button_columns[1]:
+            clear_clicked = st.button(
+                "Clear analysis",
+                use_container_width=True,
+                disabled=not bool(st.session_state.get("studio_export_reports")),
+                key="clear_studio_exports",
+            )
+        if clear_clicked:
+            st.session_state.pop("studio_export_reports", None)
+            st.session_state.pop("studio_export_evidence_index", None)
+            st.session_state.pop("studio_export_skipped_actions", None)
+            st.session_state.pop("studio_export_started_actions", None)
+            st.rerun()
+    
+        if analyze_clicked and uploaded_files:
+            results = []
+            errors = []
+            for uploaded in uploaded_files:
+                try:
+                    parsed = studio_export_analyzer.parse_studio_export(
+                        uploaded.name, uploaded.getvalue()
+                    )
+                    results.append(studio_export_analyzer.analyze_studio_export(parsed))
+                except studio_export_analyzer.StudioExportError as error:
+                    errors.append(f"**{uploaded.name}:** {error}")
+                except Exception:
+                    errors.append(
+                        f"**{uploaded.name}:** The file couldn't be analysed safely. "
+                        "Try exporting it again as CSV/TSV."
+                    )
+            st.session_state["studio_export_reports"] = results
+            st.session_state["studio_export_evidence_index"] = (
+                studio_export_analyzer.build_evidence_index(results)
+            )
+            st.session_state.pop("studio_export_skipped_actions", None)
+            st.session_state.pop("studio_export_started_actions", None)
+            st.session_state["studio_export_upload_errors"] = errors
+            st.rerun()
+    
+        for error in st.session_state.pop("studio_export_upload_errors", []):
+            st.warning(error)
+    
+        reports = st.session_state.get("studio_export_reports", [])
+        if reports and uploaded_files:
+            cached_names = [report.get("filename") for report in reports]
+            selected_names = [uploaded.name for uploaded in uploaded_files]
+            if cached_names != selected_names:
+                st.warning(
+                    "Your selected files differ from the last analysis. Select **Analyze exports** "
+                    "to replace the results with the current upload selection."
+                )
+        elif reports and not uploaded_files:
+            st.caption(
+                "Showing the last processed analysis from this session. Upload and analyse another "
+                "set, or clear the analysis to remove the displayed results."
+            )
+        if not reports:
+            st.info(
+                "Upload one or more YouTube Studio CSV/TSV reports or .xlsx workbooks and select "
+                "**Analyze exports**. You can still use the live Analytics dashboard below without uploading anything."
+            )
+            return
+    
     video_count = sum(report.get("video_count", 0) for report in reports)
     st.caption(
         f"{len(reports)} report(s) analysed · {video_count} video/report matches · "
@@ -1541,21 +1526,65 @@ def _render_studio_export_analysis():
             item["recommendation"].get("title", ""),
         )
     )
+
+    title_lookup = {}
+    lookup_ids = list(dict.fromkeys(
+        action["video_id"] for action in export_actions
+        if action.get("video_id")
+        and re.fullmatch(r"[A-Za-z0-9_-]{11}", str(action["video_id"]))
+        and (
+            not str(action.get("video_title") or "").strip()
+            or str(action.get("video_title") or "").strip() == str(action["video_id"])
+        )
+    ))
+    if youtube and lookup_ids:
+        for offset in range(0, min(len(lookup_ids), 100), 50):
+            batch = lookup_ids[offset:offset + 50]
+            try:
+                response = youtube.videos().list(
+                    part="snippet", id=",".join(batch), maxResults=len(batch)
+                ).execute()
+            except Exception:
+                break
+            for item in response.get("items", []):
+                snippet = item.get("snippet", {})
+                if snippet.get("title"):
+                    title_lookup[item.get("id")] = snippet["title"]
+
+    for action in export_actions:
+        raw_title = str(action.get("video_title") or "").strip()
+        video_id = str(action.get("video_id") or "")
+        if not raw_title or (video_id and raw_title == video_id):
+            raw_title = title_lookup.get(video_id, "")
+        action["display_title"] = raw_title if raw_title and raw_title != video_id else "Video title unavailable"
     skipped_actions = set(st.session_state.get("studio_export_skipped_actions", []))
     started_actions = set(st.session_state.get("studio_export_started_actions", []))
     remaining_actions = [
         action for action in export_actions
         if action["id"] not in skipped_actions and action["id"] not in started_actions
     ]
-    if remaining_actions:
+    if st.session_state.get("studio_inline_optimizer_active"):
+        st.info(
+            "You're working on the selected video above. The next recommendation will appear "
+            "after you approve the change or return to the queue."
+        )
+    elif remaining_actions:
         action = remaining_actions[0]
         recommendation = action["recommendation"]
         measured = recommendation.get("measured_metrics") or {}
         st.subheader("Your next best action")
         with st.container(border=True):
-            st.markdown(f"### {recommendation.get('title', 'Review this video')}")
+            display_title = action.get("display_title") or "Video title unavailable"
+            st.subheader(display_title)
+            measured_for_label = recommendation.get("measured_metrics") or {}
+            if measured_for_label.get("ctr_percent") is not None:
+                issue_label = "Click-through rate review"
+            elif measured_for_label.get("average_view_percentage") is not None:
+                issue_label = "Viewer retention review"
+            else:
+                issue_label = str(recommendation.get("title", "Performance review")).split(":", 1)[0]
             st.caption(
-                f"{action['priority']} priority · Evidence from {action['source_file']}"
+                f"{action['priority']} priority · {issue_label} · Evidence from {action['source_file']}"
             )
             st.write(recommendation.get("evidence", ""))
             st.markdown("**Suggested next step**")
@@ -1615,6 +1644,9 @@ def _render_studio_export_analysis():
                 started_actions.add(action["id"])
                 st.session_state["studio_export_started_actions"] = list(started_actions)
                 st.session_state["pending_optimizer_video_url"] = reference
+                st.session_state["studio_export_active_action_id"] = action["id"]
+                st.session_state["studio_inline_optimizer_active"] = True
+                st.session_state.pop("last_update_result", None)
                 st.session_state["studio_export_pending_instruction"] = (
                     "Create a complete, ready-to-review optimization proposal for this video. "
                     f"The highest-priority measured signal is: {signal}. "
@@ -1626,7 +1658,7 @@ def _render_studio_export_analysis():
                     "and include a practical content-level recommendation; do not pretend the app can edit "
                     "the video or its thumbnail. Do not apply anything. I must approve the exact metadata proposal."
                 )
-                st.session_state["asl_workspace"] = "Strategist"
+                st.session_state["asl_workspace"] = "Analytics"
                 st.rerun()
             if skip_action:
                 skipped_actions.add(action["id"])
@@ -1728,7 +1760,6 @@ def _render_studio_export_analysis():
                 st.markdown("**Video-level metrics found**")
                 visible_metrics = (
                     ("video_title", "Video"),
-                    ("video_id", "Video ID"),
                     ("views", "Views"),
                     ("watch_time_minutes", "Watch time (min)"),
                     ("average_view_duration_seconds", "Avg. view duration (sec)"),
@@ -1988,21 +2019,6 @@ def main():
             '<div class="asl-sidebar-brand">✳ AI Simplified Lab</div>',
             unsafe_allow_html=True,
         )
-        if st.session_state.get("asl_workspace", "Strategist") == "Strategist" and st.button(
-            "New chat", key="asl_new_chat", use_container_width=True
-        ):
-            for key in (
-                "strategist_target_reference",
-                "strategist_chat_history",
-                "strategist_chat_proposal",
-                "strategist_chat_digest",
-                "strategist_pending_instruction",
-                "channel_analysis_request",
-                "opportunity_auto_run",
-            ):
-                st.session_state.pop(key, None)
-            st.session_state["asl_pending_workspace"] = "Strategist"
-            st.rerun()
 
     api_client_error = None
     youtube = analytics = reporting = None
@@ -2049,27 +2065,12 @@ def main():
             st.session_state["optimizer_open_error"] = (
                 "Could not open this video for optimization. Check YouTube access and try again."
             )
-        st.session_state["asl_workspace"] = "Strategist"
+        st.session_state["asl_workspace"] = "Analytics"
+        st.session_state["studio_inline_optimizer_active"] = True
 
-    if st.session_state.get("asl_workspace") not in {"Strategist", "Find videos", "Analytics"}:
-        st.session_state["asl_workspace"] = "Strategist"
-    page = st.session_state["asl_workspace"]
-    st.markdown(
-        '<div class="asl-workspace-nav"><div class="asl-workspace-nav-label">'
-        'WORKSPACES</div></div>',
-        unsafe_allow_html=True,
-    )
-    nav_columns = st.columns(3, gap="small")
-    for column, workspace in zip(nav_columns, ("Strategist", "Find videos", "Analytics")):
-        with column:
-            if st.button(
-                workspace,
-                key=f"asl_workspace_nav_{workspace.casefold().replace(' ', '_')}",
-                type="primary" if page == workspace else "secondary",
-                use_container_width=True,
-            ):
-                st.session_state["asl_workspace"] = workspace
-                st.rerun()
+    # Single Creator Studio canvas: evidence, proposal review, and approval stay together.
+    page = "Analytics"
+    st.session_state["asl_workspace"] = page
 
     with st.sidebar:
         st.caption("YouTube: Connected" if credentials else "YouTube: Not connected")
@@ -2183,11 +2184,11 @@ def main():
         if page == "Analytics":
             st.markdown(
                 '<div class="asl-page-heading"><div class="asl-page-title">'
-                'Channel analytics</div><p class="asl-page-subtitle">'
+                'Creator Studio</div><p class="asl-page-subtitle">'
                 'Upload your own Studio reports for deeper, evidence-based analysis.</p></div>',
                 unsafe_allow_html=True,
             )
-            _render_studio_export_analysis()
+            _render_studio_export_analysis(youtube=youtube)
             _render_workspace_connection_gate(
                 page, secrets, subject, api_client_error=api_client_error,
                 show_heading=False,
@@ -2235,12 +2236,95 @@ def main():
     else:
         st.markdown(
             '<div class="asl-page-heading"><div class="asl-page-title">'
-            'Channel analytics</div><p class="asl-page-subtitle">'
+            'Creator Studio</div><p class="asl-page-subtitle">'
             'Measured channel performance and reporting coverage.</p></div>',
             unsafe_allow_html=True,
         )
-        st.caption("Read-only performance reports and optimization evidence.")
-        _render_studio_export_analysis()
+        st.caption(
+            "One recommendation at a time. Review the evidence, prepare changes, then approve "
+            "the exact title, description and tags here. Nothing is applied automatically."
+        )
+
+        if not st.session_state.get("studio_inline_optimizer_active"):
+            if st.button(
+                "Optimize another video",
+                key="studio_optimize_another_video",
+                use_container_width=False,
+            ):
+                for key in (
+                    "strategist_target_reference",
+                    "strategist_chat_history",
+                    "strategist_chat_proposal",
+                    "strategist_chat_digest",
+                    "strategist_pending_instruction",
+                    "studio_export_pending_instruction",
+                ):
+                    st.session_state.pop(key, None)
+                st.session_state.pop("last_update_result", None)
+                st.session_state.pop("pending_optimizer_video_url", None)
+                st.session_state["studio_export_active_action_id"] = None
+                st.session_state["studio_inline_optimizer_active"] = True
+                st.rerun()
+
+        if st.session_state.get("studio_inline_optimizer_active"):
+            st.subheader("Review and approve your changes")
+            st.caption(
+                "This stays in Creator Studio. Check the exact proposed title, description and tags "
+                "below. YouTube changes only after you approve."
+            )
+            strategist_chat.render_chat(
+                youtube,
+                secrets,
+                credentials=credentials,
+                memory_credentials=memory_credentials,
+            )
+            last_result = st.session_state.get("last_update_result")
+            if last_result:
+                st.success(
+                    f"Update verified on YouTube: {last_result.get('title', 'Your video')}"
+                )
+                if st.button(
+                    "Continue to next recommendation",
+                    type="primary",
+                    key="studio_continue_after_approval",
+                    use_container_width=True,
+                ):
+                    st.session_state.pop("last_update_result", None)
+                    st.session_state["studio_inline_optimizer_active"] = False
+                    st.session_state.pop("studio_export_active_action_id", None)
+                    for key in (
+                        "strategist_target_reference",
+                        "strategist_chat_history",
+                        "strategist_chat_proposal",
+                        "strategist_chat_digest",
+                        "strategist_pending_instruction",
+                        "studio_export_pending_instruction",
+                    ):
+                        st.session_state.pop(key, None)
+                    st.rerun()
+            elif st.button(
+                "Cancel and return to recommendations",
+                key="studio_cancel_inline_optimization",
+                use_container_width=False,
+            ):
+                active_id = st.session_state.pop("studio_export_active_action_id", None)
+                if active_id:
+                    started = set(st.session_state.get("studio_export_started_actions", []))
+                    started.discard(active_id)
+                    st.session_state["studio_export_started_actions"] = list(started)
+                st.session_state["studio_inline_optimizer_active"] = False
+                for key in (
+                    "strategist_target_reference",
+                    "strategist_chat_history",
+                    "strategist_chat_proposal",
+                    "strategist_chat_digest",
+                    "strategist_pending_instruction",
+                    "studio_export_pending_instruction",
+                ):
+                    st.session_state.pop(key, None)
+                st.rerun()
+
+        _render_studio_export_analysis(youtube=youtube)
         yesterday = date.today() - timedelta(days=1)
         default_start, default_end = youtube_dashboard.default_date_range()
         with st.container():
@@ -2330,8 +2414,7 @@ def main():
 
         data = st.session_state["dashboard_data"]
         st.caption(
-            f"Channel `{data['channel_id']}` · {data['period']['start']} through "
-            f"{data['period']['end']}"
+            f"Reporting period: {data['period']['start']} through {data['period']['end']}"
         )
         if data["summary"] is None:
             st.warning(f"Channel summary: {data['summary_status']}")
@@ -2530,12 +2613,6 @@ def main():
                 "session expires. Configure durable private storage before relying on audit history."
             )
 
-        last_result = st.session_state.pop("last_update_result", None)
-        if last_result:
-            st.success(
-                f"Verified update for **{last_result['title']}**: "
-                f"{last_result['url']}"
-            )
 
 
 main()
