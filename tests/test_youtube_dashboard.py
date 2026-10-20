@@ -657,6 +657,64 @@ class YoutubeDashboardTests(unittest.TestCase):
         self.assertIn("review shortlist only", ranked[0]["opportunity_evidence"])
         self.assertIn("not a confirmed underperformer", ranked[0]["opportunity_evidence"])
 
+    def test_low_ctr_with_measured_reach_is_a_packaging_review(self):
+        rows = [
+            {
+                "video_id": "target",
+                "format": "Long-form (>180 sec)",
+                "age_days": 20,
+                "views": 20,
+                "impressions": 120,
+                "ctr": 2.0,
+            },
+            *[
+                {
+                    "video_id": f"peer-{index}",
+                    "format": "Long-form (>180 sec)",
+                    "age_days": 21 + index,
+                    "views": 100 + index,
+                    "impressions": 1000,
+                    "ctr": 5.0,
+                }
+                for index in range(3)
+            ],
+        ]
+
+        ranked = youtube_dashboard.rank_optimization_candidates(rows)
+
+        self.assertEqual(ranked[0]["diagnosis"], "Packaging review")
+        self.assertIn("CTR is 2% vs. a 5% peer median", ranked[0]["next_step"])
+        self.assertIn("title and thumbnail", ranked[0]["next_step"])
+
+    def test_missing_reach_data_does_not_claim_metadata_is_the_cause(self):
+        rows = [
+            {
+                "video_id": "target",
+                "format": "Long-form (>180 sec)",
+                "age_days": 20,
+                "views": 20,
+                "impressions": None,
+                "ctr": None,
+            },
+            *[
+                {
+                    "video_id": f"peer-{index}",
+                    "format": "Long-form (>180 sec)",
+                    "age_days": 21 + index,
+                    "views": 100 + index,
+                    "impressions": None,
+                    "ctr": None,
+                }
+                for index in range(3)
+            ],
+        ]
+
+        ranked = youtube_dashboard.rank_optimization_candidates(rows)
+
+        self.assertEqual(ranked[0]["diagnosis"], "No specific bottleneck isolated")
+        self.assertIn("do not identify a cause", ranked[0]["next_step"])
+        self.assertNotIn("title", ranked[0]["next_step"])
+
     def test_metadata_suggestion_preserves_description_links_and_existing_tags(self):
         snippet = {
             "title": "Why Your LLM Cache Fails",

@@ -836,6 +836,15 @@ def _display_metric(value):
     return "Unavailable" if value is None else f"{value:,}"
 
 
+def _metric_delta(current, previous):
+    if not isinstance(current, (int, float)) or not isinstance(previous, (int, float)):
+        return None
+    difference = current - previous
+    if previous == 0:
+        return f"{difference:+g} vs. prior period"
+    return f"{difference / abs(previous):+.1%} vs. prior period"
+
+
 def _resolve_video_title(video_id: str | None = None, title_hint: str | None = None, youtube=None) -> str:
     """Resolve a human-readable video title without ever returning a raw video ID.
 
@@ -2711,6 +2720,7 @@ def main():
             st.warning(f"Channel summary: {data['summary_status']}")
         else:
             summary = data["summary"]
+            previous_summary = data.get("previous_summary") or {}
             gained = summary.get("subscribersGained")
             lost = summary.get("subscribersLost")
             net_subscribers = (
@@ -2718,15 +2728,48 @@ def main():
                 if isinstance(gained, (int, float)) and isinstance(lost, (int, float))
                 else None
             )
+            previous_gained = previous_summary.get("subscribersGained")
+            previous_lost = previous_summary.get("subscribersLost")
+            previous_net_subscribers = (
+                previous_gained - previous_lost
+                if isinstance(previous_gained, (int, float))
+                and isinstance(previous_lost, (int, float))
+                else None
+            )
             primary_metrics = (
-                ("Views", summary.get("views")),
-                ("Watch time (minutes)", summary.get("estimatedMinutesWatched")),
-                ("Avg. view duration (seconds)", summary.get("averageViewDuration")),
-                ("Net subscribers", net_subscribers),
+                ("Views", summary.get("views"), previous_summary.get("views")),
+                (
+                    "Watch time (minutes)",
+                    summary.get("estimatedMinutesWatched"),
+                    previous_summary.get("estimatedMinutesWatched"),
+                ),
+                (
+                    "Avg. view duration (seconds)",
+                    summary.get("averageViewDuration"),
+                    previous_summary.get("averageViewDuration"),
+                ),
+                ("Net subscribers", net_subscribers, previous_net_subscribers),
+            )
+            st.caption(
+                "Compared with the immediately preceding "
+                f"{(end_date - start_date).days + 1}-day period "
+                f"({data['previous_period']['start']} through "
+                f"{data['previous_period']['end']})."
             )
             metric_columns = st.columns(4)
-            for column, (label, value) in zip(metric_columns, primary_metrics):
-                column.metric(label, _display_metric(value))
+            for column, (label, value, previous_value) in zip(
+                metric_columns, primary_metrics
+            ):
+                column.metric(
+                    label,
+                    _display_metric(value),
+                    delta=_metric_delta(value, previous_value),
+                )
+            if data.get("previous_summary") is None:
+                st.caption(
+                    "Previous-period comparison unavailable: "
+                    f"{data['previous_summary_status']}"
+                )
             with st.expander("More channel metrics"):
                 detail_metrics = (
                     "subscribersGained", "subscribersLost", "likes", "comments", "shares"
@@ -2874,6 +2917,9 @@ def main():
                     action_columns = st.columns([3, 1])
                     action_columns[0].markdown(
                         f"**[{cand_title}]({cand_url})**"
+                    )
+                    action_columns[0].markdown(
+                        f"Diagnosis: **{candidate['diagnosis']}**"
                     )
                     action_columns[0].caption(candidate["recommendation_evidence"])
                     if action_columns[1].button(
