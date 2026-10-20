@@ -659,6 +659,15 @@ def load_dashboard_data(youtube, analytics, start_date, end_date, *,
         end_date,
         ",".join(CORE_METRICS),
     )
+    period_length = (end_date - start_date).days + 1
+    previous_end_date = start_date - timedelta(days=1)
+    previous_start_date = previous_end_date - timedelta(days=period_length - 1)
+    previous_summary_rows, previous_summary_status = _report_or_unavailable(
+        analytics,
+        previous_start_date,
+        previous_end_date,
+        ",".join(CORE_METRICS),
+    )
     daily_rows, daily_status = _report_or_unavailable(
         analytics,
         start_date,
@@ -712,6 +721,14 @@ def load_dashboard_data(youtube, analytics, start_date, end_date, *,
         "period": {"start": start_date.isoformat(), "end": end_date.isoformat()},
         "summary": summary_rows[0] if summary_rows else None,
         "summary_status": summary_status,
+        "previous_summary": (
+            previous_summary_rows[0] if previous_summary_rows else None
+        ),
+        "previous_summary_status": previous_summary_status,
+        "previous_period": {
+            "start": previous_start_date.isoformat(),
+            "end": previous_end_date.isoformat(),
+        },
         "daily_rows": daily_rows,
         "daily_status": daily_status,
         "traffic_sources": channel_traffic,
@@ -754,7 +771,7 @@ def fetch_video_audience_demographics(analytics, video_id, start_date, end_date)
 
 
 def rank_optimization_candidates(video_rows, *, limit=5):
-    """Rank only measured videos against same-format, age-matched peers."""
+    """Rank measured videos against same-format, age-matched peers."""
     recommendations = []
     for video in video_rows:
         views = video.get("views")
@@ -788,31 +805,152 @@ def rank_optimization_candidates(video_rows, *, limit=5):
             median(peer_duration_values) if peer_duration_values else None
         )
         average_duration = video.get("averageViewDuration")
+        evidence = (
+            f"{views:g} views vs. {peer_views_median:g} median views across "
+            f"{len(peers)} age- and format-matched channel videos."
+        )
         if (
             isinstance(average_duration, (int, float))
             and peer_duration_median is not None
             and average_duration > peer_duration_median
         ):
-            evidence = (
-                f"{views:g} views vs. {peer_views_median:g} median views across "
-                f"{len(peers)} age- and format-matched channel videos, while average "
-                f"view duration is {average_duration:g}s vs. their "
-                f"{peer_duration_median:g}s median. Review the title/description "
-                "for a clearer match to the video's existing topic."
+            evidence += (
+                f" average view duration is {average_duration:g}s vs. their "
+                f"{peer_duration_median:g}s median."
+            )
+
+        diagnosis = "No specific bottleneck isolated"
+        next_step = (
+            "Views are below the peer median, but available metrics do not identify "
+            "a cause. Review the audience and distribution context before changing metadata."
+        )
+
+        impressions = video.get("impressions")
+        ctr_peers = [
+            peer for peer in peers
+            if isinstance(peer.get("impressions"), (int, float))
+            and peer["impressions"] >= 100
+            and isinstance(peer.get("ctr"), (int, float))
+        ]
+        ctr_median = median(peer["ctr"] for peer in ctr_peers) if ctr_peers else None
+        ctr = video.get("ctr")
+        if (
+            isinstance(impressions, (int, float))
+            and impressions >= 100
+            and isinstance(ctr, (int, float))
+            and len(ctr_peers) >= 3
+            and ctr_median is not None
+            and ctr_median > 0
+            and ctr < ctr_median * 0.8
+        ):
+            diagnosis = "Packaging review"
+            next_step = (
+                f"CTR is {ctr:g}% vs. a {ctr_median:g}% peer median. Review whether "
+                "the title and thumbnail make a clear, accurate promise; this is a "
+                "correlation, not proof that packaging caused the view gap."
             )
         else:
-            evidence = (
-                f"{views:g} views vs. {peer_views_median:g} median views across "
-                f"{len(peers)} age- and format-matched channel videos. This is a "
-                "metadata review candidate, not evidence that metadata caused the gap."
+            video_duration = video.get("duration_seconds")
+            video_viewed_fraction = (
+                average_duration / video_duration
+                if (
+                    isinstance(average_duration, (int, float))
+                    and isinstance(video_duration, (int, float))
+                    and video_duration > 0
+                )
+                else None
             )
+            peer_viewed_fractions = [
+                peer["averageViewDuration"] / peer["duration_seconds"]
+                for peer in peers
+                if (
+                    isinstance(peer.get("averageViewDuration"), (int, float))
+                    and isinstance(peer.get("duration_seconds"), (int, float))
+                    and peer["duration_seconds"] > 0
+                )
+            ]
+            viewed_fraction_median = (
+                median(peer_viewed_fractions) if peer_viewed_fractions else None
+            )
+            if (
+                video_viewed_fraction is not None
+                and viewed_fraction_median is not None
+                and len(peer_viewed_fractions) >= 3
+                and viewed_fraction_median > 0
+                and video_viewed_fraction < viewed_fraction_median * 0.8
+            ):
+                diagnosis = "Retention review"
+                next_step = (
+                    f"Average percentage viewed is {video_viewed_fraction:.1%} vs. "
+                    f"a {viewed_fraction_median:.1%} peer median. Review the opening "
+                    "and pacing; changing tags will not address this signal."
+                )
+            else:
+                likes = video.get("likes")
+                engagement_peers = [
+                    peer for peer in peers
+                    if isinstance(peer.get("views"), (int, float))
+                    and peer["views"] >= 100
+                    and isinstance(peer.get("likes"), (int, float))
+                ]
+                like_rate_median = (
+                    median(peer["likes"] / peer["views"] for peer in engagement_peers)
+                    if engagement_peers
+                    else None
+                )
+                like_rate = (
+                    likes / views
+                    if (
+                        isinstance(likes, (int, float))
+                        and isinstance(views, (int, float))
+                        and views >= 100
+                    )
+                    else None
+                )
+                if (
+                    like_rate is not None
+                    and like_rate_median is not None
+                    and len(engagement_peers) >= 3
+                    and like_rate_median > 0
+                    and like_rate < like_rate_median * 0.75
+                ):
+                    diagnosis = "Engagement review"
+                    next_step = (
+                        f"Likes per view are {like_rate:.2%} vs. a "
+                        f"{like_rate_median:.2%} peer median. Review audience fit "
+                        "and whether the video delivers on its premise."
+                    )
+                else:
+                    peer_impressions = [
+                        peer["impressions"] for peer in peers
+                        if isinstance(peer.get("impressions"), (int, float))
+                    ]
+                    impressions_median = (
+                        median(peer_impressions) if peer_impressions else None
+                    )
+                    if (
+                        isinstance(impressions, (int, float))
+                        and impressions_median is not None
+                        and impressions_median > 0
+                        and impressions < impressions_median * 0.8
+                    ):
+                        diagnosis = "Reach review"
+                        next_step = (
+                            f"Impressions are {impressions:g} vs. a "
+                            f"{impressions_median:g} peer median, without a clear "
+                            "CTR or retention signal. Review topic demand and "
+                            "distribution; do not assume tags are the cause."
+                        )
+
         recommendations.append({
             **video,
             "peer_count": len(peers),
             "peer_views_median": peer_views_median,
             "relative_views_gap": relative_views,
             "peer_average_view_duration_median": peer_duration_median,
-            "recommendation_evidence": evidence,
+            "recommendation_evidence": evidence + " " + next_step,
+            "diagnosis": diagnosis,
+            "next_step": next_step,
         })
 
     recommendations.sort(

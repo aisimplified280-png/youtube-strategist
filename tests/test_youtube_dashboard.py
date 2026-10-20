@@ -270,6 +270,13 @@ class YoutubeDashboardTests(unittest.TestCase):
         self.assertIn("not configured", row["ctr_status"])
         self.assertTrue(result["daily_rows"])
         self.assertTrue(result["traffic_sources"])
+        self.assertEqual(
+            result["previous_period"],
+            {
+                "start": (yesterday - timedelta(days=13)).isoformat(),
+                "end": (yesterday - timedelta(days=7)).isoformat(),
+            },
+        )
         self.assertTrue(
             all("impressions" not in query["metrics"] for query in analytics.requests)
         )

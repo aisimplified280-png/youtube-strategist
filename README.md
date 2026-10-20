@@ -173,6 +173,13 @@ report under [channel reach reports](https://developers.google.com/youtube/repor
 and documents the [reach metrics](https://developers.google.com/youtube/reporting/v1/reports/metrics#video_thumbnail_impressions)
 and [date/video dimensions](https://developers.google.com/youtube/reporting/v1/reports/dimensions).
 
+The dashboard compares the selected period with the immediately preceding period of equal length,
+so opening it for a daily check-in surfaces channel-level changes without comparing unlike date
+ranges. Streamlit Community Cloud does not run this app as an unattended daily job, and the app
+does not retain daily snapshots or send alerts. Scheduled reports or alerts require an external
+scheduler and access-controlled persistent storage; do not treat session state as monitoring
+history.
+
 Reporting API jobs must be created before YouTube generates report files. The first file may take
 up to 48 hours to become available, and the API does not promise historical report files for dates
 before the job was created. Later daily files are asynchronous too. Use **Refresh channel reports**
