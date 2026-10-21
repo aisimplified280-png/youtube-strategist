@@ -10,9 +10,12 @@ import requests
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
 
+from datetime import date, timedelta
+
 import content_memory
 import studio_export_analyzer
 import youtube_analytics_connector as connector
+import youtube_dashboard
 
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -295,6 +298,8 @@ Rules:
 - Do not promise views, CTR, virality, or subscriber gains.
 - Studio export evidence is numeric performance context only; never treat it as proof of causation or as evidence about the video's spoken/visual content.
 - Respect the date window and source file attached to each export observation. Different uploads can cover overlapping periods; never sum them unless the report itself represents non-overlapping rows.
+- In assistant_message, provide 3 distinct title angles for the creator: 1) Curiosity/Intrigue, 2) Direct Value/Outcome, 3) Search/SEO. State which one was staged in the title field below.
+- For the description: ensure the first 150 characters serve as an engaging mobile search preview hook without filler.
 
 TARGET VIDEO (owner's channel; factual source):
 {json.dumps(target, ensure_ascii=False)}
@@ -496,7 +501,170 @@ def _apply_error_message(error):
     )
 
 
-def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
+def _load_latest_channel_video(youtube):
+    """Retrieve the most recent video published on the channel."""
+    if not youtube:
+        return None
+    try:
+        videos = youtube_dashboard._list_dashboard_videos(youtube, limit=1, end_date=date.today())
+        if videos:
+            return next(iter(videos.values()))
+    except Exception:
+        pass
+    return None
+
+
+def _get_or_load_channel_opportunities(youtube, analytics, reporting=None, credentials=None):
+    """Scan channel uploads for performance bottlenecks without leaving the chat."""
+    if not analytics:
+        return None, "YouTube Analytics is not connected. Connect YouTube to scan opportunities."
+    try:
+        start_date, end_date = youtube_dashboard.default_date_range()
+        cached = st.session_state.get("opportunity_data")
+        cached_key = st.session_state.get("opportunity_data_key")
+        query_key = (start_date.isoformat(), end_date.isoformat(), 25)
+        if not cached or cached_key != query_key:
+            data = youtube_dashboard.load_dashboard_data(
+                youtube,
+                analytics,
+                start_date,
+                end_date,
+                video_limit=25,
+                reporting=reporting,
+                credentials=credentials,
+            )
+            st.session_state["opportunity_data"] = data
+            st.session_state["opportunity_data_key"] = query_key
+        else:
+            data = cached
+
+        recent_ids = [
+            row["video_id"]
+            for row in data.get("video_rows", [])
+            if row.get("published_at")
+            and start_date.isoformat() <= row["published_at"][:10] <= end_date.isoformat()
+        ]
+        candidates = youtube_dashboard.rank_recent_video_opportunities(
+            data.get("video_rows", []),
+            recent_ids,
+            limit=4,
+        )
+        return {"data": data, "candidates": candidates, "recent_ids": recent_ids}, None
+    except Exception as e:
+        return None, f"Could not load channel performance data: {e}"
+
+
+def _render_inline_pulse_card(summary, period_text="Past 28 Days"):
+    if not summary:
+        st.info("No channel summary metrics returned for this period yet.")
+        return
+    views = summary.get("views") or 0
+    mins_watched = summary.get("estimatedMinutesWatched") or 0
+    watch_hours = mins_watched / 60.0
+    avd_seconds = summary.get("averageViewDuration") or 0
+    avd_m, avd_s = divmod(int(avd_seconds), 60)
+    subs_gained = summary.get("subscribersGained") or 0
+    subs_lost = summary.get("subscribersLost") or 0
+    net_subs = subs_gained - subs_lost
+
+    st.markdown(
+        f"""
+        <div class="asl-pulse-card">
+            <div class="asl-pulse-header">
+                <span class="asl-pulse-badge">⚡ CHANNEL PULSE</span>
+                <span class="asl-pulse-period">{html.escape(period_text)}</span>
+            </div>
+            <div class="asl-pulse-grid">
+                <div class="asl-pulse-item">
+                    <div class="asl-pulse-val">{views:,.0f}</div>
+                    <div class="asl-pulse-lbl">Total Views</div>
+                </div>
+                <div class="asl-pulse-item">
+                    <div class="asl-pulse-val">{watch_hours:,.1f}h</div>
+                    <div class="asl-pulse-lbl">Watch Time</div>
+                </div>
+                <div class="asl-pulse-item">
+                    <div class="asl-pulse-val">{avd_m}m {avd_s:02d}s</div>
+                    <div class="asl-pulse-lbl">Avg Duration</div>
+                </div>
+                <div class="asl-pulse-item">
+                    <div class="asl-pulse-val">{net_subs:+,.0f}</div>
+                    <div class="asl-pulse-lbl">Net Subs</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_inline_opportunities(youtube, candidates, secrets):
+    if not candidates:
+        st.info("No clear underperforming uploads detected in this window. Great job!")
+        return
+    st.markdown("### 🎯 Detected Growth Bottlenecks")
+    st.caption("Videos with high reach potential or lag vs channel peers. Tap below to optimize.")
+    for idx, cand in enumerate(candidates[:3], 1):
+        vid = cand.get("video_id")
+        title = cand.get("title") or "Untitled upload"
+        views = cand.get("views", 0)
+        ctr = cand.get("ctr")
+        ctr_str = f"{ctr:.2f}%" if isinstance(ctr, (int, float)) else "Reach data pending"
+        opp_type = cand.get("opportunity_type", "Metadata Opportunity")
+        evidence = cand.get("opportunity_evidence", "")
+        fmt = cand.get("format", "Video")
+
+        with st.container(border=True):
+            st.markdown(f"**{idx}. {title}**")
+            st.caption(f"🏷️ {fmt} · 👁️ {views:,.0f} views · 📊 CTR: {ctr_str}")
+            if evidence:
+                st.caption(evidence)
+            if st.button(f"⚡ Optimize This Video", key=f"inline_fix_{vid}_{idx}", use_container_width=True):
+                ref = f"https://www.youtube.com/watch?v={vid}"
+                st.session_state["pending_optimizer_video_url"] = ref
+                st.session_state["strategist_pending_instruction"] = (
+                    f"Review this upload: {title}. Diagnosed issue: {opp_type}. "
+                    "Provide 3 distinct title angles (Curiosity, Outcome, SEO) and a high-retention mobile description hook."
+                )
+                st.session_state.pop("show_inline_bottlenecks", None)
+                st.rerun()
+
+
+def _render_inline_studio_export(youtube, secrets):
+    with st.container(border=True):
+        st.markdown("### 📁 Studio Retention & Analytics Export")
+        st.caption("Upload your YouTube Studio CSV, TSV, or .xlsx export to diagnose drop-offs and retention curves.")
+        uploaded_files = st.file_uploader(
+            "Upload Studio reports",
+            type=["csv", "tsv", "txt", "xlsx"],
+            accept_multiple_files=True,
+            key="inline_studio_uploader",
+        )
+        if uploaded_files:
+            file_payloads = [
+                (file.name, file.getvalue()) for file in uploaded_files
+            ]
+            analysis = studio_export_analyzer.analyze_uploaded_files(file_payloads)
+            reports = analysis.get("reports", [])
+            evidence_index = studio_export_analyzer.build_video_evidence_index(reports)
+            st.session_state["studio_export_evidence_index"] = evidence_index
+            st.success(f"Parsed {len(reports)} Studio report file(s) with retention and performance evidence.")
+            rec = analysis.get("recommendation")
+            if rec:
+                st.markdown(f"**Top Recommended Action:** {rec.get('title', 'Action recommended')}")
+                st.write(rec.get("action", ""))
+                rec_vid = rec.get("video_id")
+                if rec_vid and st.button("Review recommended video now", key="inline_studio_rec_action", use_container_width=True):
+                    ref = f"https://www.youtube.com/watch?v={rec_vid}"
+                    st.session_state["pending_optimizer_video_url"] = ref
+                    st.session_state["studio_export_pending_instruction"] = (
+                        "Review this video using the uploaded Studio retention and reach evidence."
+                    )
+                    st.session_state.pop("show_inline_studio", None)
+                    st.rerun()
+
+
+def render_chat(youtube, secrets, credentials=None, memory_credentials=None, analytics=None, reporting=None):
     """Render a clean, chat-first editor with conversational setup and explicit approval."""
     st.caption(
         "Paste your video link or 11-character ID once, then ask for a better title, "
@@ -603,54 +771,74 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
             st.markdown(
                 """
                 <div class="asl-hero-card">
-                    <div class="asl-badge">✨ AI-Powered YouTube Growth</div>
-                    <div class="asl-hero-title">Optimize Video Metadata & Retention</div>
+                    <div class="asl-badge">🤖 Autonomous YouTube Co-Pilot</div>
+                    <div class="asl-hero-title">Creator Strategist Agent</div>
                     <div class="asl-hero-subtitle">
-                        Paste any YouTube video link below to get started, or select a starter optimization action from your channel.
+                        Your dedicated AI partner for channel diagnostics, multi-angle packaging, and retention optimization.
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("<div class='asl-starter-heading'>⚡ Quick Optimizations</div>", unsafe_allow_html=True)
-            starter_col1, starter_col2 = st.columns(2, gap="small")
-            with starter_col1:
-                if st.button(
-                    "🎯 Fix Low CTR Videos\n\nScan channel for underperforming uploads",
-                    key="starter_low_ctr",
-                    use_container_width=True,
-                ):
-                    st.session_state["channel_analysis_request"] = "Find my lowest CTR videos this month that need improvement"
-                    st.session_state["opportunity_auto_run"] = True
-                    st.session_state["asl_workspace"] = "Find videos"
+            st.markdown("<div class='asl-starter-heading'>⚡ Strategic Quick Actions</div>", unsafe_allow_html=True)
+            chip_col1, chip_col2, chip_col3 = st.columns(3, gap="small")
+            with chip_col1:
+                if st.button("⚡ Channel Pulse", key="starter_pulse", use_container_width=True):
+                    st.session_state["show_inline_pulse"] = True
+                    st.session_state.pop("show_inline_bottlenecks", None)
+                    st.session_state.pop("show_inline_studio", None)
                     st.rerun()
-                if st.button(
-                    "⚡ Optimize Latest Upload\n\nReview recent video metadata and title hook",
-                    key="starter_latest_upload",
-                    use_container_width=True,
-                ):
-                    st.session_state["channel_analysis_request"] = "Review my latest upload"
-                    st.session_state["opportunity_auto_run"] = True
-                    st.session_state["asl_workspace"] = "Find videos"
+                if st.button("🎯 Fix Bottlenecks", key="starter_low_ctr", use_container_width=True):
+                    st.session_state["show_inline_bottlenecks"] = True
+                    st.session_state.pop("show_inline_pulse", None)
+                    st.session_state.pop("show_inline_studio", None)
                     st.rerun()
-            with starter_col2:
-                if st.button(
-                    "🏷️ SEO Keyword & Tag Audit\n\nExtract search-ranked tags from transcript",
-                    key="starter_tags_audit",
-                    use_container_width=True,
-                ):
+            with chip_col2:
+                if st.button("✨ Optimize Latest", key="starter_latest_upload", use_container_width=True):
+                    latest_vid = _load_latest_channel_video(youtube)
+                    if latest_vid:
+                        vid_id = latest_vid["id"]
+                        ref = f"https://www.youtube.com/watch?v={vid_id}"
+                        try:
+                            context, err = _load_conversation_videos(youtube, secrets, ref)
+                            if not err and context:
+                                st.session_state["strategist_pending_instruction"] = (
+                                    "Review my latest upload. Formulate 3 distinct title angles (Curiosity, Outcome, SEO) "
+                                    "and craft an engaging mobile search preview description hook."
+                                )
+                                st.rerun()
+                        except Exception as e:
+                            st.warning(f"Could not load latest upload: {e}")
+                    else:
+                        st.info("Paste your YouTube video link or ID below to begin.")
+                if st.button("🏷️ SEO Keyword Audit", key="starter_tags_audit", use_container_width=True):
                     st.session_state["strategist_pending_instruction"] = (
                         "Generate search-optimized YouTube tags and hashtags from the video transcript"
                     )
                     st.info("Paste your YouTube video link in the chat input below to begin!")
-                if st.button(
-                    "📊 Upload Studio Retention Data\n\nAttach retention curves to guide hooks",
-                    key="starter_studio_export",
-                    use_container_width=True,
-                ):
-                    st.session_state["asl_workspace"] = "Analytics"
+            with chip_col3:
+                if st.button("📁 Studio Retention", key="starter_studio_export", use_container_width=True):
+                    st.session_state["show_inline_studio"] = not st.session_state.get("show_inline_studio", False)
                     st.rerun()
-            st.caption("💡 Simply paste any YouTube link below (watch, short, or bare ID) along with your goal.")
+
+            if st.session_state.get("show_inline_pulse"):
+                opp_res, err = _get_or_load_channel_opportunities(youtube, analytics, reporting, credentials)
+                if opp_res and opp_res.get("data"):
+                    _render_inline_pulse_card(opp_res["data"].get("summary"))
+                elif err:
+                    st.caption(err)
+
+            if st.session_state.get("show_inline_bottlenecks"):
+                opp_res, err = _get_or_load_channel_opportunities(youtube, analytics, reporting, credentials)
+                if opp_res:
+                    _render_inline_opportunities(youtube, opp_res.get("candidates", []), secrets)
+                elif err:
+                    st.caption(err)
+
+            if st.session_state.get("show_inline_studio"):
+                _render_inline_studio_export(youtube, secrets)
+
+            st.caption("💡 Type naturally below, paste any video link or ID, or tap an action above.")
         else:
             st.info(
                 "Start with one link to your YouTube video. Add an instruction in the same "
@@ -675,6 +863,28 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
             ):
                 quick_instruction = QUICK_ACTIONS[action_key]
 
+        st.markdown("**Specialized Agent Skills**")
+        skill_col1, skill_col2, skill_col3 = st.columns(3)
+        with skill_col1:
+            if st.button("🎬 Clip into Shorts", key="skill_yt_shorts", use_container_width=True):
+                quick_instruction = (
+                    "Find the top 3-5 self-contained Short moments (20-55 seconds) hiding in this video's "
+                    "transcript. For each one, provide the timecode span, a NEW spoken opening hook that needs "
+                    "no prior context, on-screen text for the first 2 seconds, and a seamless loop point."
+                )
+        with skill_col2:
+            if st.button("⏱️ Chapter Markers", key="skill_yt_chapters", use_container_width=True):
+                quick_instruction = (
+                    "Generate YouTube chapter timestamps using the video transcript. Follow YouTube rules: "
+                    "start at 00:00, at least 3 chapters, each at least 10 seconds long, with 3-5 word benefit-driven titles."
+                )
+        with skill_col3:
+            if st.button("📌 Pinned Comment", key="skill_yt_comment", use_container_width=True):
+                quick_instruction = (
+                    "Draft a high-engagement pinned comment under 30 words that asks viewers 1 genuine question "
+                    "about the core insight in this video to drive retention and comments."
+                )
+
     history = st.session_state.setdefault("strategist_chat_history", [])
     for turn in history:
         with st.chat_message("user" if turn["role"] == "user" else "assistant"):
@@ -695,8 +905,14 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
         if not context and not urls and not title_reference and _is_channel_opportunity_request(instruction):
             _append_history(history, "user", instruction)
             st.session_state["channel_analysis_request"] = instruction
-            st.session_state["opportunity_auto_run"] = True
-            st.session_state["asl_pending_workspace"] = "Find videos"
+            st.session_state["show_inline_bottlenecks"] = True
+            st.session_state.pop("show_inline_pulse", None)
+            st.rerun()
+
+        if not context and not urls and not title_reference and any(w in instruction.casefold() for w in ("channel health", "channel pulse", "how is my channel", "channel analytics", "channel summary", "overview")):
+            _append_history(history, "user", instruction)
+            st.session_state["show_inline_pulse"] = True
+            st.session_state.pop("show_inline_bottlenecks", None)
             st.rerun()
 
         is_new_video_selection = (
@@ -886,8 +1102,17 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
                 "</div>",
                 unsafe_allow_html=True,
             )
-            if len(proposed_description) > 5000:
-                st.warning("This description exceeds YouTube's 5,000-character description limit.")
+            first_150 = proposed_description[:150].strip()
+            if first_150:
+                st.markdown(
+                    f'<div style="margin: 6px 0 12px; padding: 10px 14px; background: rgba(255, 0, 51, 0.05); '
+                    f'border-left: 3px solid #FF0033; border-radius: 8px;">'
+                    f'<div style="font-size: 0.75rem; font-weight: 700; color: #E60026; text-transform: uppercase; '
+                    f'letter-spacing: 0.05em; margin-bottom: 4px;">📱 Mobile Search Preview (First 150 chars)</div>'
+                    f'<div style="font-size: 0.88rem; color: #4B5563; font-style: italic;">{html.escape(first_150)}...</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
             st.markdown(
                 f"**YouTube tags (separate field) · {tag_characters}/500 tag characters**"
@@ -929,6 +1154,21 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None):
                     "</div>",
                     unsafe_allow_html=True,
                 )
+
+            st.caption("Quick revisions:")
+            rev_c1, rev_c2, rev_c3 = st.columns(3)
+            with rev_c1:
+                if st.button("💡 3 Title Angles", key="quick_rev_titles", use_container_width=True):
+                    st.session_state["strategist_pending_instruction"] = "Provide 3 clearly distinct title angles (Curiosity, Outcome, SEO) and stage the best one."
+                    st.rerun()
+            with rev_c2:
+                if st.button("📝 Punchier Hook", key="quick_rev_hook", use_container_width=True):
+                    st.session_state["strategist_pending_instruction"] = "Make the first 150 characters of the description punchier and more intriguing."
+                    st.rerun()
+            with rev_c3:
+                if st.button("🏷️ Focus Tags", key="quick_rev_tags", use_container_width=True):
+                    st.session_state["strategist_pending_instruction"] = "Refine the YouTube tags to match high-intent search terms."
+                    st.rerun()
 
             digest = connector.metadata_proposal_digest(
                 context["target_id"], proposal["before"], proposal["proposed"]

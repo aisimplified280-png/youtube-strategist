@@ -279,16 +279,78 @@ st.markdown(
     .asl-oauth-link:hover { filter: brightness(.94); }
     .asl-oauth-link:focus-visible { outline: 2px solid var(--text-color); outline-offset: 2px; }
 
+    /* Mobile pulse card & touch-friendly widgets */
+    .asl-pulse-card {
+        background: linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.95) 100%);
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 14px;
+        padding: 18px 20px;
+        margin-bottom: 18px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.03);
+    }
+    .asl-pulse-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+    .asl-pulse-badge {
+        font-size: 0.72rem;
+        font-weight: 750;
+        color: #E60026;
+        background: rgba(255, 0, 51, 0.08);
+        padding: 3px 8px;
+        border-radius: 6px;
+    }
+    .asl-pulse-period {
+        font-size: 0.78rem;
+        color: #6B7280;
+        font-weight: 550;
+    }
+    .asl-pulse-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+    }
+    .asl-pulse-item {
+        background: #F9FAFB;
+        border-radius: 10px;
+        padding: 10px 12px;
+        border: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    .asl-pulse-val {
+        font-size: 1.25rem;
+        font-weight: 800;
+        color: #111827;
+        line-height: 1.2;
+    }
+    .asl-pulse-lbl {
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: #6B7280;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin-top: 3px;
+    }
+
     @media (max-width: 640px) {
         .block-container {
-            padding-top: 2.5rem;
-            padding-bottom: 4.8rem;
-            padding-left: .85rem;
-            padding-right: .85rem;
+            padding-top: 2rem;
+            padding-bottom: 5rem;
+            padding-left: .75rem;
+            padding-right: .75rem;
         }
         .asl-page-heading { margin-bottom: 1rem; }
         .asl-page-title { font-size: 1.45rem; }
         .asl-proposal-field { padding: .75rem; font-size: .9rem; }
+        .asl-pulse-grid {
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+        [data-testid="stButton"] button {
+            min-height: 2.9rem;
+            font-size: 0.92rem;
+        }
     }
     </style>
     """,
@@ -2585,8 +2647,8 @@ def main():
     if page == "Strategist":
         st.markdown(
             '<div class="asl-page-heading"><div class="asl-page-title">'
-            'YouTube Strategist</div><p class="asl-page-subtitle">'
-            'A focused workspace for improving one video at a time.</p></div>',
+            'YouTube Strategist Co-Pilot</div><p class="asl-page-subtitle">'
+            'Autonomous channel diagnostics, opportunity detection, and packaging optimizer.</p></div>',
             unsafe_allow_html=True,
         )
         strategist_chat.render_chat(
@@ -2594,6 +2656,8 @@ def main():
             secrets,
             credentials=credentials,
             memory_credentials=memory_credentials,
+            analytics=analytics,
+            reporting=reporting,
         )
     elif page == "Find videos":
         _render_recent_opportunities(
