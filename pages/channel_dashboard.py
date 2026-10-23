@@ -110,12 +110,14 @@ def render_channel_dashboard(youtube=None, analytics=None, reporting=None, crede
         metric_tile("Avg View Duration", avd_str, delta_str, delta_type)
 
     with mcols[3]:
-        gained = s.get("subscribersGained", 0) or 0
-        lost = s.get("subscribersLost", 0) or 0
-        net = gained - lost if not is_demo else s.get("net_subscribers", 1380)
+        gained = s.get("subscribersGained") or 0
+        lost = s.get("subscribersLost") or 0
+        net = (gained - lost) if not is_demo else (s.get("net_subscribers") or 1380)
+        net_sign = "+" if net > 0 else ""
+        net_str = f"{net_sign}{net:,}"
         delta_str = s.get("subscribers_delta", "+220 vs prior") if is_demo else None
         delta_type = s.get("subscribers_delta_type", "positive") if is_demo else "neutral"
-        metric_tile("Net Subscribers", f"+{net:,}", delta_str, delta_type)
+        metric_tile("Net Subscribers", net_str, delta_str, delta_type)
 
     st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
@@ -169,14 +171,21 @@ def render_channel_dashboard(youtube=None, analytics=None, reporting=None, crede
     display_rows = []
     for v in filtered_videos:
         ctr_val = f"{v['ctr']}%" if v.get("ctr") is not None else "Unavailable"
-        imp_val = f"{v['impressions']:,}" if v.get("impressions") is not None else "Unavailable"
+        imp_val = f"{int(v['impressions']):,}" if v.get("impressions") is not None else "Unavailable"
+        v_views = v.get("views")
+        views_str = f"{int(v_views):,}" if v_views is not None else "0"
+        v_wt = v.get("estimatedMinutesWatched")
+        wt_str = f"{int(v_wt):,}" if v_wt is not None else "0"
+        v_avd = v.get("averageViewDuration")
+        avd_str = f"{int(v_avd)}s" if v_avd is not None else "0s"
+
         display_rows.append({
             "Video Title": v.get("title", "Untitled"),
             "Published": v.get("published_at", ""),
             "Format": v.get("format", ""),
-            "Views": f"{v.get('views', 0):,}",
-            "Watch Time (min)": f"{v.get('estimatedMinutesWatched', 0):,}",
-            "Avg View Duration": f"{v.get('averageViewDuration', 0)}s",
+            "Views": views_str,
+            "Watch Time (min)": wt_str,
+            "Avg View Duration": avd_str,
             "Impressions": imp_val,
             "CTR": ctr_val,
             "ID": v.get("video_id"),

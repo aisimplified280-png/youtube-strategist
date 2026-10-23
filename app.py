@@ -45,12 +45,17 @@ def _handle_oauth_callback(secrets, subject, token_store):
             try:
                 scopes = YOUTUBE_SCOPES if purpose == "youtube" else MEMORY_SCOPES
                 redirect_uri = secrets.get("youtube_oauth", {}).get("redirect_uri", "")
+                verifier = st.session_state.get(f"pending_{purpose}_code_verifier")
+                if not verifier:
+                    verifier = dashboard_security.create_oauth_code_verifier(returned_state, purpose_secret)
+
                 flow = build_flow(
                     secrets["youtube_oauth"]["client_id"],
                     secrets["youtube_oauth"]["client_secret"],
                     redirect_uri,
                     scopes=scopes,
                     state=returned_state,
+                    code_verifier=verifier,
                 )
                 flow.fetch_token(code=code)
                 creds = flow.credentials
@@ -63,6 +68,7 @@ def _handle_oauth_callback(secrets, subject, token_store):
                 st.error(f"OAuth error: {str(e)}")
             finally:
                 st.session_state.pop(pending_key, None)
+                st.session_state.pop(f"pending_{purpose}_code_verifier", None)
                 query.clear()
                 st.rerun()
 

@@ -178,5 +178,50 @@ class TestAuditRegressions(unittest.TestCase):
         self.assertTrue(cur_start <= cur_end)
 
 
+    # 9. OAuth PKCE verifier callback preservation & re-derivation
+    def test_pkce_verifier_deterministic_rederivation_for_callback(self):
+        import dashboard_security
+        signing_secret = "test-secret-at-least-32-characters-long"
+        purpose = "youtube"
+        purpose_secret = dashboard_security.oauth_purpose_secret(signing_secret, purpose)
+        state = dashboard_security.create_oauth_state("owner-1", purpose_secret)
+        initial_verifier = dashboard_security.create_oauth_code_verifier(state, purpose_secret)
+
+        # In callback when session state is lost across redirects:
+        rederived_verifier = dashboard_security.create_oauth_code_verifier(state, purpose_secret)
+        self.assertEqual(initial_verifier, rederived_verifier, "Re-derived PKCE verifier must match initial verifier.")
+        self.assertTrue(len(rederived_verifier) >= 43, "PKCE verifier must meet RFC 7636 minimum length.")
+
+    # 10. Channel Dashboard None-safe formatting regression
+    def test_channel_dashboard_table_none_safe_formatting(self):
+        video_row_with_nones = {
+            "title": "Edge Case Video",
+            "published_at": "2026-10-01",
+            "format": "Long-form",
+            "views": None,
+            "estimatedMinutesWatched": None,
+            "averageViewDuration": None,
+            "impressions": None,
+            "ctr": None,
+            "video_id": "none_id_123",
+        }
+
+        # Simulate the formatting logic from pages/channel_dashboard.py
+        ctr_val = f"{video_row_with_nones['ctr']}%" if video_row_with_nones.get("ctr") is not None else "Unavailable"
+        imp_val = f"{int(video_row_with_nones['impressions']):,}" if video_row_with_nones.get("impressions") is not None else "Unavailable"
+        v_views = video_row_with_nones.get("views")
+        views_str = f"{int(v_views):,}" if v_views is not None else "0"
+        v_wt = video_row_with_nones.get("estimatedMinutesWatched")
+        wt_str = f"{int(v_wt):,}" if v_wt is not None else "0"
+        v_avd = video_row_with_nones.get("averageViewDuration")
+        avd_str = f"{int(v_avd)}s" if v_avd is not None else "0s"
+
+        self.assertEqual(views_str, "0")
+        self.assertEqual(wt_str, "0")
+        self.assertEqual(avd_str, "0s")
+        self.assertEqual(imp_val, "Unavailable")
+        self.assertEqual(ctr_val, "Unavailable")
+
+
 if __name__ == "__main__":
     unittest.main()

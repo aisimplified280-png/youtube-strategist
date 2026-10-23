@@ -142,7 +142,8 @@ def render_home(youtube=None, secrets=None, subject=None, token_store=None):
         with kpi_cols[2]:
             metric_tile("Avg View Duration", f"{avd}s" if avd is not None else "Unavailable")
         with kpi_cols[3]:
-            metric_tile("Net Subscribers", f"+{net_subs:,}")
+            net_sign = "+" if net_subs > 0 else ""
+            metric_tile("Net Subscribers", f"{net_sign}{net_subs:,}")
     else:
         with kpi_cols[0]:
             metric_tile("Views", "—", "Connect YouTube to view")

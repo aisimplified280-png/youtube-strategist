@@ -96,6 +96,7 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
                     yt_oauth = secrets["youtube_oauth"]
                     state, verifier = create_purpose_state(subject, secrets["security"]["state_secret"], "youtube")
                     st.session_state["pending_youtube_oauth_state"] = state
+                    st.session_state["pending_youtube_code_verifier"] = verifier
                     flow = build_flow(
                         yt_oauth["client_id"],
                         yt_oauth["client_secret"],
@@ -134,6 +135,7 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
                     oauth_cfg = secrets.get("memory_oauth") or secrets.get("youtube_oauth")
                     state, verifier = create_purpose_state(subject, secrets["security"]["state_secret"], "memory")
                     st.session_state["pending_memory_oauth_state"] = state
+                    st.session_state["pending_memory_code_verifier"] = verifier
                     flow = build_flow(
                         oauth_cfg["client_id"],
                         oauth_cfg["client_secret"],
