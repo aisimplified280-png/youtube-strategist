@@ -223,5 +223,47 @@ class TestAuditRegressions(unittest.TestCase):
         self.assertEqual(ctr_val, "Unavailable")
 
 
+    # 11. OAuth configuration selection: shared vs separate client secrets
+    def test_oauth_configuration_shared_credentials(self):
+        secrets = {
+            "youtube_oauth": {
+                "client_id": "shared-client-id",
+                "client_secret": "shared-client-secret",
+                "redirect_uri": "https://app.streamlit.app/oauth2callback",
+            }
+        }
+        for purpose in ("youtube", "memory"):
+            cfg = secrets.get(f"{purpose}_oauth") or secrets.get("youtube_oauth", {})
+            self.assertEqual(cfg["client_id"], "shared-client-id")
+            self.assertEqual(cfg["client_secret"], "shared-client-secret")
+            self.assertEqual(cfg["redirect_uri"], "https://app.streamlit.app/oauth2callback")
+
+    def test_oauth_configuration_separate_credentials(self):
+        secrets = {
+            "youtube_oauth": {
+                "client_id": "yt-client-id",
+                "client_secret": "yt-client-secret",
+                "redirect_uri": "https://app.streamlit.app/oauth2callback",
+            },
+            "memory_oauth": {
+                "client_id": "memory-client-id",
+                "client_secret": "memory-client-secret",
+                "redirect_uri": "https://app.streamlit.app/sheets_callback",
+            },
+        }
+
+        yt_cfg = secrets.get("youtube_oauth") or secrets.get("youtube_oauth", {})
+        mem_cfg = secrets.get("memory_oauth") or secrets.get("youtube_oauth", {})
+
+        self.assertEqual(yt_cfg["client_id"], "yt-client-id")
+        self.assertEqual(yt_cfg["client_secret"], "yt-client-secret")
+        self.assertEqual(yt_cfg["redirect_uri"], "https://app.streamlit.app/oauth2callback")
+
+        self.assertEqual(mem_cfg["client_id"], "memory-client-id")
+        self.assertEqual(mem_cfg["client_secret"], "memory-client-secret")
+        self.assertEqual(mem_cfg["redirect_uri"], "https://app.streamlit.app/sheets_callback")
+        self.assertNotEqual(yt_cfg["client_id"], mem_cfg["client_id"])
+
+
 if __name__ == "__main__":
     unittest.main()
