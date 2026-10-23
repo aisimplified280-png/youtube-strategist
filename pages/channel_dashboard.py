@@ -9,7 +9,7 @@ import streamlit as st
 
 from core.auth import is_demo_mode
 from core.demo_data import DEMO_CHANNEL_SUMMARY, DEMO_VIDEOS
-from core.analytics_logic import get_period_preset, calculate_delta, rank_candidates
+from core.analytics_logic import get_period_preset, calculate_delta, rank_candidates, calculate_custom_period
 from ui.components import demo_banner, metric_tile, evidence_chip, status_pill
 import youtube_dashboard
 
@@ -45,6 +45,7 @@ def render_channel_dashboard(youtube=None, analytics=None, reporting=None, crede
             cur_start = st.date_input("From", cur_start, max_value=date.today() - timedelta(days=1))
         with filter_cols[2]:
             cur_end = st.date_input("Through", cur_end, max_value=date.today() - timedelta(days=1))
+        cur_start, cur_end, prior_start, prior_end = calculate_custom_period(cur_start, cur_end)
 
     with filter_cols[3]:
         st.caption(" ")
@@ -197,5 +198,5 @@ def render_channel_dashboard(youtube=None, analytics=None, reporting=None, crede
                     if st.button("Review in Strategist", key=f"dash_rev_{cand.get('video_id')}", use_container_width=True):
                         st.session_state["pending_optimizer_video_id"] = cand.get("video_id")
                         st.session_state["pending_optimizer_video_title"] = cand.get("title")
-                        st.session_state["nav_destination"] = "pages/strategist.py"
+                        st.session_state["nav_destination"] = "strategist"
                         st.rerun()

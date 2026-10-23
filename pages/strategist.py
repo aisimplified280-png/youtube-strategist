@@ -41,6 +41,16 @@ def render_strategist(youtube=None, secrets=None):
         target_video_id = DEMO_HERO_ACTION["video_id"]
         target_video_title = DEMO_HERO_ACTION["title"]
 
+    # Invalidate video-scoped state if active video has changed
+    last_active_id = st.session_state.get("strategist_active_video_id")
+    if target_video_id and last_active_id and target_video_id != last_active_id:
+        st.session_state.pop("strategist_target_context", None)
+        st.session_state.pop("strategist_chat_proposal", None)
+        st.session_state.pop("strategist_chat_history", None)
+        st.session_state.pop("llm_last_provider", None)
+    if target_video_id:
+        st.session_state["strategist_active_video_id"] = target_video_id
+
     # Target video selector or URL input
     with st.expander("Target Video Selection", expanded=not bool(target_video_id)):
         col_in1, col_in2 = st.columns([3, 1])
@@ -58,14 +68,20 @@ def render_strategist(youtube=None, secrets=None):
                     try:
                         clean_id = strategist_chat.parse_video_id(video_input)
                         st.session_state["pending_optimizer_video_id"] = clean_id
+                        st.session_state["strategist_active_video_id"] = clean_id
                         st.session_state.pop("strategist_target_context", None)
                         st.session_state.pop("strategist_chat_proposal", None)
+                        st.session_state.pop("strategist_chat_history", None)
+                        st.session_state.pop("llm_last_provider", None)
                         st.rerun()
                     except Exception as e:
                         st.error(str(e))
 
     # Initialize video context
     context = st.session_state.get("strategist_target_context")
+    if context and target_video_id and context.get("target_id") != target_video_id:
+        context = None
+        st.session_state.pop("strategist_target_context", None)
     if not context:
         if is_demo or target_video_id == DEMO_HERO_ACTION["video_id"]:
             context = {
@@ -225,15 +241,47 @@ def render_strategist(youtube=None, secrets=None):
         st.markdown("#### Exact Proposal Approval Gate")
         st.caption("Review the exact metadata shown above. Revising the proposal invalidates prior approval.")
 
+        # Strict Proposal Validation
+        val_errors = []
+        prop_title = str(proposal.get("title", "")).strip()
+        if not prop_title:
+            val_errors.append("Title cannot be empty.")
+        elif len(prop_title) > 100:
+            val_errors.append(f"Title exceeds YouTube 100-character limit ({len(prop_title)} chars).")
+        elif "Title refinement needed" in prop_title:
+            val_errors.append("Proposal title is incomplete or malformed. Refine in chat before approving.")
+
+        prop_desc = str(proposal.get("description", ""))
+        if len(prop_desc) > 5000:
+            val_errors.append(f"Description exceeds YouTube 5,000-character limit ({len(prop_desc)} chars).")
+
+        prop_tags_str = ", ".join(proposal.get("tags", []))
+        if len(prop_tags_str) > 500:
+            val_errors.append(f"Tags field exceeds YouTube 500-character limit ({len(prop_tags_str)} chars).")
+
+        is_proposal_valid = len(val_errors) == 0
+        if not is_proposal_valid:
+            for ve in val_errors:
+                st.error(f"Validation Blocker: {ve}")
+
+        # Compute exact proposal digest
+        proposal_digest = compute_proposal_digest(context["target_id"], target_snippet, proposal)
+        st.caption(f"Proposal Digest: `{proposal_digest[:16]}...` (approval is strictly bound to this revision)")
+
+        # Unique confirmation key per proposal digest
+        confirmation_key = f"confirm_approval_{context['target_id']}_{proposal_digest[:16]}"
         review_confirmed = st.checkbox(
             "I have reviewed the exact proposed title, description, and tags and confirm they are accurate.",
-            key="strategist_review_confirmation",
+            key=confirmation_key,
+            disabled=not is_proposal_valid,
         )
 
         # Result display
         last_result = st.session_state.get(f"apply_result_{context['target_id']}")
         if last_result:
-            if last_result.get("result") == "success":
+            if last_result.get("simulated"):
+                st.info(f"🎭 **Demo Simulation**: Proposal simulated. Simulated title: **{last_result.get('title')}** *(No live write performed to YouTube in Demo Mode)*.")
+            elif last_result.get("result") == "success":
                 st.success(f"✓ Verified updated on YouTube! Title: {last_result.get('title')}")
             else:
                 st.error(f"Update failed: {last_result.get('error')}")
@@ -243,35 +291,40 @@ def render_strategist(youtube=None, secrets=None):
             apply_clicked = st.button(
                 "Approve and apply to YouTube",
                 type="primary",
-                disabled=not review_confirmed,
+                disabled=not (review_confirmed and is_proposal_valid),
                 use_container_width=True,
                 key="btn_apply_proposal",
             )
         with btn_cols[1]:
             if st.button("Reset Draft", use_container_width=True):
                 st.session_state.pop("strategist_chat_proposal", None)
+                st.session_state.pop(confirmation_key, None)
                 st.rerun()
 
         if apply_clicked:
+            if not (review_confirmed and is_proposal_valid):
+                st.error("Exact proposal review confirmation and valid metadata are required.")
+                return
+
             if is_demo:
                 st.session_state[f"apply_result_{context['target_id']}"] = {
-                    "result": "success",
+                    "result": "simulated_success",
                     "title": proposal["title"],
                     "url": f"https://www.youtube.com/watch?v={context['target_id']}",
+                    "simulated": True,
                 }
-                st.toast("Demo Mode: Simulated successful update and verification.")
+                st.toast("Demo Mode: Simulated proposal approval. (No live YouTube write performed).")
                 st.rerun()
             elif youtube:
                 with st.spinner("Validating proposal, checking for stale metadata, and updating YouTube..."):
                     try:
-                        digest = compute_proposal_digest(context["target_id"], target_snippet, proposal)
                         audit_records = st.session_state.setdefault("session_audit_records", [])
                         res = apply_proposal(
                             youtube=youtube,
                             video_id=context["target_id"],
                             before_snippet=target_snippet,
                             proposed_snippet=proposal,
-                            approved_digest=digest,
+                            approved_digest=proposal_digest,
                             audit_callback=audit_records.append,
                         )
                         st.session_state[f"apply_result_{context['target_id']}"] = res

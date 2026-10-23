@@ -25,6 +25,20 @@ def get_period_preset(preset: str) -> Tuple[date, date, date, date]:
     return current_start, current_end, prior_start, prior_end
 
 
+def calculate_custom_period(start_date: date, end_date: date) -> Tuple[date, date, date, date]:
+    """Calculate current and equal-length prior period for custom start/end dates.
+    
+    Returns:
+        (sanitized_start, sanitized_end, prior_start, prior_end)
+    """
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
+    num_days = (end_date - start_date).days + 1
+    prior_end = start_date - timedelta(days=1)
+    prior_start = prior_end - timedelta(days=num_days - 1)
+    return start_date, end_date, prior_start, prior_end
+
+
 def calculate_delta(current_val: Optional[float], prior_val: Optional[float], is_percent: bool = False) -> Tuple[Optional[str], str]:
     """Calculate human-readable delta and trend type ('positive', 'negative', 'neutral')."""
     if current_val is None or prior_val is None:

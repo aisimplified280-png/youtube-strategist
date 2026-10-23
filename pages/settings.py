@@ -129,6 +129,23 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
                         token_store.delete_credentials(subject, "memory")
                     st.session_state.pop("memory_credentials_json", None)
                     st.rerun()
+            elif not is_demo and subject and (secrets.get("memory_oauth") or secrets.get("youtube_oauth")):
+                try:
+                    oauth_cfg = secrets.get("memory_oauth") or secrets.get("youtube_oauth")
+                    state, verifier = create_purpose_state(subject, secrets["security"]["state_secret"], "memory")
+                    st.session_state["pending_memory_oauth_state"] = state
+                    flow = build_flow(
+                        oauth_cfg["client_id"],
+                        oauth_cfg["client_secret"],
+                        oauth_cfg["redirect_uri"],
+                        MEMORY_SCOPES,
+                        state=state,
+                        code_verifier=verifier,
+                    )
+                    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent", login_hint=email)
+                    st.link_button("Connect Sheets", auth_url, type="primary", use_container_width=True)
+                except Exception as e:
+                    st.caption(f"OAuth config notice: {str(e)}")
 
     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 

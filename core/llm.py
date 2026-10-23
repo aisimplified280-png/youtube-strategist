@@ -226,13 +226,11 @@ class LLMRouter:
             parsed = parse_proposal_json(raw_text)
 
         if not parsed:
-            # Fallback proposal preserving user intent if JSON still malformed
-            parsed = {
-                "title": "Title refinement needed",
-                "description": raw_text[:500],
-                "tags": [],
-                "rationale": "Model returned unstructured output; please refine in chat.",
-                "variants": [],
-            }
+            raise LLMError(
+                "AI returned unstructured output that could not be parsed into valid metadata fields. "
+                "Please refine your instruction in chat.",
+                provider=provider,
+                recoverable=True,
+            )
 
         return parsed, provider, model

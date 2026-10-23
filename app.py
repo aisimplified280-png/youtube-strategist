@@ -239,6 +239,29 @@ def main():
         "System": [page_settings],
     })
 
+    # Programmatic destination routing support
+    nav_dest = st.session_state.pop("nav_destination", None)
+    if nav_dest:
+        dest_map = {
+            "home": page_home,
+            "analyze": page_analyze,
+            "pages/studio_analysis.py": page_analyze,
+            "strategist": page_strategist,
+            "pages/strategist.py": page_strategist,
+            "dashboard": page_dashboard,
+            "pages/channel_dashboard.py": page_dashboard,
+            "memory": page_memory,
+            "pages/memory_experiments.py": page_memory,
+            "settings": page_settings,
+            "pages/settings.py": page_settings,
+        }
+        target_page = dest_map.get(nav_dest)
+        if target_page:
+            try:
+                st.switch_page(target_page)
+            except Exception:
+                pass
+
     # Sidebar branding & quick status
     with st.sidebar:
         st.markdown(

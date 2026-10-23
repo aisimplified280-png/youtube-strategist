@@ -82,7 +82,7 @@ def render_home(youtube=None, secrets=None, subject=None, token_store=None):
                 st.session_state["pending_optimizer_video_title"] = hero.get("title")
                 if hero.get("proposed_snippet"):
                     st.session_state["strategist_chat_proposal"] = hero["proposed_snippet"]
-                st.session_state["nav_destination"] = "pages/strategist.py"
+                st.session_state["nav_destination"] = "strategist"
                 st.rerun()
         with col_act2:
             st.caption("Opens Strategist chat with measured evidence pre-loaded. Nothing changes until you explicitly approve the exact proposed metadata.")

@@ -40,8 +40,19 @@ def render_studio_analysis(youtube=None):
         st.caption(
             "Supported reports: Content/Video performance, Audience retention curves, Daily view trends. "
             "Files are parsed in-memory and never written to disk or cloud drives. "
-            "See [STUDIO_EXPORT_GUIDE.md](file:///c:/Users/USER/Desktop/Youtube-AI_Simplified/Yotube%20strategist/youtube-agent-skill/STUDIO_EXPORT_GUIDE.md) for export steps."
+            "See [STUDIO_EXPORT_GUIDE.md](https://github.com/aisimplified280-png/youtube-strategist/blob/main/STUDIO_EXPORT_GUIDE.md) for export steps."
         )
+        with st.expander("📖 Quick Studio Export Guide (Click to expand)"):
+            st.markdown(
+                """
+                **How to export from YouTube Studio:**
+                1. Go to **YouTube Studio** > **Analytics** > click **Advanced Mode** (top right).
+                2. Select date range (e.g. **Last 90 days** or **Last 28 days**).
+                3. Go to the **Content** tab, click the **Export (download)** icon, and choose **CSV** or **Google Sheets / Excel**.
+                4. For retention curves, select a video, click **Engagement** > audience retention, and export retention data.
+                5. Drag and drop all exported files directly above.
+                """
+            )
 
     # In Demo Mode, simulate parsed files if nothing is uploaded
     analysis_data = None
@@ -143,7 +154,7 @@ def render_studio_analysis(youtube=None):
         if st.button("Do it — build proposal", type="primary", use_container_width=True, key=f"studio_do_it_{candidate_idx}"):
             st.session_state["pending_optimizer_video_id"] = current_cand.get("video_id")
             st.session_state["pending_optimizer_video_title"] = current_cand.get("title")
-            st.session_state["nav_destination"] = "pages/strategist.py"
+            st.session_state["nav_destination"] = "strategist"
             st.rerun()
 
     with col_btn2:
