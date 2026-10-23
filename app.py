@@ -176,37 +176,61 @@ def main():
         except Exception as e:
             st.sidebar.warning(f"YouTube client notice: {str(e)}")
 
-    # Multipage Navigation Setup using st.navigation & st.Page
+    # Multipage Navigation Setup using st.navigation & st.Page with named functions and explicit url_paths
+    def show_home():
+        render_home(youtube=youtube, secrets=secrets, subject=subject, token_store=token_store)
+
+    def show_analyze():
+        render_studio_analysis(youtube=youtube)
+
+    def show_strategist():
+        render_strategist(youtube=youtube, secrets=secrets)
+
+    def show_dashboard():
+        render_channel_dashboard(youtube=youtube, analytics=analytics, reporting=reporting, credentials=yt_creds)
+
+    def show_memory():
+        render_memory_experiments(memory_credentials=memory_creds)
+
+    def show_settings():
+        render_settings(secrets=secrets, subject=subject, youtube_creds=yt_creds, memory_creds=memory_creds, token_store=token_store)
+
     page_home = st.Page(
-        lambda: render_home(youtube=youtube, secrets=secrets, subject=subject, token_store=token_store),
+        show_home,
         title="Home",
         icon="⚡",
+        url_path="home",
         default=True,
     )
     page_analyze = st.Page(
-        lambda: render_studio_analysis(youtube=youtube),
+        show_analyze,
         title="Find Videos & Analyze",
         icon="🎯",
+        url_path="analyze",
     )
     page_strategist = st.Page(
-        lambda: render_strategist(youtube=youtube, secrets=secrets),
+        show_strategist,
         title="Strategist Co-Pilot",
         icon="💬",
+        url_path="strategist",
     )
     page_dashboard = st.Page(
-        lambda: render_channel_dashboard(youtube=youtube, analytics=analytics, reporting=reporting, credentials=yt_creds),
+        show_dashboard,
         title="Channel Dashboard",
         icon="📊",
+        url_path="dashboard",
     )
     page_memory = st.Page(
-        lambda: render_memory_experiments(memory_credentials=memory_creds),
+        show_memory,
         title="Memory & Experiments",
         icon="🧠",
+        url_path="memory",
     )
     page_settings = st.Page(
-        lambda: render_settings(secrets=secrets, subject=subject, youtube_creds=yt_creds, memory_creds=memory_creds, token_store=token_store),
+        show_settings,
         title="Settings & Connections",
         icon="⚙️",
+        url_path="settings",
     )
 
     pg = st.navigation({
