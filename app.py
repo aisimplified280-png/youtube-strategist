@@ -127,7 +127,7 @@ def render_app():
             pass
 
     # Vault & Token Management
-    state_secret = secrets.get("security", {}).get("state_secret", "local-oauth-state-secret-change-in-production-32chars")
+    state_secret = secrets.get("security", {}).get("state_secret", "")
     token_store = None
     if len(state_secret) >= 32:
         try:
