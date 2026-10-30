@@ -7,7 +7,7 @@ Covers:
 4. Memory Google OAuth scope isolation (drive.file only, separate HMAC state).
 5. No local machine file:/// links in help documentation.
 6. Target video state isolation (no context or approval leakage across videos).
-7. Demo mode outcomes recorded as simulated, never verified YouTube writes.
+7. Retired demo-mode pathways cannot be used by the owner-only Copilot.
 8. Custom analytics date range and equal-duration prior period calculation.
 """
 
