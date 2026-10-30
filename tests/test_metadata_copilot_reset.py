@@ -361,6 +361,20 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIn("first 150 characters of the description serve as a clear, engaging mobile search preview hook", prompt)
         self.assertIn("Return separate YouTube search tags matching developer query intent", prompt)
 
+    def test_channel_opportunity_intent_detects_landing_action_and_common_requests(self):
+        self.assertTrue(strategist_chat._is_channel_opportunity_request(
+            "Find the videos on my channel that most need optimization."
+        ))
+        self.assertTrue(strategist_chat._is_channel_opportunity_request(
+            "Which video should I optimize next?"
+        ))
+        self.assertTrue(strategist_chat._is_channel_opportunity_request(
+            "Show my lowest CTR Shorts."
+        ))
+        self.assertFalse(strategist_chat._is_channel_opportunity_request(
+            "Improve this video's title."
+        ))
+
     def test_title_angles_accept_only_three_distinct_structured_options(self):
         angles = strategist_chat._extract_title_angles([
             {"angle": "curiosity", "title": "Why Prompt Caching Changes AI API Speed"},
