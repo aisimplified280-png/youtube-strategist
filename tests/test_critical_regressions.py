@@ -843,6 +843,166 @@ class TestCriticalRegressions(unittest.TestCase):
         zero_candidates = rank_optimization_candidates(all_zero_rows)
         self.assertEqual(zero_candidates, [])
 
+    # --- Scenario 22: Workspace context fetching, connector import, and inline studio contract ---
+    def test_workspace_context_fetching_and_inline_studio(self):
+        """Workspace fetches video context without NameError, handles errors fail-closed, and supports inline execution."""
+        from pages.workspace import _fetch_workspace_context, render_video_optimizer
+        import streamlit as st
+
+        mock_yt = MagicMock()
+        mock_snippet = {
+            "title": "An 11-Word Prompt Broke Claude",
+            "description": "Real description from YouTube.",
+            "tags": ["claude", "ai", "prompting"],
+            "categoryId": "28",
+            "channelId": connector.CHANNEL_ID,
+        }
+
+        # 1. Successful context fetch with mock connector (verifies connector import works cleanly)
+        with patch("youtube_analytics_connector.fetch_video_snippet", return_value=mock_snippet):
+            mock_yt.videos().list().execute.return_value = {
+                "items": [{
+                    "statistics": {"viewCount": "42"},
+                    "contentDetails": {"duration": "PT14M22S"},
+                }]
+            }
+            ctx = _fetch_workspace_context("MjIHEGngvF8", youtube=mock_yt, is_demo=False)
+            self.assertIsNotNone(ctx.get("snippet"))
+            self.assertEqual(ctx["snippet"]["title"], "An 11-Word Prompt Broke Claude")
+            self.assertEqual(ctx["duration_str"], "14m22s")
+            self.assertEqual(ctx["metrics"]["views"], 42)
+            self.assertIsNone(ctx.get("error"))
+
+        # 2. Fail-closed error handling: returns error key and snippet=None (never a bogus 'Error loading video' snippet)
+        with patch("youtube_analytics_connector.fetch_video_snippet", side_effect=connector.VideoNotFoundError("Video not found")):
+            err_ctx = _fetch_workspace_context("invalid-vid-xyz", youtube=mock_yt, is_demo=False)
+            self.assertIsNone(err_ctx.get("snippet"))
+            self.assertIn("error", err_ctx)
+            self.assertIn("Video not found", err_ctx["error"])
+
+        # 3. Context retrieval from dashboard_data video_rows cache avoids redundant network calls
+        cached_row = {
+            "video_id": "v-cached-1",
+            "title": "Cached Video Title",
+            "snippet": {
+                "title": "Cached Video Title",
+                "description": "Cached Description",
+                "tags": ["cached"],
+                "categoryId": "28",
+            },
+            "views": 150,
+            "duration_seconds": 360,
+        }
+        with patch.dict(st.session_state, {"dashboard_data": {"video_rows": [cached_row]}}):
+            cached_ctx = _fetch_workspace_context("v-cached-1", youtube=mock_yt, is_demo=False)
+            self.assertEqual(cached_ctx["snippet"]["title"], "Cached Video Title")
+            self.assertEqual(cached_ctx["metrics"]["views"], 150)
+            self.assertEqual(cached_ctx["duration_str"], "6:00")
+
+    # --- Scenario 23: Inline publishing lifecycle and real-mode fail-closed behavior ---
+    def test_inline_publishing_lifecycle_and_fail_closed(self):
+        """Verify deferred widget lifecycle, fail-closed behavior without YouTube connection, and inline studio closure."""
+        from pages.workspace import _fetch_workspace_context, render_video_optimizer
+        from pages.today import _process_deferred_inline_resets, render_today
+        import streamlit as st
+
+        # 1. Fail closed when a real YouTube connection is missing in real mode (is_demo=False, youtube=None)
+        real_unconnected_ctx = _fetch_workspace_context("vid-101", youtube=None, is_demo=False)
+        self.assertIsNone(real_unconnected_ctx.get("snippet"))
+        self.assertIn("error", real_unconnected_ctx)
+        self.assertIn("unavailable", real_unconnected_ctx["error"].lower())
+
+        # 2. Demo mode still displays demo content (is_demo=True)
+        from core.demo_data import DEMO_HERO_ACTION
+        demo_ctx = _fetch_workspace_context("vid-101", youtube=None, is_demo=True)
+        self.assertIsNotNone(demo_ctx.get("snippet"))
+        self.assertEqual(demo_ctx["snippet"]["title"], DEMO_HERO_ACTION["title"])
+
+        # 3. Real mode rejects demo video IDs
+        demo_id_in_real = _fetch_workspace_context("demo-vid-999", youtube=MagicMock(), is_demo=False)
+        self.assertIsNone(demo_id_in_real.get("snippet"))
+        self.assertIn("cannot be loaded in production mode", demo_id_in_real.get("error", ""))
+
+        # 4. A failed video fetch cannot create an approvable metadata proposal
+        with patch.object(st, "error") as mock_err, patch.object(st, "info"):
+            render_video_optimizer("unresolvable-vid", youtube=None, is_demo=False, key_prefix="today_opt_unres")
+            mock_err.assert_called()
+            self.assertNotIn("today_opt_unres_proposal", st.session_state)
+            self.assertNotIn("today_opt_unres_approved_digest", st.session_state)
+
+        # 5. Inline successful publish schedules deferred reset rather than deleting widget keys immediately
+        from core.metadata_apply import compute_proposal_digest
+        import copy
+        video_id = "v-inline-test"
+        key_prefix = f"today_opt_{video_id}"
+        mock_ctx = {
+            "snippet": {"title": "Old Title", "description": "Old Desc", "tags": [], "categoryId": "28"},
+            "duration_str": "10:00",
+            "metrics": {"views": 100},
+        }
+        st.session_state[f"{key_prefix}_context"] = mock_ctx
+        st.session_state[f"{key_prefix}_title_in"] = "New Optimized Title"
+        st.session_state[f"{key_prefix}_desc_in"] = "New Optimized Description"
+        st.session_state[f"{key_prefix}_tags_in"] = "tag1, tag2"
+        st.session_state[f"{key_prefix}_proposal"] = {"title": "New Optimized Title", "description": "New Optimized Description", "tags": ["tag1", "tag2"]}
+        
+        proposed_snip = copy.deepcopy(mock_ctx["snippet"])
+        proposed_snip["title"] = "New Optimized Title"
+        proposed_snip["description"] = "New Optimized Description"
+        proposed_snip["tags"] = ["tag1", "tag2"]
+        valid_digest = compute_proposal_digest(video_id, mock_ctx["snippet"], proposed_snip)
+        st.session_state[f"{key_prefix}_approved_digest"] = valid_digest
+        st.session_state[f"active_today_optimizer_{video_id}"] = True
+
+        mock_yt = MagicMock()
+
+        # Simulate clicking "Push to YouTube Now"
+        with patch("pages.workspace.apply_proposal", return_value={"status": "success", "message": "Updated!"}), \
+             patch.object(st, "button", side_effect=lambda label, *args, **kwargs: True if "Push to YouTube Now" in label else False), \
+             patch.object(st, "rerun"):
+            render_video_optimizer(
+                video_id=video_id,
+                youtube=mock_yt,
+                secrets={},
+                subject="owner-1",
+                is_demo=False,
+                key_prefix=key_prefix,
+                inline_mode=True,
+            )
+
+        # Assert: Deferred reset and notice are queued
+        self.assertEqual(st.session_state.get(f"_deferred_inline_reset_{video_id}"), key_prefix)
+        self.assertIn("Updated!", st.session_state.get(f"_applied_inline_notice_{video_id}", ""))
+        # Assert: Widget keys were NOT deleted during this render pass (avoids StreamlitAPIException)
+        self.assertEqual(st.session_state.get(f"{key_prefix}_title_in"), "New Optimized Title")
+        self.assertEqual(st.session_state.get(f"{key_prefix}_desc_in"), "New Optimized Description")
+        self.assertEqual(st.session_state.get(f"{key_prefix}_tags_in"), "tag1, tag2")
+
+        # 6. Deferred cleanup executes before optimizer widgets are instantiated on next render pass
+        _process_deferred_inline_resets()
+
+        # Assert: All keys and the inline studio are cleanly reset/closed
+        self.assertNotIn(f"{key_prefix}_proposal", st.session_state)
+        self.assertNotIn(f"{key_prefix}_approved_digest", st.session_state)
+        self.assertNotIn(f"{key_prefix}_title_in", st.session_state)
+        self.assertNotIn(f"{key_prefix}_desc_in", st.session_state)
+        self.assertNotIn(f"{key_prefix}_tags_in", st.session_state)
+        self.assertNotIn(f"{key_prefix}_context", st.session_state)
+        self.assertNotIn(f"_deferred_inline_reset_{video_id}", st.session_state)
+        # Assert: Inline optimizer closed
+        self.assertNotIn(f"active_today_optimizer_{video_id}", st.session_state)
+
+        # 7. Success message displays after rerun in render_today
+        with patch.object(st, "success") as mock_success, \
+             patch.object(st, "balloons") as mock_balloons, \
+             patch("pages.today.get_or_create_daily_briefing", return_value={"status": "ready", "prioritized_actions": []}), \
+             patch("pages.today.connection_status_banner"), \
+             patch("pages.today.demo_banner"):
+            render_today(subject="owner-1")
+            mock_success.assert_called()
+            mock_balloons.assert_called()
+            self.assertNotIn(f"_applied_inline_notice_{video_id}", st.session_state)
+
 
 if __name__ == "__main__":
     unittest.main()

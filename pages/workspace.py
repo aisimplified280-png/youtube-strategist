@@ -25,6 +25,7 @@ from core.metadata_apply import compute_proposal_digest, apply_proposal
 from core.creator_db import record_proposal_decision, get_creator_preferences
 from ui.components import demo_banner, diff_viewer, char_counter, status_pill, error_state, connection_status_banner
 import strategist_chat
+import youtube_analytics_connector as connector
 
 
 def _clear_workspace_proposal_state():
@@ -159,36 +160,81 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
         st.info("Select an action card from Today, choose from the dropdown, or enter a video URL above to begin optimization.")
         return
 
-    # 2. Context Extraction & Caching
-    ctx = st.session_state.get("workspace_target_context")
-    if not ctx:
-        with st.spinner("Retrieving video metadata and channel peer evidence..."):
-            ctx = _fetch_workspace_context(target_video_id, youtube=youtube, is_demo=is_demo)
-            st.session_state["workspace_target_context"] = ctx
-
-    # Show Active Video Banner
-    current_snippet = ctx.get("snippet", {})
-    st.markdown(
-        f"""
-        <div style="background: #1E293B; border: 1px solid #334155; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px;">
-            <div style="font-size: 0.78rem; font-weight: 700; color: #818CF8; text-transform: uppercase;">Active Target Video</div>
-            <div style="font-size: 1.15rem; font-weight: 700; color: #FFFFFF; margin: 2px 0 4px 0;">{html.escape(current_snippet.get('title', 'Unknown Title'))}</div>
-            <div style="font-size: 0.85rem; color: #94A3B8;">
-                Video ID: <code>{html.escape(target_video_id)}</code> • Duration: {ctx.get('duration_str', 'N/A')} • Views: {ctx.get('metrics', {}).get('views', 0):,}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_video_optimizer(
+        video_id=target_video_id,
+        youtube=youtube,
+        secrets=secrets,
+        subject=subject,
+        memory_creds=memory_creds,
+        is_demo=is_demo,
+        key_prefix="ws",
+        inline_mode=False,
     )
 
-    # 3. Two-Column Layout: Left = Creative Formulation & Linting; Right = Exact Diff & Approval Gate
+
+def render_video_optimizer(
+    video_id: str,
+    youtube=None,
+    secrets=None,
+    subject=None,
+    memory_creds=None,
+    is_demo: bool = False,
+    key_prefix: str = "ws",
+    inline_mode: bool = False,
+):
+    """Render creative formulation, linter, diff, approval gate, and publish execution."""
+    secrets = secrets or {}
+
+    # State key names (strict backward-compatibility for workspace tests when key_prefix == 'ws')
+    prop_key = "workspace_proposal" if key_prefix == "ws" else f"{key_prefix}_proposal"
+    digest_key = "workspace_approved_digest" if key_prefix == "ws" else f"{key_prefix}_approved_digest"
+    title_in_key = "prop_title_in" if key_prefix == "ws" else f"{key_prefix}_title_in"
+    desc_in_key = "prop_desc_in" if key_prefix == "ws" else f"{key_prefix}_desc_in"
+    tags_in_key = "prop_tags_in" if key_prefix == "ws" else f"{key_prefix}_tags_in"
+    ctx_key = "workspace_target_context" if key_prefix == "ws" else f"{key_prefix}_context"
+
+    # Context extraction & caching
+    ctx = st.session_state.get(ctx_key)
+    # Evict corrupted or error cache entries automatically
+    if ctx and (ctx.get("snippet", {}).get("title") == "Error loading video" or ctx.get("error")):
+        st.session_state.pop(ctx_key, None)
+        ctx = None
+
+    if not ctx:
+        with st.spinner("Retrieving video metadata and channel peer evidence..."):
+            ctx = _fetch_workspace_context(video_id, youtube=youtube, is_demo=is_demo)
+            st.session_state[ctx_key] = ctx
+
+    if ctx.get("error") or not ctx.get("snippet"):
+        st.error(f"❌ Could not load video metadata from YouTube for video ID `{video_id}`: {ctx.get('error', 'Metadata unavailable')}")
+        st.info("Please verify your YouTube channel connection in Settings or enter another valid video ID.")
+        return
+
+    current_snippet = ctx.get("snippet", {})
+
+    # Display video banner in full workspace mode
+    if not inline_mode:
+        st.markdown(
+            f"""
+            <div style="background: #1E293B; border: 1px solid #334155; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px;">
+                <div style="font-size: 0.78rem; font-weight: 700; color: #818CF8; text-transform: uppercase;">Active Target Video</div>
+                <div style="font-size: 1.15rem; font-weight: 700; color: #FFFFFF; margin: 2px 0 4px 0;">{html.escape(current_snippet.get('title', 'Unknown Title'))}</div>
+                <div style="font-size: 0.85rem; color: #94A3B8;">
+                    Video ID: <code>{html.escape(video_id)}</code> • Duration: {ctx.get('duration_str', 'N/A')} • Views: {ctx.get('metrics', {}).get('views', 0):,}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Two-Column Layout: Left = Creative Formulation & Linting; Right = Exact Diff & Approval Gate
     col_left, col_right = st.columns([1, 1], gap="large")
 
     with col_left:
         st.subheader("1. Formulate Concepts")
-        
+
         # Load or generate candidate proposal
-        proposal = st.session_state.get("workspace_proposal")
+        proposal = st.session_state.get(prop_key)
         if not proposal:
             proposal = {
                 "title": current_snippet.get("title", ""),
@@ -196,11 +242,11 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                 "tags": current_snippet.get("tags", []),
                 "rationale": "Base snippet loaded. Click 'Generate AI Concepts' to formulate optimized angles.",
             }
-            st.session_state["workspace_proposal"] = proposal
+            st.session_state[prop_key] = proposal
 
         col_g1, col_g2 = st.columns(2)
         with col_g1:
-            if st.button("⚡ Generate AI Concepts", use_container_width=True, type="primary"):
+            if st.button("⚡ Generate AI Concepts", key=f"{key_prefix}_btn_gen_ai", use_container_width=True, type="primary"):
                 with st.spinner("Generating evidence-grounded options..."):
                     router = LLMRouter(secrets=secrets)
                     prefs = get_creator_preferences(owner_id=subject, is_demo=is_demo)
@@ -211,11 +257,11 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                     try:
                         parsed, provider, model = router.generate_structured_proposal(prompt)
                         if parsed:
-                            st.session_state["workspace_proposal"] = parsed
-                            st.session_state.pop("workspace_approved_digest", None)
-                            st.session_state.pop("prop_title_in", None)
-                            st.session_state.pop("prop_desc_in", None)
-                            st.session_state.pop("prop_tags_in", None)
+                            st.session_state[prop_key] = parsed
+                            st.session_state.pop(digest_key, None)
+                            st.session_state.pop(title_in_key, None)
+                            st.session_state.pop(desc_in_key, None)
+                            st.session_state.pop(tags_in_key, None)
                             st.rerun()
                         else:
                             st.error("AI returned non-standard format. Failing closed without altering proposal.")
@@ -223,29 +269,29 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                         st.error(f"LLM formulation error ({err.provider}): {str(err)}")
 
         with col_g2:
-            if st.button("Reset to Current", use_container_width=True):
-                st.session_state["workspace_proposal"] = {
+            if st.button("Reset to Current", key=f"{key_prefix}_btn_reset_cur", use_container_width=True):
+                st.session_state[prop_key] = {
                     "title": current_snippet.get("title", ""),
                     "description": current_snippet.get("description", ""),
                     "tags": current_snippet.get("tags", []),
                     "rationale": "Reset to YouTube published values.",
                 }
-                st.session_state.pop("workspace_approved_digest", None)
-                st.session_state.pop("prop_title_in", None)
-                st.session_state.pop("prop_desc_in", None)
-                st.session_state.pop("prop_tags_in", None)
+                st.session_state.pop(digest_key, None)
+                st.session_state.pop(title_in_key, None)
+                st.session_state.pop(desc_in_key, None)
+                st.session_state.pop(tags_in_key, None)
                 st.rerun()
 
         # Editable fields
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-        edit_title = st.text_input("Proposed Title", value=proposal.get("title", ""), key="prop_title_in")
+        edit_title = st.text_input("Proposed Title", value=proposal.get("title", ""), key=title_in_key)
         st.markdown(char_counter(len(edit_title), 100, warn_len=60), unsafe_allow_html=True)
-        
-        edit_desc = st.text_area("Proposed Description", value=proposal.get("description", ""), height=180, key="prop_desc_in")
+
+        edit_desc = st.text_area("Proposed Description", value=proposal.get("description", ""), height=180, key=desc_in_key)
         st.markdown(char_counter(len(edit_desc), 5000, warn_len=4500), unsafe_allow_html=True)
-        
+
         tags_raw = ", ".join(proposal.get("tags", [])) if isinstance(proposal.get("tags"), list) else str(proposal.get("tags", ""))
-        edit_tags_str = st.text_input("Proposed Tags (comma-separated)", value=tags_raw, key="prop_tags_in")
+        edit_tags_str = st.text_input("Proposed Tags (comma-separated)", value=tags_raw, key=tags_in_key)
         st.markdown(char_counter(len(edit_tags_str), 500, warn_len=400), unsafe_allow_html=True)
         edit_tags = [t.strip() for t in edit_tags_str.split(",") if t.strip()]
 
@@ -258,9 +304,9 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
             proposal["title"] = edit_title
             proposal["description"] = edit_desc
             proposal["tags"] = edit_tags
-            st.session_state["workspace_proposal"] = proposal
+            st.session_state[prop_key] = proposal
             # Invalidate approval hash on ANY modification
-            st.session_state.pop("workspace_approved_digest", None)
+            st.session_state.pop(digest_key, None)
 
         # Real-time Linter checks
         lint_results = lint_proposal(proposal, thumbnail_concept=None)
@@ -285,7 +331,7 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
 
     with col_right:
         st.subheader("2. Review Diff & Approval Gate")
-        
+
         # Display side-by-side diff using 3-argument signature
         st.markdown("**Title Comparison**")
         diff_viewer(before=current_snippet.get("title", ""), after=proposal.get("title", ""), label="Title Comparison")
@@ -300,7 +346,7 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
 
         # Compute deterministic digest using canonical parameters
         current_digest = compute_proposal_digest(
-            video_id=target_video_id,
+            video_id=video_id,
             before_snippet=current_snippet,
             proposed_snippet=proposed_snip,
         )
@@ -316,17 +362,17 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
         )
 
         # Approval State Handling
-        approved_digest = st.session_state.get("workspace_approved_digest")
+        approved_digest = st.session_state.get(digest_key)
         is_approved = (approved_digest == current_digest)
 
         col_app1, col_app2 = st.columns(2)
         with col_app1:
             if not is_approved:
-                if st.button("✅ Approve This Exact Proposal", use_container_width=True, type="primary"):
-                    st.session_state["workspace_approved_digest"] = current_digest
+                if st.button("✅ Approve This Exact Proposal", key=f"{key_prefix}_btn_approve", use_container_width=True, type="primary"):
+                    st.session_state[digest_key] = current_digest
                     if not is_demo:
                         record_proposal_decision(
-                            video_id=target_video_id,
+                            video_id=video_id,
                             proposal_digest=current_digest,
                             status="approved",
                             proposal_dict=proposal,
@@ -338,16 +384,16 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                     st.rerun()
             else:
                 st.success("Proposal Approved! Verified hash locked.")
-                if st.button("Revoke Approval", use_container_width=True):
-                    st.session_state.pop("workspace_approved_digest", None)
+                if st.button("Revoke Approval", key=f"{key_prefix}_btn_revoke", use_container_width=True):
+                    st.session_state.pop(digest_key, None)
                     st.rerun()
 
         with col_app2:
-            if st.button("❌ Decline Proposal", use_container_width=True):
-                st.session_state.pop("workspace_approved_digest", None)
+            if st.button("❌ Decline Proposal", key=f"{key_prefix}_btn_decline", use_container_width=True):
+                st.session_state.pop(digest_key, None)
                 if not is_demo:
                     record_proposal_decision(
-                        video_id=target_video_id,
+                        video_id=video_id,
                         proposal_digest=current_digest,
                         status="declined",
                         proposal_dict=proposal,
@@ -365,31 +411,32 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
             with st.container(border=True):
                 st.markdown("<h4 style='margin:0 0 8px 0; color:#FFFFFF;'>Ready to Apply to YouTube</h4>", unsafe_allow_html=True)
                 st.caption("Writes to YouTube Data API v3 snippet (title, description, tags). Pre-write check verifies current metadata has not changed.")
-                
+
                 if is_demo:
                     st.info("🔒 Public write actions are disabled in Demo Mode. Connect your channel in Settings to apply changes to YouTube.")
-                    st.button("🚀 Push to YouTube Now (Disabled in Demo Mode)", disabled=True, use_container_width=True)
+                    st.button("🚀 Push to YouTube Now (Disabled in Demo Mode)", key=f"{key_prefix}_btn_push_demo", disabled=True, use_container_width=True)
                 else:
-                    if st.button("🚀 Push to YouTube Now", type="primary", use_container_width=True):
+                    if st.button("🚀 Push to YouTube Now", key=f"{key_prefix}_btn_push_live", type="primary", use_container_width=True):
                         with st.spinner("Verifying snippet and updating YouTube..."):
                             res = apply_proposal(
                                 youtube=youtube,
-                                video_id=target_video_id,
+                                video_id=video_id,
                                 before_snippet=current_snippet,
                                 proposed_snippet=proposed_snip,
                                 approved_digest=approved_digest,
                                 is_demo=False,
                             )
                             if res.get("status") == "success":
-                                st.success(f"🎉 Update Applied and Verified! {res.get('message', '')}")
+                                success_msg = f"🎉 Update Applied and Verified! {res.get('message', '')}"
+                                st.success(success_msg)
                                 st.balloons()
                                 if memory_creds:
                                     try:
                                         from content_memory import GoogleSheetsMemoryStore
                                         mem_store = GoogleSheetsMemoryStore.from_credentials(memory_creds)
                                         mem_store.append_experiment(
-                                            video_id=target_video_id,
-                                            video_url=f"https://www.youtube.com/watch?v={target_video_id}",
+                                            video_id=video_id,
+                                            video_url=f"https://www.youtube.com/watch?v={video_id}",
                                             title=proposed_snip.get("title", ""),
                                             experiment_type="metadata_packaging",
                                             baseline_metrics=ctx.get("metrics", {}),
@@ -398,10 +445,14 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                                         st.toast("Experiment logged to Google Sheets memory!")
                                     except Exception:
                                         pass
-                                # Defer widget reset to next rerun to avoid modifying instantiated widget keys
-                                st.session_state["_deferred_workspace_reset"] = True
-                                st.session_state["_applied_success_notice"] = f"🎉 Update Applied and Verified! {res.get('message', '')}"
-                                st.session_state.pop("workspace_target_context", None)
+                                if key_prefix == "ws":
+                                    st.session_state["_deferred_workspace_reset"] = True
+                                    st.session_state["_applied_success_notice"] = success_msg
+                                    st.session_state.pop(ctx_key, None)
+                                else:
+                                    # Defer widget reset to next rerun to avoid modifying instantiated widget keys
+                                    st.session_state[f"_deferred_inline_reset_{video_id}"] = key_prefix
+                                    st.session_state[f"_applied_inline_notice_{video_id}"] = success_msg
                                 st.rerun()
                             else:
                                 st.error(f"Apply failed: {res.get('message', 'Unknown error')}")
@@ -409,9 +460,10 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
 
 def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False) -> Dict[str, Any]:
     """Fetch video context, duration, and metrics."""
-    # Check if this is a demo video reference or demo mode is active
     is_demo_id = str(video_id or "").startswith("demo-")
-    if is_demo or youtube is None or is_demo_id:
+
+    # 1. Demo Mode: Permitted only when is_demo=True or when a demo video is selected in demo mode
+    if is_demo:
         return {
             "snippet": {
                 "title": DEMO_HERO_ACTION["title"],
@@ -424,6 +476,40 @@ def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False)
                 "views": DEMO_HERO_ACTION["views"],
                 "ctr": DEMO_HERO_ACTION["ctr"],
             },
+        }
+
+    # 2. Real Mode: Fail closed if YouTube connection is missing
+    if youtube is None:
+        return {
+            "error": "YouTube connection is unavailable. Please connect your YouTube account in Settings.",
+            "snippet": None,
+            "duration_str": "N/A",
+            "metrics": {"views": 0},
+        }
+
+    # 3. Real Mode: Reject demo video IDs when not in demo mode
+    if is_demo_id:
+        return {
+            "error": f"Demo video ID '{video_id}' cannot be loaded in production mode.",
+            "snippet": None,
+            "duration_str": "N/A",
+            "metrics": {"views": 0},
+        }
+
+    # 4. Check if the video snippet is already available in dashboard_data / briefing
+    d_rows = st.session_state.get("dashboard_data", {}).get("video_rows", [])
+    found_row = next((r for r in d_rows if r.get("video_id") == video_id), None)
+    if found_row and found_row.get("snippet") and isinstance(found_row.get("snippet"), dict):
+        snippet = found_row["snippet"]
+        views = found_row.get("views", 0)
+        duration_sec = found_row.get("duration_seconds", 0)
+        m, s = divmod(duration_sec, 60)
+        h, m = divmod(m, 60)
+        duration_str = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        return {
+            "snippet": copy.deepcopy(snippet),
+            "duration_str": duration_str,
+            "metrics": {"views": views, "ctr": found_row.get("ctr")},
         }
 
     try:
@@ -448,7 +534,8 @@ def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False)
         }
     except Exception as e:
         return {
-            "snippet": {"title": "Error loading video", "description": str(e), "tags": []},
+            "error": str(e),
+            "snippet": None,
             "duration_str": "N/A",
             "metrics": {"views": 0},
         }
