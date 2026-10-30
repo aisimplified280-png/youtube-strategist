@@ -41,14 +41,16 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.session_state = {}
 
-    # Criterion 1: Single chat landing (no multipage navigation)
-    def test_01_single_chat_landing_no_multipage_navigation(self):
-        """app.py must not use st.navigation or multi-page routing."""
+    # Criterion 1: One registered chat page with the legacy pages/ directory hidden.
+    def test_01_single_chat_landing_hides_legacy_page_discovery(self):
+        """Only the Metadata Copilot page is registered and legacy routes are suppressed."""
         app_path = os.path.join(os.path.dirname(__file__), "..", "app.py")
         with open(app_path, "r", encoding="utf-8") as f:
             app_code = f.read()
 
-        self.assertNotIn("st.navigation", app_code, "app.py must not use st.navigation")
+        self.assertIn("st.navigation", app_code)
+        self.assertIn('position="hidden"', app_code)
+        self.assertIn('st.Page(render_app, title="Metadata Copilot"', app_code)
         self.assertNotIn("page_today", app_code, "app.py must not define today page")
         self.assertNotIn("page_workspace", app_code, "app.py must not define workspace page")
         self.assertNotIn("page_ideas", app_code, "app.py must not define ideas page")
