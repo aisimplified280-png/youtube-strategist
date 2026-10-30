@@ -1,22 +1,19 @@
 """Page: Settings & Connections.
 
-Connection health cards, provider setup, demo mode toggle, and diagnostics.
+Connection health cards, provider setup, and diagnostics.
 """
 
 import sys
 from typing import Any, Dict, Optional
 import streamlit as st
 
-from core.auth import is_demo_mode, set_demo_mode
 from core.oauth import create_purpose_state, build_flow, YOUTUBE_SCOPES, MEMORY_SCOPES
-from ui.components import demo_banner, status_pill
+from ui.components import status_pill
 
 
 def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds=None, token_store=None):
     """Render Settings & Connections health overview."""
-    demo_banner()
     secrets = secrets or {}
-    is_demo = is_demo_mode()
 
     st.markdown(
         """
@@ -30,32 +27,14 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
         unsafe_allow_html=True,
     )
 
-    # Demo Mode Toggle Card
-    with st.container(border=True):
-        dcol1, dcol2 = st.columns([3, 1])
-        with dcol1:
-            st.markdown("### Demo Mode")
-            st.caption(
-                "Explore all app features with realistic sample data without connecting live YouTube or Google credentials. "
-                "Demo mode never makes external API calls."
-            )
-        with dcol2:
-            st.caption(" ")
-            new_demo = st.toggle("Enable Demo Mode", value=is_demo, key="toggle_demo_mode")
-            if new_demo != is_demo:
-                set_demo_mode(new_demo)
-                st.rerun()
-
-    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-
     # 1. Google Sign-In Card
     with st.container(border=True):
         c1, c2 = st.columns([3, 1])
         with c1:
             st.markdown("### 1. Google Sign-in Identity")
             user = getattr(st, "user", None)
-            email = getattr(user, "email", "Signed out" if not is_demo else "demo-owner@channel.com")
-            verified = getattr(user, "email_verified", True if is_demo else False)
+            email = getattr(user, "email", "Signed out")
+            verified = getattr(user, "email_verified", False)
             expected_owner = secrets.get("access", {}).get("owner_email", "(Set in secrets)")
             st.caption(f"Authenticated as: **{email}** ({'Verified Owner ✓' if verified else 'Unverified'})")
             st.caption(f"Configured Owner Email: `{expected_owner}`")
@@ -78,8 +57,6 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
             if youtube_creds:
                 st.markdown('<span class="status-pill status-connected">● Connected</span>', unsafe_allow_html=True)
                 st.caption("Note: Google OAuth in 'Testing' mode expires refresh tokens after 7 days. If an error occurs, click Reconnect below.")
-            elif is_demo:
-                st.markdown('<span class="status-pill status-connected">● Demo YouTube Connected</span>', unsafe_allow_html=True)
             else:
                 st.markdown('<span class="status-pill status-disconnected">● Disconnected</span>', unsafe_allow_html=True)
         with y2:
@@ -91,7 +68,7 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
                     st.session_state.pop("youtube_credentials_json", None)
                     st.session_state.pop("dashboard_data", None)
                     st.rerun()
-            elif not is_demo and subject and secrets.get("youtube_oauth"):
+            elif subject and secrets.get("youtube_oauth"):
                 try:
                     yt_oauth = secrets["youtube_oauth"]
                     state, verifier = create_purpose_state(subject, secrets["security"]["state_secret"], "youtube")
