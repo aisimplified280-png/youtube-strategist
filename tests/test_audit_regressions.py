@@ -114,6 +114,9 @@ class TestAuditRegressions(unittest.TestCase):
     # 4. High — Google Sheets Memory OAuth separation
     def test_memory_scopes_isolated_from_youtube_scopes(self):
         self.assertEqual(MEMORY_SCOPES, ["https://www.googleapis.com/auth/drive.file"])
+        self.assertIn("https://www.googleapis.com/auth/youtube.readonly", YOUTUBE_SCOPES)
+        self.assertIn("https://www.googleapis.com/auth/yt-analytics.readonly", YOUTUBE_SCOPES)
+        self.assertIn("https://www.googleapis.com/auth/youtube.force-ssl", YOUTUBE_SCOPES)
         for yt_scope in YOUTUBE_SCOPES:
             self.assertNotIn(yt_scope, MEMORY_SCOPES, "Memory flow must not request YouTube scopes.")
 
