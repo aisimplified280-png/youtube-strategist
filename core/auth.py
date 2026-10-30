@@ -9,13 +9,15 @@ import dashboard_security
 
 
 def is_demo_mode() -> bool:
-    """Return whether demo mode is currently active."""
-    return bool(st.session_state.get("demo_mode", False))
+    """Legacy compatibility shim: Demo Mode is permanently disabled."""
+    return False
 
 
 def set_demo_mode(enabled: bool):
-    """Enable or disable demo mode."""
-    st.session_state["demo_mode"] = enabled
+    """Reject attempts to re-enable the retired Demo Mode."""
+    st.session_state.pop("demo_mode", None)
+    if enabled:
+        raise RuntimeError("Demo Mode has been removed. Sign in with the configured Google owner account.")
 
 
 def verify_owner_access(secrets: Dict[str, Any]) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -24,9 +26,6 @@ def verify_owner_access(secrets: Dict[str, Any]) -> Tuple[bool, Optional[str], O
     Returns:
         (is_authorized, subject, error_message)
     """
-    if is_demo_mode():
-        return True, "demo-owner-subject-12345", None
-
     user = getattr(st, "user", None)
     if not user:
         return False, None, "Please sign in with Google to access this channel co-pilot."
