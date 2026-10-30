@@ -53,7 +53,7 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
         y1, y2 = st.columns([3, 1])
         with y1:
             st.markdown("### 2. YouTube Analytics & Metadata Access")
-            st.caption("Grants `yt-analytics.readonly` and `youtube.force-ssl` for channel diagnostics and exact metadata updates.")
+            st.caption("Grants `youtube.readonly`, `yt-analytics.readonly`, and `youtube.force-ssl` for channel discovery, analytics, and approved metadata updates.")
             if youtube_creds:
                 st.markdown('<span class="status-pill status-connected">● Connected</span>', unsafe_allow_html=True)
                 st.caption("Note: Google OAuth in 'Testing' mode expires refresh tokens after 7 days. If an error occurs, click Reconnect below.")
