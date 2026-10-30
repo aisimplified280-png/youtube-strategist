@@ -92,14 +92,20 @@ def status_pill(status: str, label: str):
 
 
 def char_counter(current_len: int, max_len: int, warn_len: Optional[int] = None) -> str:
-    """Return HTML string for character count badge with warnings."""
+    """Return HTML string for character count badge with warnings.
+    
+    warn_len: Optional integer threshold above which to display a warning.
+    """
+    warn_threshold = warn_len if isinstance(warn_len, (int, float)) else None
+    label_suffix = f" &bull; {html.escape(str(warn_len))}" if isinstance(warn_len, str) else ""
+
     if current_len > max_len:
         cls = "char-over"
-    elif warn_len and current_len > warn_len:
+    elif warn_threshold is not None and current_len > warn_threshold:
         cls = "char-warn"
     else:
         cls = "char-ok"
-    return f'<span class="char-counter {cls}">{current_len}/{max_len} chars</span>'
+    return f'<span class="char-counter {cls}">{current_len}/{max_len} chars{label_suffix}</span>'
 
 
 def word_level_diff(before: str, after: str) -> str:
@@ -126,13 +132,23 @@ def word_level_diff(before: str, after: str) -> str:
     return " ".join(diff_parts)
 
 
-def diff_viewer(before: str, after: str, label: str = "Diff"):
-    """Render a word-level visual diff container."""
-    diff_html = word_level_diff(before or "", after or "")
+def diff_viewer(before: str = "", after: str = "", label: str = "Diff", *args, **kwargs):
+    """Render a word-level visual diff container.
+    
+    Accepts 3-argument signature: before, after, label="Diff".
+    Also handles 4-argument calls gracefully: (lbl1, val1, lbl2, val2).
+    """
+    if args and len(args) == 1 and isinstance(after, str):
+        # Called as diff_viewer(lbl1, val1, lbl2, val2)
+        diff_label = label or "Diff"
+        diff_html = word_level_diff(after or "", args[0] or "")
+    else:
+        diff_label = label
+        diff_html = word_level_diff(before or "", after or "")
     st.markdown(
         f"""
         <div class="diff-panel">
-            <div style="font-size:0.75rem; color:#94A3B8; font-weight:700; text-transform:uppercase; margin-bottom:6px;">{html.escape(label)}</div>
+            <div style="font-size:0.75rem; color:#94A3B8; font-weight:700; text-transform:uppercase; margin-bottom:6px;">{html.escape(diff_label)}</div>
             <div>{diff_html}</div>
         </div>
         """,
@@ -179,3 +195,67 @@ def error_state(title: str, reason: str, icon: str = "⚠️", retry_label: Opti
         if retry_label and on_retry:
             if st.button(retry_label, key=f"btn_retry_{title[:10]}"):
                 on_retry()
+
+
+def connection_status_banner(secrets: Dict[str, Any], subject: Optional[str] = None, yt_creds=None, memory_creds=None, is_demo: bool = False):
+    """Render prominent, actionable connection banner at top of main workspace/briefing."""
+    if is_demo:
+        return
+
+    from core.oauth import get_auth_url
+    from core.auth import set_demo_mode
+
+    # Case 1: YouTube Disconnected
+    if not yt_creds:
+        with st.container(border=True):
+            col_b1, col_b2, col_b3 = st.columns([2.5, 1, 1])
+            with col_b1:
+                st.markdown(
+                    """
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span style="font-size:1.6rem;">⚡</span>
+                        <div>
+                            <div style="font-weight:700; color:#FFFFFF; font-size:1.02rem;">Connect YouTube Channel</div>
+                            <div style="color:#94A3B8; font-size:0.86rem;">Connect AI Simplified Lab via Google OAuth to enable automated daily briefs and 1-click verified metadata updates.</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with col_b2:
+                st.write("")
+                auth_url, _ = get_auth_url("youtube", subject or "", secrets)
+                if auth_url:
+                    st.link_button("▶ Connect YouTube", auth_url, type="primary", use_container_width=True)
+                else:
+                    st.caption("OAuth not configured")
+            with col_b3:
+                st.write("")
+                if st.button("🎮 Try Demo Mode", key="banner_try_demo", use_container_width=True, help="Explore with realistic sample channel data"):
+                    set_demo_mode(True)
+                    st.rerun()
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+    # Case 2: Memory Disconnected (YouTube is connected, but Memory is not)
+    elif not memory_creds:
+        with st.container(border=True):
+            col_m1, col_m2 = st.columns([3, 1])
+            with col_m1:
+                st.markdown(
+                    """
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span style="font-size:1.4rem;">📊</span>
+                        <div>
+                            <div style="font-weight:600; color:#CBD5E1; font-size:0.92rem;">Google Sheets Memory Disconnected</div>
+                            <div style="color:#94A3B8; font-size:0.82rem;">Connect your Google Sheets via Drive scope to record metadata experiments and preserve channel voice guidelines across sessions.</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with col_m2:
+                st.write("")
+                mem_url, _ = get_auth_url("memory", subject or "", secrets)
+                if mem_url:
+                    st.link_button("📊 Connect Sheets", mem_url, use_container_width=True)
+        st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)

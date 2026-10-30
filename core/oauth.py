@@ -75,3 +75,38 @@ def test_or_refresh_credentials(credentials: Credentials) -> Tuple[Optional[Cred
             return None, "needs_reconnect"
 
     return None, "needs_reconnect"
+
+
+def get_auth_url(purpose: str, subject: str, secrets: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Return (auth_url, error_message) for the given purpose ('youtube' or 'memory')."""
+    if not subject:
+        return None, "Sign-in required to initialize OAuth state."
+    signing_secret = secrets.get("security", {}).get("state_secret", "")
+    if len(signing_secret) < 32:
+        return None, "State secret must be at least 32 characters."
+
+    oauth_cfg = secrets.get(f"{purpose}_oauth") or (secrets.get("youtube_oauth") if purpose == "memory" else None)
+    if not oauth_cfg:
+        return None, f"OAuth config for {purpose} is missing in secrets."
+
+    try:
+        import streamlit as st
+        state, verifier = create_purpose_state(subject, signing_secret, purpose)
+        st.session_state[f"pending_{purpose}_oauth_state"] = state
+        st.session_state[f"pending_{purpose}_code_verifier"] = verifier
+
+        scopes = YOUTUBE_SCOPES if purpose == "youtube" else MEMORY_SCOPES
+        flow = build_flow(
+            oauth_cfg["client_id"],
+            oauth_cfg["client_secret"],
+            oauth_cfg["redirect_uri"],
+            scopes=scopes,
+            state=state,
+            code_verifier=verifier,
+        )
+        user = getattr(st, "user", None)
+        email = getattr(user, "email", None) if user else None
+        auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent", login_hint=email)
+        return auth_url, None
+    except Exception as err:
+        return None, str(err)

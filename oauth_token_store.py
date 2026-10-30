@@ -20,7 +20,36 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 _ALLOWED_PURPOSES = {"youtube", "memory"}
-_DEFAULT_PATH = Path(tempfile.gettempdir()) / "ai-simplified-lab-strategist-oauth.sqlite3"
+_DURABLE_DIR = Path.home() / ".creator_growth_agent"
+try:
+    _DURABLE_DIR.mkdir(parents=True, exist_ok=True)
+    _DEFAULT_PATH = _DURABLE_DIR / "ai-simplified-lab-strategist-oauth.sqlite3"
+except Exception:
+    _DEFAULT_PATH = Path(tempfile.gettempdir()) / "ai-simplified-lab-strategist-oauth.sqlite3"
+
+
+def _migrate_legacy_oauth_store(target_path: Path):
+    """Migrate legacy oauth database from /tmp or project data if target does not exist."""
+    try:
+        if target_path.exists():
+            return
+        legacy_paths = [
+            Path(tempfile.gettempdir()) / "ai-simplified-lab-strategist-oauth.sqlite3",
+            Path(__file__).resolve().parent / "data" / "ai-simplified-lab-strategist-oauth.sqlite3",
+        ]
+        for lp in legacy_paths:
+            try:
+                if lp.resolve() == target_path.resolve():
+                    continue
+            except Exception:
+                pass
+            if lp.exists() and lp.stat().st_size > 0:
+                import shutil
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(lp, target_path)
+                break
+    except Exception:
+        pass
 
 
 class OAuthTokenStore:
@@ -33,6 +62,7 @@ class OAuthTokenStore:
             path
             or os.environ.get("YOUTUBE_STRATEGIST_TOKEN_STORE", str(_DEFAULT_PATH))
         )
+        _migrate_legacy_oauth_store(self.path)
         digest = hashlib.sha256(
             ("ai-simplified-lab-oauth-token-store:" + signing_secret).encode("utf-8")
         ).digest()

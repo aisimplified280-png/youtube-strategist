@@ -786,6 +786,8 @@ def rank_optimization_candidates(video_rows, *, limit=5):
             and abs(peer["age_days"] - video["age_days"])
             <= max(14, int(video["age_days"] * 0.5))
             and isinstance(peer.get("views"), (int, float))
+            and not isinstance(peer.get("views"), bool)
+            and peer.get("views") >= 0
         ]
         if len(peers) < 3:
             continue
