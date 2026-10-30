@@ -43,10 +43,8 @@ class TestCriticalRegressions(unittest.TestCase):
         self.test_db_path = Path(self.temp_dir.name) / "test_creator_memory.sqlite3"
         self._orig_db_env = os.environ.get("CREATOR_GROWTH_DB_PATH")
         os.environ["CREATOR_GROWTH_DB_PATH"] = str(self.test_db_path)
-        creator_db.set_storage_backend(None)
 
     def tearDown(self):
-        creator_db.set_storage_backend(None)
         if self._orig_db_env is not None:
             os.environ["CREATOR_GROWTH_DB_PATH"] = self._orig_db_env
         else:
@@ -563,7 +561,6 @@ class TestCriticalRegressions(unittest.TestCase):
         conn.close()
 
         # Point environment to this database and run get_db_connection()
-        creator_db.set_storage_backend(None)
         with patch.dict(os.environ, {"CREATOR_GROWTH_DB_PATH": str(legacy_db_file)}):
             migrated_conn = creator_db.get_db_connection()
             cur = migrated_conn.cursor()
@@ -576,7 +573,6 @@ class TestCriticalRegressions(unittest.TestCase):
             prefs = creator_db.get_creator_preferences(owner_id="default_owner", is_demo=False)
             self.assertEqual(prefs.get("voice_tone"), "Authoritative Engineering")
             self.assertEqual(prefs.get("target_audience"), "Senior Python Devs")
-        creator_db.set_storage_backend(None)
 
         # Test legacy oauth token store migration with real populated database
         from oauth_token_store import OAuthTokenStore
@@ -706,102 +702,88 @@ class TestCriticalRegressions(unittest.TestCase):
     def test_owner_data_migration_security_and_durability(self):
         """claim_legacy_owner_records safely maps default_owner records to authenticated owner only."""
         from core.creator_db import (
-            SQLiteBackend, set_storage_backend, claim_legacy_owner_records,
-            get_creator_preferences, DEFAULT_OWNER_ID
+            claim_legacy_owner_records, get_creator_preferences, DEFAULT_OWNER_ID, get_db_connection
         )
 
         test_db_path = Path(self.temp_dir.name) / "migration_test.sqlite3"
-        backend = SQLiteBackend(test_db_path)
-        set_storage_backend(backend)
+        with patch.dict(os.environ, {"CREATOR_GROWTH_DB_PATH": str(test_db_path)}):
+            # Populate legacy records under DEFAULT_OWNER_ID
+            conn = get_db_connection()
+            with conn:
+                conn.execute(
+                    "INSERT INTO creator_preferences (owner_id, pref_key, pref_value, updated_at_utc) VALUES (?, ?, ?, ?)",
+                    (DEFAULT_OWNER_ID, "channel_niche", "Autonomous AI Agents", "2026-10-30T00:00:00Z")
+                )
+                conn.execute(
+                    "INSERT INTO production_pipeline (id, owner_id, title, stage, target_format, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("pipe-legacy-1", DEFAULT_OWNER_ID, "Legacy Pipeline Title", "idea", "longform", "2026-10-30T00:00:00Z")
+                )
+                conn.execute(
+                    "INSERT INTO proposal_history (owner_id, video_id, proposal_digest, status, proposal_json, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                    (DEFAULT_OWNER_ID, "vid-legacy", "digest123", "accepted", "{}", "2026-10-30T00:00:00Z")
+                )
+            conn.close()
 
-        # Populate legacy records under DEFAULT_OWNER_ID
-        conn = backend.get_connection()
-        with conn:
-            conn.execute(
-                "INSERT INTO creator_preferences (owner_id, pref_key, pref_value, updated_at_utc) VALUES (?, ?, ?, ?)",
-                (DEFAULT_OWNER_ID, "channel_niche", "Autonomous AI Agents", "2026-10-30T00:00:00Z")
-            )
-            conn.execute(
-                "INSERT INTO production_pipeline (id, owner_id, title, stage, target_format, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
-                ("pipe-legacy-1", DEFAULT_OWNER_ID, "Legacy Pipeline Title", "idea", "longform", "2026-10-30T00:00:00Z")
-            )
-            conn.execute(
-                "INSERT INTO proposal_history (owner_id, video_id, proposal_digest, status, proposal_json, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
-                (DEFAULT_OWNER_ID, "vid-legacy", "digest123", "accepted", "{}", "2026-10-30T00:00:00Z")
-            )
-        conn.close()
+            # Attempt to claim with unauthorized / demo subjects -> must fail / return empty
+            self.assertEqual(claim_legacy_owner_records("demo"), {})
+            self.assertEqual(claim_legacy_owner_records("anonymous"), {})
+            self.assertEqual(claim_legacy_owner_records(""), {})
 
-        # Attempt to claim with unauthorized / demo subjects -> must fail / return empty
-        self.assertEqual(claim_legacy_owner_records("demo"), {})
-        self.assertEqual(claim_legacy_owner_records("anonymous"), {})
-        self.assertEqual(claim_legacy_owner_records(""), {})
+            # Claim with authenticated owner
+            claimed = claim_legacy_owner_records("auth_owner_real_789")
+            self.assertTrue(claimed.get("success"))
 
-        # Claim with authenticated owner
-        claimed = claim_legacy_owner_records("auth_owner_real_789")
-        self.assertTrue(claimed.get("success"))
+            # Verify owner has access to claimed data
+            prefs = get_creator_preferences(owner_id="auth_owner_real_789")
+            self.assertEqual(prefs.get("channel_niche"), "Autonomous AI Agents")
 
-        # Verify owner has access to claimed data
-        prefs = get_creator_preferences(owner_id="auth_owner_real_789")
-        self.assertEqual(prefs.get("channel_niche"), "Autonomous AI Agents")
+            # Verify intruder cannot re-claim already migrated data
+            intruder_result = claim_legacy_owner_records("intruder_owner_000")
+            self.assertFalse(intruder_result.get("success", False))
 
-        # Verify intruder cannot re-claim already migrated data
-        intruder_result = claim_legacy_owner_records("intruder_owner_000")
-        self.assertFalse(intruder_result.get("success", False))
+            # Demo mode must never see the claimed owner records
+            demo_prefs = get_creator_preferences(is_demo=True)
+            self.assertNotEqual(demo_prefs.get("channel_niche"), "Autonomous AI Agents")
 
-        # Demo mode must never see the claimed owner records
-        demo_prefs = get_creator_preferences(is_demo=True)
-        self.assertNotEqual(demo_prefs.get("channel_niche"), "Autonomous AI Agents")
-
-    # --- Scenario 19: Hosted restart persistence integration ---
-    def test_hosted_restart_persistence_integration(self):
+    # --- Scenario 19: SQLite restart persistence integration ---
+    def test_sqlite_restart_persistence_integration(self):
         """Simulates app restart across connection teardown, verifying persistence of memory and credentials."""
         from core.creator_db import (
-            SQLiteBackend, set_storage_backend, set_creator_preference,
-            get_creator_preferences, save_pipeline_item, get_pipeline_items
+            set_creator_preference, get_creator_preferences, save_pipeline_item, get_pipeline_items
         )
         from oauth_token_store import OAuthTokenStore
 
         persist_db_path = Path(self.temp_dir.name) / "restart_persist.sqlite3"
-        backend = SQLiteBackend(persist_db_path)
-        set_storage_backend(backend)
-
-        # 1. Save data before restart
-        set_creator_preference("upload_frequency", "2x/week", owner_id="owner_persist")
-        save_pipeline_item("item-persist-1", "Agents in Prod", "scripting", "longform", owner_id="owner_persist")
-
+        persist_oauth_path = Path(self.temp_dir.name) / "restart_oauth.sqlite3"
         signing_secret = "secret-key-at-least-32-chars-long-12345"
-        token_store = OAuthTokenStore(
-            signing_secret,
-            connection_factory=lambda: SQLiteBackend(persist_db_path).get_connection()
-        )
-        token_store.save_credentials_json("owner_persist", "youtube", '{"token": "persisted_oauth_token_val"}')
 
-        # 2. Simulate complete restart: clear backend singleton and instantiate fresh store
-        set_storage_backend(None)
+        with patch.dict(os.environ, {"CREATOR_GROWTH_DB_PATH": str(persist_db_path)}):
+            # 1. Save data before restart
+            set_creator_preference("upload_frequency", "2x/week", owner_id="owner_persist")
+            save_pipeline_item("item-persist-1", "Agents in Prod", "scripting", "longform", owner_id="owner_persist")
 
-        fresh_backend = SQLiteBackend(persist_db_path)
-        set_storage_backend(fresh_backend)
-        fresh_token_store = OAuthTokenStore(
-            signing_secret,
-            connection_factory=lambda: SQLiteBackend(persist_db_path).get_connection()
-        )
+            token_store = OAuthTokenStore(signing_secret, path=str(persist_oauth_path))
+            token_store.save_credentials_json("owner_persist", "youtube", '{"token": "persisted_oauth_token_val"}')
 
-        # 3. Verify data survived restart
-        prefs = get_creator_preferences(owner_id="owner_persist")
-        self.assertEqual(prefs.get("upload_frequency"), "2x/week")
+            # 2. Simulate complete restart: instantiate fresh store and read database
+            fresh_token_store = OAuthTokenStore(signing_secret, path=str(persist_oauth_path))
 
-        pipeline = get_pipeline_items(owner_id="owner_persist")
-        self.assertEqual(len(pipeline), 1)
-        self.assertEqual(pipeline[0]["title"], "Agents in Prod")
+            # 3. Verify data survived restart
+            prefs = get_creator_preferences(owner_id="owner_persist")
+            self.assertEqual(prefs.get("upload_frequency"), "2x/week")
 
-        creds = fresh_token_store.get_credentials_json("owner_persist", "youtube")
-        self.assertEqual(creds, '{"token": "persisted_oauth_token_val"}')
+            pipeline = get_pipeline_items(owner_id="owner_persist")
+            self.assertEqual(len(pipeline), 1)
+            self.assertEqual(pipeline[0]["title"], "Agents in Prod")
+
+            creds = fresh_token_store.get_credentials_json("owner_persist", "youtube")
+            self.assertEqual(creds, '{"token": "persisted_oauth_token_val"}')
 
     # --- Scenario 20: Research Radar provenance and backfill ---
     def test_radar_provenance_and_backfill(self):
         """Authoritative releases have verified source dates and existing records are backfilled."""
         from core.daily_briefing import AUTHORITATIVE_AI_RADAR_SOURCES
-        from core.creator_db import SQLiteBackend, set_storage_backend, _init_db
+        from core.creator_db import get_db_connection, _init_db
 
         # Verify CrewAI Flows source date and URL
         crewai_item = next(item for item in AUTHORITATIVE_AI_RADAR_SOURCES if item["id"] == "radar-crewai-flows")
@@ -810,30 +792,56 @@ class TestCriticalRegressions(unittest.TestCase):
 
         # Verify backfill on existing DB with old dates
         radar_db_path = Path(self.temp_dir.name) / "radar_backfill.sqlite3"
-        backend = SQLiteBackend(radar_db_path)
-        set_storage_backend(backend)
-        conn = backend.get_connection()
-        with conn:
-            conn.execute(
-                "INSERT INTO research_radar (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json) "
-                "VALUES ('radar-llama-3.2-edge', 'default_owner', 'Llama 3.2', 'https://ai.meta.com', 'model_release', '2026-09-25', '2026-10-30T00:00:00Z', 'relevance', '2026-10-30', 'summary', '[]')"
-            )
-            conn.execute(
-                "INSERT INTO research_radar (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json) "
-                "VALUES ('radar-gemini-1.5-flash-8b', 'default_owner', 'Flash 8B', 'https://developers.googleblog.com', 'model_release', '2026-10-03', '2026-10-30T00:00:00Z', 'relevance', '2026-10-30', 'summary', '[]')"
-            )
-        # Run init/migration which triggers backfill queries
-        _init_db(conn)
+        with patch.dict(os.environ, {"CREATOR_GROWTH_DB_PATH": str(radar_db_path)}):
+            conn = get_db_connection()
+            with conn:
+                conn.execute(
+                    "INSERT INTO research_radar (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json) "
+                    "VALUES ('radar-llama-3.2-edge', 'default_owner', 'Llama 3.2', 'https://ai.meta.com', 'model_release', '2026-09-25', '2026-10-30T00:00:00Z', 'relevance', '2026-10-30', 'summary', '[]')"
+                )
+                conn.execute(
+                    "INSERT INTO research_radar (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json) "
+                    "VALUES ('radar-gemini-1.5-flash-8b', 'default_owner', 'Flash 8B', 'https://developers.googleblog.com', 'model_release', '2026-10-03', '2026-10-30T00:00:00Z', 'relevance', '2026-10-30', 'summary', '[]')"
+                )
+            _init_db(conn)
 
-        cur = conn.cursor()
-        cur.execute("SELECT source_date, retrieved_at_utc FROM research_radar WHERE id = 'radar-llama-3.2-edge'")
-        llama_row = cur.fetchone()
-        self.assertEqual(llama_row[0], "2024-09-25")
-        self.assertEqual(llama_row[1], "2026-10-30T00:00:00Z")  # Preserves retrieval timestamp separately
+            cur = conn.cursor()
+            cur.execute("SELECT source_date, retrieved_at_utc FROM research_radar WHERE id = 'radar-llama-3.2-edge'")
+            llama_row = cur.fetchone()
+            self.assertEqual(llama_row[0], "2024-09-25")
+            self.assertEqual(llama_row[1], "2026-10-30T00:00:00Z")  # Preserves retrieval timestamp separately
 
-        cur.execute("SELECT source_date FROM research_radar WHERE id = 'radar-gemini-1.5-flash-8b'")
-        self.assertEqual(cur.fetchone()[0], "2024-10-03")
-        conn.close()
+            cur.execute("SELECT source_date FROM research_radar WHERE id = 'radar-gemini-1.5-flash-8b'")
+            self.assertEqual(cur.fetchone()[0], "2024-10-03")
+            conn.close()
+
+    # --- Scenario 21: Candidate ranking zero-view edge case and division-by-zero protection ---
+    def test_rank_optimization_candidates_with_zero_views(self):
+        """Zero-view candidate is excluded from optimization, and zero peer median safely avoids division by zero."""
+        from youtube_dashboard import rank_optimization_candidates
+
+        # 1. Zero-view candidate is excluded from ranking (cannot diagnose packaging without traffic)
+        video_rows = [
+            {"video_id": "v-under", "title": "Zero views upload", "format": "longform", "views": 0, "age_days": 20},
+            {"video_id": "v-peer1", "title": "Peer 1", "format": "longform", "views": 100, "age_days": 20},
+            {"video_id": "v-peer2", "title": "Peer 2", "format": "longform", "views": 200, "age_days": 22},
+            {"video_id": "v-peer3", "title": "Peer 3", "format": "longform", "views": 300, "age_days": 18},
+        ]
+        candidates = rank_optimization_candidates(video_rows)
+        self.assertNotIn("v-under", [c["video_id"] for c in candidates])
+        # v-peer1 has 100 views vs peer median of 200 (peers: v-under=0, v-peer2=200, v-peer3=300 -> median=200)
+        self.assertEqual(candidates[0]["video_id"], "v-peer1")
+        self.assertEqual(candidates[0]["peer_views_median"], 200)
+
+        # 2. When all peers have 0 views (median = 0), candidate is skipped, preventing division by zero
+        all_zero_rows = [
+            {"video_id": "v-measured", "title": "Low views", "format": "longform", "views": 10, "age_days": 20},
+            {"video_id": "v-z1", "title": "Zero 1", "format": "longform", "views": 0, "age_days": 20},
+            {"video_id": "v-z2", "title": "Zero 2", "format": "longform", "views": 0, "age_days": 22},
+            {"video_id": "v-z3", "title": "Zero 3", "format": "longform", "views": 0, "age_days": 18},
+        ]
+        zero_candidates = rank_optimization_candidates(all_zero_rows)
+        self.assertEqual(zero_candidates, [])
 
 
 if __name__ == "__main__":

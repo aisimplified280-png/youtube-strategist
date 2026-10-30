@@ -74,112 +74,15 @@ def get_db_path() -> Path:
         return fallback
 
 
-class StorageBackend:
-    """Pluggable persistence backend interface for development and hosted environments."""
-    def get_connection(self):
-        raise NotImplementedError
-    
-    def is_remote(self) -> bool:
-        return False
-    
-    @property
-    def name(self) -> str:
-        return "abstract"
-
-
-class SQLiteBackend(StorageBackend):
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-
-    def get_connection(self):
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path), timeout=15.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=15000;")
-        _init_db(conn)
-        return conn
-
-    def is_remote(self) -> bool:
-        return False
-
-    @property
-    def name(self) -> str:
-        return "sqlite"
-
-
-class PostgresBackend(StorageBackend):
-    def __init__(self, connection_url: str):
-        self.connection_url = connection_url
-        self._driver = None
-        for mod in ("psycopg2", "psycopg", "pg8000"):
-            try:
-                self._driver = __import__(mod)
-                break
-            except ImportError:
-                continue
-        if self._driver is None:
-            raise ImportError(
-                "Remote PostgreSQL connection configured but no PostgreSQL driver (psycopg2, psycopg, pg8000) is installed."
-            )
-
-    def get_connection(self):
-        conn = self._driver.connect(self.connection_url)
-        _init_db(conn)
-        return conn
-
-    def is_remote(self) -> bool:
-        return True
-
-    @property
-    def name(self) -> str:
-        return "postgres"
-
-
-_CURRENT_BACKEND: Optional[StorageBackend] = None
-
-
-def get_storage_backend(secrets: Optional[Dict[str, Any]] = None) -> StorageBackend:
-    """Resolve authoritative persistent database backend for local or hosted execution."""
-    global _CURRENT_BACKEND
-    if _CURRENT_BACKEND is not None:
-        return _CURRENT_BACKEND
-
-    # Check for remote database URL in secrets or environment
-    remote_url = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
-    if not remote_url and secrets:
-        remote_url = secrets.get("database", {}).get("url") or secrets.get("postgres", {}).get("url")
-    if not remote_url:
-        try:
-            import streamlit as st
-            remote_url = getattr(st, "secrets", {}).get("DATABASE_URL")
-            if not remote_url:
-                db_cfg = getattr(st, "secrets", {}).get("database", {})
-                if isinstance(db_cfg, dict):
-                    remote_url = db_cfg.get("url")
-        except Exception:
-            pass
-
-    if remote_url and (remote_url.startswith("postgres://") or remote_url.startswith("postgresql://")):
-        try:
-            return PostgresBackend(remote_url)
-        except Exception:
-            pass
-
-    # Default to durable managed SQLite
-    p = get_db_path()
-    return SQLiteBackend(p)
-
-
-def set_storage_backend(backend: Optional[StorageBackend]) -> None:
-    """Set or override active backend (primarily for tests)."""
-    global _CURRENT_BACKEND
-    _CURRENT_BACKEND = backend
-
-
-def get_db_connection(secrets: Optional[Dict[str, Any]] = None):
-    """Get a thread-safe connection to the persistent database backend."""
-    backend = get_storage_backend(secrets=secrets)
-    return backend.get_connection()
+def get_db_connection(secrets: Optional[Dict[str, Any]] = None) -> sqlite3.Connection:
+    """Get a thread-safe connection to the managed SQLite database."""
+    db_path = get_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=15.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=15000;")
+    _init_db(conn)
+    return conn
 
 
 def _ensure_columns(conn: sqlite3.Connection, table_name: str, required_columns: Dict[str, str]):
@@ -368,6 +271,11 @@ def _init_db(conn: sqlite3.Connection):
             );
             """
         )
+        _ensure_columns(
+            conn,
+            "experiments",
+            {"owner_id": "TEXT NOT NULL DEFAULT 'default_owner'"},
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS system_metadata (
@@ -376,25 +284,6 @@ def _init_db(conn: sqlite3.Connection):
                 updated_at_utc TEXT NOT NULL
             );
             """
-        )
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS oauth_credentials (
-                app_key TEXT NOT NULL,
-                subject_key TEXT NOT NULL,
-                purpose TEXT NOT NULL,
-                encrypted_value BLOB NOT NULL,
-                revoked INTEGER NOT NULL DEFAULT 0,
-                updated_at REAL NOT NULL,
-                PRIMARY KEY (app_key, subject_key, purpose)
-            );
-            """
-        )
-        _ensure_columns(
-            conn,
-            "oauth_credentials",
-            {"revoked": "INTEGER NOT NULL DEFAULT 0"},
         )
 
         # Backfill radar source dates and URLs for authoritative releases

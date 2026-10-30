@@ -55,16 +55,14 @@ def _migrate_legacy_oauth_store(target_path: Path):
 class OAuthTokenStore:
     """Store one encrypted credential payload per app, owner, and OAuth purpose."""
 
-    def __init__(self, signing_secret: str, path=None, connection_factory=None):
+    def __init__(self, signing_secret: str, path=None):
         if not isinstance(signing_secret, str) or len(signing_secret) < 32:
             raise ValueError("OAuth token storage requires the configured strong signing secret.")
-        self.connection_factory = connection_factory
         self.path = Path(
             path
             or os.environ.get("YOUTUBE_STRATEGIST_TOKEN_STORE", str(_DEFAULT_PATH))
         )
-        if self.connection_factory is None:
-            _migrate_legacy_oauth_store(self.path)
+        _migrate_legacy_oauth_store(self.path)
         digest = hashlib.sha256(
             ("ai-simplified-lab-oauth-token-store:" + signing_secret).encode("utf-8")
         ).digest()
@@ -85,26 +83,6 @@ class OAuthTokenStore:
             raise ValueError("Unsupported OAuth token purpose.")
 
     def _connect(self):
-        if self.connection_factory is not None:
-            connection = self.connection_factory()
-            try:
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS oauth_credentials (
-                        app_key TEXT NOT NULL,
-                        subject_key TEXT NOT NULL,
-                        purpose TEXT NOT NULL,
-                        encrypted_value BLOB NOT NULL,
-                        revoked INTEGER NOT NULL DEFAULT 0,
-                        updated_at REAL NOT NULL,
-                        PRIMARY KEY (app_key, subject_key, purpose)
-                    )
-                    """
-                )
-            except Exception:
-                pass
-            return connection
-
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(str(self.path), timeout=15)
         connection.execute("PRAGMA busy_timeout = 15000")

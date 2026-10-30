@@ -6,7 +6,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from core.auth import verify_owner_access, is_demo_mode, set_demo_mode
-from core.creator_db import get_db_connection, claim_legacy_owner_records
+from core.creator_db import claim_legacy_owner_records
 from core.vault import VaultManager
 from core.oauth import test_or_refresh_credentials, create_purpose_state, build_flow, YOUTUBE_SCOPES, MEMORY_SCOPES, get_auth_url
 from ui.theme import inject_theme
@@ -140,10 +140,7 @@ def main():
     token_store = None
     if len(state_secret) >= 32:
         try:
-            token_store = oauth_token_store.OAuthTokenStore(
-                state_secret,
-                connection_factory=lambda: get_db_connection(secrets),
-            )
+            token_store = oauth_token_store.OAuthTokenStore(state_secret)
         except Exception:
             token_store = None
 
