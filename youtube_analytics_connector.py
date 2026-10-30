@@ -374,28 +374,33 @@ def rank_channel_video_opportunities(video_rows, *, limit=10):
                 and numeric(row.get("impressions"))
                 and row["impressions"] >= 50
             ):
-                # Reach reports may cover different periods. Compare CTR only within an
-                # identical source date range; when undated, isolate by source file.
+                # Keep rows rather than just values so a video is never compared to itself.
+                # Reach reports may cover different periods; benchmark only within an
+                # identical source date range (or the same source file when undated).
                 period_key = row.get("ctr_period") or f"undated::{row.get('ctr_source') or 'unknown'}"
-                ctr_cohorts.setdefault((group_name, period_key), []).append(row["ctr_percent"])
-
-    ctr_benchmarks = {
-        key: {
-            "ctr_median": median(values) if len(values) >= 3 else None,
-            "ctr_sample_size": len(values),
-        }
-        for key, values in ctr_cohorts.items()
-    }
+                ctr_cohorts.setdefault((group_name, period_key), []).append(row)
 
     ranked = []
     for row in video_rows:
         group_name = row.get("format_group") or "Format unconfirmed"
         benchmark = benchmarks[group_name]
         period_key = row.get("ctr_period") or f"undated::{row.get('ctr_source') or 'unknown'}"
-        ctr_benchmark = ctr_benchmarks.get(
-            (group_name, period_key),
-            {"ctr_median": None, "ctr_sample_size": 0},
-        )
+        peers = [
+            peer for peer in ctr_cohorts.get((group_name, period_key), [])
+            if peer is not row and (
+                not row.get("video_id") or peer.get("video_id") != row.get("video_id")
+            )
+        ]
+        peer_ctr_values = [
+            peer["ctr_percent"] for peer in peers
+            if numeric(peer.get("ctr_percent"))
+            and numeric(peer.get("impressions"))
+            and peer["impressions"] >= 50
+        ]
+        ctr_benchmark = {
+            "ctr_median": median(peer_ctr_values) if len(peer_ctr_values) >= 3 else None,
+            "ctr_sample_size": len(peer_ctr_values),
+        }
         reasons = []
         score = 0
 
@@ -413,7 +418,7 @@ def rank_channel_video_opportunities(video_rows, *, limit=10):
             suffix = f"; report period {period}" if period else ""
             reasons.append(
                 f"Thumbnail CTR is {row['ctr_percent']:.2f}% versus a "
-                f"{ctr_median:.2f}% channel median ({ctr_benchmark['ctr_sample_size']} same-period comparable videos; "
+                f"{ctr_median:.2f}% same-period peer median ({ctr_benchmark['ctr_sample_size']} peer videos; "
                 f"{row['impressions']:,.0f} impressions; {source}{suffix})."
             )
 
