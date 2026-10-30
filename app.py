@@ -79,14 +79,7 @@ def _handle_oauth_callback(secrets, subject, token_store):
                 st.rerun()
 
 
-def main():
-    st.set_page_config(
-        page_title="AI Simplified Lab — YouTube Metadata Copilot",
-        page_icon="▶",
-        layout="wide",
-        initial_sidebar_state="collapsed",
-    )
-
+def render_app():
     # Inject visual styling
     inject_theme()
 
@@ -270,6 +263,21 @@ def main():
         subject=subject,
         is_demo=is_demo,
     )
+
+
+def main():
+    """Run one explicitly registered page and suppress Streamlit's legacy pages/ discovery."""
+    st.set_page_config(
+        page_title="AI Simplified Lab — YouTube Metadata Copilot",
+        page_icon="▶",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    page = st.navigation(
+        [st.Page(render_app, title="Metadata Copilot", icon="▶", default=True)],
+        position="hidden",
+    )
+    page.run()
 
 
 if __name__ == "__main__":
