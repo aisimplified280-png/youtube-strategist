@@ -27,6 +27,15 @@ from ui.components import demo_banner, diff_viewer, char_counter, status_pill, e
 import strategist_chat
 
 
+def _clear_workspace_proposal_state():
+    """Reset proposal, approval digest, and widget input state cleanly."""
+    st.session_state.pop("workspace_proposal", None)
+    st.session_state.pop("workspace_approved_digest", None)
+    st.session_state.pop("prop_title_in", None)
+    st.session_state.pop("prop_desc_in", None)
+    st.session_state.pop("prop_tags_in", None)
+
+
 def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None):
     """Render the Agent Workspace."""
     demo_banner()
@@ -64,8 +73,7 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
     last_active_id = st.session_state.get("workspace_active_video_id")
     if target_video_id and last_active_id and target_video_id != last_active_id:
         st.session_state.pop("workspace_target_context", None)
-        st.session_state.pop("workspace_proposal", None)
-        st.session_state.pop("workspace_approved_digest", None)
+        _clear_workspace_proposal_state()
     if target_video_id:
         st.session_state["workspace_active_video_id"] = target_video_id
 
@@ -106,8 +114,7 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                     st.session_state["pending_optimizer_video_id"] = selected_tuple[0]
                     st.session_state.pop("pending_optimizer_video_title", None)
                     st.session_state.pop("workspace_target_context", None)
-                    st.session_state.pop("workspace_proposal", None)
-                    st.session_state.pop("workspace_approved_digest", None)
+                    _clear_workspace_proposal_state()
                     st.rerun()
 
             st.markdown("<div style='text-align:center; color:#64748B; font-size:0.8rem; margin:6px 0;'>— OR ENTER DIRECT URL / ID —</div>", unsafe_allow_html=True)
@@ -129,7 +136,7 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                     st.session_state["pending_optimizer_video_id"] = resolved_id
                     st.session_state.pop("pending_optimizer_video_title", None)
                     st.session_state.pop("workspace_target_context", None)
-                    st.session_state.pop("workspace_proposal", None)
+                    _clear_workspace_proposal_state()
                     st.rerun()
                 except ValueError as err:
                     st.error(str(err))
@@ -192,6 +199,9 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                         if parsed:
                             st.session_state["workspace_proposal"] = parsed
                             st.session_state.pop("workspace_approved_digest", None)
+                            st.session_state.pop("prop_title_in", None)
+                            st.session_state.pop("prop_desc_in", None)
+                            st.session_state.pop("prop_tags_in", None)
                             st.rerun()
                         else:
                             st.error("AI returned non-standard format. Failing closed without altering proposal.")
@@ -207,6 +217,9 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                     "rationale": "Reset to YouTube published values.",
                 }
                 st.session_state.pop("workspace_approved_digest", None)
+                st.session_state.pop("prop_title_in", None)
+                st.session_state.pop("prop_desc_in", None)
+                st.session_state.pop("prop_tags_in", None)
                 st.rerun()
 
         # Editable fields
@@ -371,9 +384,9 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                                         st.toast("Experiment logged to Google Sheets memory!")
                                     except Exception:
                                         pass
-                                # Refresh context
+                                # Refresh context and reset proposal widget state cleanly
                                 st.session_state.pop("workspace_target_context", None)
-                                st.session_state.pop("workspace_approved_digest", None)
+                                _clear_workspace_proposal_state()
                             else:
                                 st.error(f"Apply failed: {res.get('message', 'Unknown error')}")
 

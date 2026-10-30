@@ -76,13 +76,17 @@ def render_today(
     status = briefing.get("status", "ready")
     notice = briefing.get("notice")
 
-    # Explicit status banners for stale, scan failure, or connection failure
+    # Explicit status banners for stale, scan failure, connection failure, insufficient metrics, or pending
     if status == "connection_failure":
         st.warning(f"⚠️ {notice or 'YouTube authorization is missing or disconnected. Please connect YouTube in Settings.'}")
     elif status == "scan_failed":
         st.error(f"❌ Channel scan failed: {notice or 'API exception occurred during scan.'}")
     elif status in ("stale", "refresh_failed"):
         st.warning(f"⚠️ Refresh Notice: {notice or 'Using prior briefing.'}")
+    elif status in ("insufficient_metrics", "unavailable_metrics"):
+        st.warning(f"⚠️ Insufficient Analytics Data: {notice or 'YouTube Analytics metrics are unavailable or delayed for recent uploads.'}")
+    elif status == "pending":
+        st.info("⏳ Daily briefing scan is currently in progress. Please check back shortly.")
     elif notice:
         st.info(notice)
 
@@ -119,9 +123,15 @@ def render_today(
 
     actions = briefing.get("prioritized_actions", [])
     if not actions:
-        if status == "insufficient_sample":
+        if status == "pending":
+            st.info("⏳ Daily briefing scan is currently in progress. Please check back shortly.")
+        elif status == "insufficient_sample":
             st.info(
                 f"ℹ️ {notice or 'Insufficient sample size. At least 3 format-matched uploads are needed for peer benchmarking.'}"
+            )
+        elif status in ("insufficient_metrics", "unavailable_metrics"):
+            st.warning(
+                f"⚠️ {notice or 'Analytics metrics are unavailable or delayed for recent uploads. Cannot benchmark performance without valid metrics.'}"
             )
         elif status == "connection_failure":
             st.info("Connect YouTube in Settings or explore in Demo Mode to view prioritized growth actions.")
@@ -129,6 +139,8 @@ def render_today(
             st.warning("Action cards unavailable due to channel scan failure. Check your API credentials and network connection.")
         elif summary.get("total_recent_videos", 0) == 0:
             st.info("No video uploads detected in the last 90 days.")
+        elif summary.get("measured_videos_count", 0) < 3:
+            st.warning("⚠️ Analytics metrics are unavailable or delayed for recent uploads. Cannot benchmark performance without valid metrics.")
         else:
             st.info("No underperforming videos detected in the current window. All recent uploads are performing in line with or above peer medians.")
     else:
@@ -228,17 +240,25 @@ def render_today(
             r_date = html.escape(r.get("source_date") or r.get("discovered_date", ""))
             r_cached = r.get("is_cached", False)
             cache_tag = " [Cached]" if r_cached else ""
+            is_live = r.get("is_live_ingested", False)
+            source_badge = "Live Research" if is_live else "Curated Benchmark"
+            badge_color = "#38BDF8" if is_live else "#A78BFA"
+            badge_bg = "rgba(56, 189, 248, 0.15)" if is_live else "rgba(167, 139, 250, 0.15)"
+            badge_border = "rgba(56, 189, 248, 0.3)" if is_live else "rgba(167, 139, 250, 0.3)"
 
             with st.container(border=True):
                 col_r1, col_r2 = st.columns([3, 1])
                 with col_r1:
                     st.markdown(
                         f"""
-                        <div style="margin-bottom: 4px;">
+                        <div style="margin-bottom: 4px; display: flex; align-items: center; gap: 8px;">
+                            <span style="background: {badge_bg}; color: {badge_color}; border: 1px solid {badge_border}; border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;">
+                                {source_badge}
+                            </span>
                             <span style="background: rgba(16, 185, 129, 0.15); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;">
                                 {r_cat}
                             </span>
-                            <span style="color: #94A3B8; font-size: 0.78rem; margin-left: 8px;">Source Date: {r_date}{cache_tag}</span>
+                            <span style="color: #94A3B8; font-size: 0.78rem;">Source Date: {r_date}{cache_tag}</span>
                         </div>
                         <h4 style="margin: 4px 0 6px 0; font-size: 1.1rem; font-weight: 700;">
                             <a href="{r_url}" target="_blank" style="color: #FFFFFF; text-decoration: none;">{r_title} ↗</a>

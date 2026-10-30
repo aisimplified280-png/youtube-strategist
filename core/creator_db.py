@@ -27,18 +27,47 @@ from core.demo_data import (
 DEFAULT_OWNER_ID = "default_owner"
 
 
+def _migrate_legacy_db_file_if_needed(target_path: Path):
+    """If target DB file does not exist, check for legacy DB files and copy."""
+    try:
+        if target_path.exists():
+            return
+        legacy_repo_path = Path(__file__).resolve().parent.parent / "data" / "creator_growth_memory.sqlite3"
+        if legacy_repo_path.exists() and legacy_repo_path.stat().st_size > 0:
+            import shutil
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_repo_path, target_path)
+    except Exception:
+        pass
+
+
 def get_db_path() -> Path:
-    """Return durable managed database path, honoring environment override."""
+    """Return managed database path honoring environment overrides and secrets.
+    
+    NOTE: On ephemeral platforms (e.g. Streamlit Community Cloud), local container
+    storage resets across redeployments. Set CREATOR_GROWTH_DB_PATH to a mounted
+    persistent storage volume path or external database for durability.
+    """
     env_path = os.environ.get("CREATOR_GROWTH_DB_PATH")
+    if not env_path:
+        try:
+            import streamlit as st
+            env_path = getattr(st, "secrets", {}).get("CREATOR_GROWTH_DB_PATH")
+        except Exception:
+            env_path = None
+
     if env_path:
         p = Path(env_path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        _migrate_legacy_db_file_if_needed(p)
         return p
 
     durable_dir = Path.home() / ".creator_growth_agent"
     try:
         durable_dir.mkdir(parents=True, exist_ok=True)
-        return durable_dir / "creator_growth_memory.sqlite3"
+        p = durable_dir / "creator_growth_memory.sqlite3"
+        _migrate_legacy_db_file_if_needed(p)
+        return p
     except Exception:
         fallback = Path(__file__).resolve().parent.parent / "data" / "creator_growth_memory.sqlite3"
         fallback.parent.mkdir(parents=True, exist_ok=True)
@@ -109,16 +138,46 @@ def _init_db(conn: sqlite3.Connection):
             {"owner_id": "TEXT NOT NULL DEFAULT 'default_owner'"},
         )
 
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS creator_preferences (
-                owner_id TEXT NOT NULL DEFAULT 'default_owner',
-                pref_key TEXT NOT NULL,
-                pref_value TEXT NOT NULL,
-                updated_at_utc TEXT NOT NULL,
-                PRIMARY KEY (owner_id, pref_key)
-            );
-            """
+        # Check if creator_preferences exists without owner_id column (legacy migration)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(creator_preferences)")
+        pref_cols = {row[1] for row in cur.fetchall()}
+        if pref_cols and "owner_id" not in pref_cols:
+            conn.execute("ALTER TABLE creator_preferences RENAME TO _legacy_creator_preferences")
+            conn.execute(
+                """
+                CREATE TABLE creator_preferences (
+                    owner_id TEXT NOT NULL DEFAULT 'default_owner',
+                    pref_key TEXT NOT NULL,
+                    pref_value TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    PRIMARY KEY (owner_id, pref_key)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO creator_preferences (owner_id, pref_key, pref_value, updated_at_utc)
+                SELECT 'default_owner', pref_key, pref_value, updated_at_utc FROM _legacy_creator_preferences;
+                """
+            )
+            conn.execute("DROP TABLE _legacy_creator_preferences;")
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS creator_preferences (
+                    owner_id TEXT NOT NULL DEFAULT 'default_owner',
+                    pref_key TEXT NOT NULL,
+                    pref_value TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    PRIMARY KEY (owner_id, pref_key)
+                );
+                """
+            )
+        _ensure_columns(
+            conn,
+            "creator_preferences",
+            {"owner_id": "TEXT NOT NULL DEFAULT 'default_owner'"},
         )
 
         conn.execute(
@@ -176,7 +235,9 @@ def _init_db(conn: sqlite3.Connection):
                 discovered_date TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 video_angles_json TEXT NOT NULL,
-                status TEXT DEFAULT 'active'
+                status TEXT DEFAULT 'active',
+                source_type TEXT DEFAULT 'curated_reference',
+                is_live_ingested INTEGER DEFAULT 0
             );
             """
         )
@@ -189,6 +250,8 @@ def _init_db(conn: sqlite3.Connection):
                 "retrieved_at_utc": "TEXT DEFAULT ''",
                 "channel_relevance": "TEXT DEFAULT ''",
                 "discovered_date": "TEXT DEFAULT ''",
+                "source_type": "TEXT DEFAULT 'curated_reference'",
+                "is_live_ingested": "INTEGER DEFAULT 0",
             },
         )
 
@@ -670,7 +733,7 @@ def get_radar_items(
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, summary, video_angles_json, status, discovered_date 
+            SELECT id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, summary, video_angles_json, status, discovered_date, source_type, is_live_ingested 
             FROM research_radar WHERE owner_id = ? AND status = ? ORDER BY discovered_date DESC LIMIT ?
             """,
             (oid, status, limit)
@@ -690,6 +753,8 @@ def get_radar_items(
                 "video_angles": json.loads(r[8]) if r[8] else [],
                 "status": r[9],
                 "discovered_date": r[10] if len(r) > 10 else "",
+                "source_type": r[11] if len(r) > 11 and r[11] else "curated_reference",
+                "is_live_ingested": bool(r[12]) if len(r) > 12 and r[12] is not None else False,
                 "is_cached": True,
             })
         return items
@@ -708,6 +773,8 @@ def save_radar_item(
     source_date: Optional[str] = None,
     retrieved_at_utc: Optional[str] = None,
     channel_relevance: str = "",
+    source_type: str = "curated_reference",
+    is_live_ingested: bool = False,
     owner_id: Optional[str] = None,
     is_demo: bool = False,
 ) -> None:
@@ -728,10 +795,10 @@ def save_radar_item(
             conn.execute(
                 """
                 INSERT OR REPLACE INTO research_radar 
-                (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json, status, source_type, is_live_ingested)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                 """,
-                (item_id, oid, title, source_url, category, src_date, now_utc, channel_relevance, date_str, summary, json.dumps(video_angles))
+                (item_id, oid, title, source_url, category, src_date, now_utc, channel_relevance, date_str, summary, json.dumps(video_angles), source_type, 1 if is_live_ingested else 0)
             )
     finally:
         conn.close()

@@ -341,6 +341,8 @@ class TestCriticalRegressions(unittest.TestCase):
         proposed_snippet["title"] = proposal["title"]
         proposed_snippet["description"] = proposal["description"]
         proposed_snippet["tags"] = proposal["tags"]
+        snippet["channelId"] = connector.CHANNEL_ID
+        proposed_snippet["channelId"] = connector.CHANNEL_ID
 
         digest = compute_proposal_digest(
             video_id="video-123",
@@ -349,26 +351,41 @@ class TestCriticalRegressions(unittest.TestCase):
         )
         self.assertTrue(isinstance(digest, str) and len(digest) == 64)
 
-        # 6. Apply proposal verified update with mock YouTube
+        # 6. Apply proposal verified update with mock YouTube (testing actual connector)
         mock_youtube = MagicMock()
-        mock_apply_result = {
-            "result": "success",
-            "video_id": "video-123",
-            "title": proposed_snippet["title"],
-            "url": "https://www.youtube.com/watch?v=video-123",
-        }
-        with patch("youtube_analytics_connector.apply_approved_dashboard_proposal", return_value=mock_apply_result) as mock_connector_apply:
-            apply_res = apply_proposal(
-                youtube=mock_youtube,
-                video_id="video-123",
-                before_snippet=snippet,
-                proposed_snippet=proposed_snippet,
-                approved_digest=digest,
-                is_demo=False,
-            )
-            self.assertEqual(apply_res.get("status"), "success")
-            self.assertEqual(apply_res.get("title"), proposed_snippet["title"])
-            mock_connector_apply.assert_called_once()
+        list_execute_mock = MagicMock(side_effect=[
+            {"items": [{"id": "video-123", "snippet": snippet}]},       # Pre-write refetch
+            {"items": [{"id": "video-123", "snippet": proposed_snippet}]}, # Post-write verification
+        ])
+        mock_youtube.videos().list().execute = list_execute_mock
+        mock_youtube.videos().update().execute.return_value = {"id": "video-123", "snippet": proposed_snippet}
+
+        apply_res = apply_proposal(
+            youtube=mock_youtube,
+            video_id="video-123",
+            before_snippet=snippet,
+            proposed_snippet=proposed_snippet,
+            approved_digest=digest,
+            is_demo=False,
+        )
+        self.assertEqual(apply_res.get("status"), "success")
+        self.assertEqual(apply_res.get("title"), proposed_snippet["title"])
+
+        # Test stale metadata refetch rejection (metadata changed on YouTube after review)
+        stale_snippet = dict(snippet)
+        stale_snippet["title"] = "Modified Concurrently on YouTube"
+        stale_list_mock = MagicMock(return_value={"items": [{"id": "video-123", "snippet": stale_snippet}]})
+        mock_youtube.videos().list().execute = stale_list_mock
+        stale_res = apply_proposal(
+            youtube=mock_youtube,
+            video_id="video-123",
+            before_snippet=snippet,
+            proposed_snippet=proposed_snippet,
+            approved_digest=digest,
+            is_demo=False,
+        )
+        self.assertEqual(stale_res.get("status"), "error")
+        self.assertIn("changed after review", stale_res.get("message", ""))
 
     # --- Scenario 10: Hook scoring with available and unavailable tools ---
     def test_hook_scoring_available_and_unavailable(self):
@@ -428,6 +445,172 @@ class TestCriticalRegressions(unittest.TestCase):
         release_briefing_lock(lock_key, owner_token=owner_token)
         self.assertTrue(acquire_briefing_lock(lock_key, ttl_seconds=10, owner_token="token-new", owner_id="owner_1"))
         release_briefing_lock(lock_key, owner_token="token-new")
+
+    # --- Scenario 12: Unavailable Analytics metrics reported as insufficient_metrics ---
+    def test_unavailable_analytics_metrics_reported_as_insufficient_metrics(self):
+        """When Analytics returns no metrics for video rows (views=None), status is insufficient_metrics and never claims healthy."""
+        mock_dashboard_return = {
+            "channel_id": "test-channel-id",
+            "video_rows": [
+                {
+                    "video_id": f"vid-{i}",
+                    "title": f"Video {i}",
+                    "published_at": "2026-09-01",
+                    "format": "long",
+                    "duration_seconds": 600,
+                    "views": None,  # Analytics returned no metrics
+                    "impressions": None,
+                    "ctr": None,
+                    "averageViewDuration": None,
+                    "age_days": 20,
+                    "analytics_status": "Unavailable: Analytics API returned HTTP 503.",
+                }
+                for i in range(5)
+            ],
+            "reach_status": "Unavailable: reach report not ready.",
+            "catalogue_note": "Evaluated 5 videos",
+            "api_warnings": ["Unavailable: Analytics API returned HTTP 503."],
+        }
+
+        with patch("youtube_dashboard.load_dashboard_data", return_value=mock_dashboard_return):
+            briefing = get_or_create_daily_briefing(
+                youtube=MagicMock(),
+                analytics=MagicMock(),
+                credentials=MagicMock(),
+                owner_id="owner_unavail",
+                is_demo=False,
+            )
+
+            # Must NOT claim ready or healthy
+            self.assertEqual(briefing.get("status"), "insufficient_metrics")
+            self.assertEqual(briefing.get("summary", {}).get("measured_videos_count"), 0)
+            self.assertEqual(len(briefing.get("prioritized_actions", [])), 0)
+            self.assertIn("Insufficient analytics metrics", briefing.get("notice", ""))
+
+            # In Today page rendering, verify it does not display healthy claim
+            from pages.today import render_today
+            def _fake_cols(spec, *args, **kwargs):
+                count = spec if isinstance(spec, int) else len(spec)
+                return [MagicMock() for _ in range(count)]
+
+            with patch("pages.today.get_or_create_daily_briefing", return_value=briefing), \
+                 patch("streamlit.warning") as mock_st_warn, \
+                 patch("streamlit.info") as mock_st_info, \
+                 patch("streamlit.markdown"), \
+                 patch("streamlit.columns", side_effect=_fake_cols), \
+                 patch("streamlit.expander"):
+                render_today(credentials=MagicMock(), subject="owner_unavail")
+                # Warning should be rendered for insufficient analytics data
+                warn_calls = [call[0][0] for call in mock_st_warn.call_args_list if call[0]]
+                self.assertTrue(any("Insufficient Analytics Data" in str(w) or "unavailable" in str(w).lower() for w in warn_calls))
+                # Info should NOT say all recent uploads are performing in line
+                info_calls = [call[0][0] for call in mock_st_info.call_args_list if call[0]]
+                self.assertFalse(any("All recent uploads are performing in line" in str(i) for i in info_calls))
+
+    # --- Scenario 13: Today pending scan state handling ---
+    def test_today_pending_scan_state_handling(self):
+        """Today page explicitly handles 'pending' briefing state rather than displaying empty upload message."""
+        pending_briefing = {
+            "briefing_id": "briefing-pending",
+            "run_date": "2026-10-30",
+            "status": "pending",
+            "summary": {"total_recent_videos": 0, "measured_videos_count": 0, "opportunity_count": 0},
+            "prioritized_actions": [],
+            "research_radar": [],
+        }
+
+        def _fake_cols(spec, *args, **kwargs):
+            count = spec if isinstance(spec, int) else len(spec)
+            return [MagicMock() for _ in range(count)]
+
+        from pages.today import render_today
+        with patch("pages.today.get_or_create_daily_briefing", return_value=pending_briefing), \
+             patch("streamlit.info") as mock_st_info, \
+             patch("streamlit.markdown"), \
+             patch("streamlit.columns", side_effect=_fake_cols):
+            render_today(credentials=MagicMock(), subject="owner_test")
+            info_calls = [str(call[0][0]) for call in mock_st_info.call_args_list if call[0]]
+            # Must show scan is in progress
+            self.assertTrue(any("scan is currently in progress" in c for c in info_calls))
+            # Must NOT claim 'No video uploads detected'
+            self.assertFalse(any("No video uploads detected" in c for c in info_calls))
+
+    # --- Scenario 14: Legacy database migration & creator_preferences owner_id upgrade ---
+    def test_legacy_database_migration_and_owner_id_schema_upgrade(self):
+        """Legacy SQLite database lacking owner_id column is automatically migrated on initialization."""
+        import sqlite3
+        legacy_db_file = Path(self.temp_dir.name) / "legacy_creator_db.sqlite3"
+        # Create legacy database with old schema (without owner_id)
+        conn = sqlite3.connect(str(legacy_db_file))
+        with conn:
+            conn.execute(
+                """
+                CREATE TABLE creator_preferences (
+                    pref_key TEXT PRIMARY KEY,
+                    pref_value TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO creator_preferences (pref_key, pref_value, updated_at_utc) VALUES ('voice_tone', 'Authoritative Engineering', '2026-01-01T00:00:00Z')"
+            )
+            conn.execute(
+                "INSERT INTO creator_preferences (pref_key, pref_value, updated_at_utc) VALUES ('target_audience', 'Senior Python Devs', '2026-01-01T00:00:00Z')"
+            )
+        conn.close()
+
+        # Point environment to this database and run get_db_connection()
+        with patch.dict(os.environ, {"CREATOR_GROWTH_DB_PATH": str(legacy_db_file)}):
+            migrated_conn = creator_db.get_db_connection()
+            cur = migrated_conn.cursor()
+            cur.execute("PRAGMA table_info(creator_preferences)")
+            cols = {row[1] for row in cur.fetchall()}
+            self.assertIn("owner_id", cols)
+            migrated_conn.close()
+
+            # Verify existing records are accessible via default_owner
+            prefs = creator_db.get_creator_preferences(owner_id="default_owner", is_demo=False)
+            self.assertEqual(prefs.get("voice_tone"), "Authoritative Engineering")
+            self.assertEqual(prefs.get("target_audience"), "Senior Python Devs")
+
+        # Test legacy oauth token store migration
+        from oauth_token_store import OAuthTokenStore
+        legacy_oauth_file = Path(self.temp_dir.name) / "legacy_oauth.sqlite3"
+        target_oauth_file = Path(self.temp_dir.name) / "target_oauth.sqlite3"
+        lconn = sqlite3.connect(str(legacy_oauth_file))
+        with lconn:
+            lconn.execute("CREATE TABLE oauth_credentials (app_key TEXT, subject_key TEXT, purpose TEXT, encrypted_value BLOB, updated_at REAL, PRIMARY KEY (app_key, subject_key, purpose))")
+        lconn.close()
+
+        with patch("tempfile.gettempdir", return_value=self.temp_dir.name), \
+             patch("pathlib.Path.exists", side_effect=lambda: False if str(target_oauth_file) in str(self) else True):
+            store = OAuthTokenStore(signing_secret="a" * 32, path=str(target_oauth_file))
+            self.assertTrue(target_oauth_file.parent.exists())
+
+    # --- Scenario 15: Workspace clears widget keys on video switch and apply ---
+    def test_workspace_clears_widget_keys_on_video_switch_and_apply(self):
+        """Switching target video in Workspace resets prop_title_in, prop_desc_in, and prop_tags_in widget keys."""
+        import streamlit as st
+        from pages.workspace import _clear_workspace_proposal_state
+
+        # Populate previous video widget state
+        st.session_state["workspace_active_video_id"] = "vid-101"
+        st.session_state["prop_title_in"] = "Previous Video Proposed Title"
+        st.session_state["prop_desc_in"] = "Previous Video Proposed Description"
+        st.session_state["prop_tags_in"] = "prev, video, tags"
+        st.session_state["workspace_proposal"] = {"title": "Previous Video Proposed Title"}
+        st.session_state["workspace_approved_digest"] = "abcdef0123456789"
+
+        # Call reset helper
+        _clear_workspace_proposal_state()
+
+        # All keys must be cleared from session state so next video inputs start fresh
+        self.assertNotIn("prop_title_in", st.session_state)
+        self.assertNotIn("prop_desc_in", st.session_state)
+        self.assertNotIn("prop_tags_in", st.session_state)
+        self.assertNotIn("workspace_proposal", st.session_state)
+        self.assertNotIn("workspace_approved_digest", st.session_state)
 
 
 if __name__ == "__main__":

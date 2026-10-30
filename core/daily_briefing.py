@@ -35,44 +35,50 @@ from core.demo_data import (
 )
 import youtube_dashboard
 
-# Curated authoritative AI discoveries for research ingestion
+# Curated authoritative AI benchmarks and reference discoveries
 AUTHORITATIVE_AI_RADAR_SOURCES = [
     {
         "id": "radar-gemini-1.5-flash-8b",
         "title": "Gemini 1.5 Flash-8B Production Benchmarks",
         "source_url": "https://deepmind.google/technologies/gemini/",
         "category": "model_release",
-        "source_date": "2026-10-03",
+        "source_date": "2024-10-03",
         "channel_relevance": "Sub-second token latency allows real-time multi-agent routing at 50% lower cost than 4o-mini; prime tutorial for AI Simplified Lab.",
         "summary": "Lightweight high-speed model with sub-second latency for agent pipelines and prompt caching.",
         "video_angles": [
             {"angle": "Speed & Cost Breakdown", "pitch": "Benchmark latency vs Groq and GPT-4o-mini in a live agent demo."},
             {"angle": "Context Caching Tutorial", "pitch": "Cut production token costs by 80% using context caching in Python."}
         ],
+        "source_type": "curated_reference",
+        "is_live_ingested": False,
     },
     {
         "id": "radar-crewai-flows",
         "title": "CrewAI Flows Architecture Release",
         "source_url": "https://github.com/crewAIInc/crewAI",
         "category": "agent_tool",
-        "source_date": "2026-10-15",
+        "source_date": "2024-10-15",
         "channel_relevance": "Deterministic routing and state machines solve unconstrained agent hallucination loops, matching our engineering audience.",
         "summary": "Deterministic state management and flow control for multi-agent workflows.",
         "video_angles": [
             {"angle": "Structured vs Unstructured Agents", "pitch": "Why deterministic routing stops agent infinite hallucination loops."}
         ],
+        "source_type": "curated_reference",
+        "is_live_ingested": False,
     },
     {
         "id": "radar-llama-3.2-edge",
         "title": "Llama 3.2 1B & 3B Lightweight Edge Models",
         "source_url": "https://ai.meta.com/blog/llama-3-2-connect-2024/",
         "category": "model_release",
-        "source_date": "2026-09-25",
+        "source_date": "2024-09-25",
         "channel_relevance": "On-device local LLM execution in Python without GPU clusters or cloud fees, highly requested by channel subscribers.",
         "summary": "Small footprint models designed for edge execution and lightweight local reasoning tasks.",
         "video_angles": [
             {"angle": "Run 3B Models Locally on CPU", "pitch": "How to deploy Llama 3.2 locally using Ollama and Python in under 5 minutes."}
         ],
+        "source_type": "curated_reference",
+        "is_live_ingested": False,
     },
 ]
 
@@ -219,13 +225,25 @@ def _generate_briefing_data(
         extend_briefing_lock(lock_key, lock_token, extend_seconds=90)
 
     # B. Deterministic Candidate Ranking
-    # Distinguish insufficient sample size from genuinely healthy channel
+    # Distinguish insufficient sample size, insufficient metrics, and healthy channel
+    measured_video_rows = [
+        row for row in video_rows
+        if isinstance(row.get("views"), (int, float)) and row["views"] > 0
+    ]
+
     if len(video_rows) < 3:
         status = "insufficient_sample"
         ranked_candidates = []
         notice = (
             f"Insufficient sample size: {len(video_rows)} video(s) found in the 90-day window. "
             "At least 3 format-matched uploads are needed for peer benchmarking."
+        )
+    elif len(measured_video_rows) < 3:
+        status = "insufficient_metrics"
+        ranked_candidates = []
+        notice = (
+            f"Insufficient analytics metrics: only {len(measured_video_rows)} of {len(video_rows)} video(s) "
+            "have verified view metrics. YouTube Analytics data may be delayed, pending, or unavailable."
         )
     else:
         # Feed only correctly measured data into rank_optimization_candidates()
@@ -365,6 +383,7 @@ def _generate_briefing_data(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "total_recent_videos": len(video_rows),
+            "measured_videos_count": len(measured_video_rows),
             "opportunity_count": len(ranked_candidates),
             "reach_reporting_active": reach_available,
         },
@@ -382,14 +401,85 @@ def _generate_briefing_data(
     return briefing_dict
 
 
+def _fetch_live_arxiv_research(limit: int = 3, timeout_seconds: float = 3.5) -> List[Dict[str, Any]]:
+    """Retrieve genuine recent AI research publications from arXiv API with full provenance."""
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    url = (
+        f"http://export.arxiv.org/api/query?search_query=cat:cs.AI+OR+cat:cs.CL"
+        f"&start=0&max_results={limit}&sortBy=submittedDate&sortOrder=descending"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "CreatorGrowthAgent/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            if resp.status != 200:
+                return []
+            root = ET.fromstring(resp.read())
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        items = []
+        now_utc = datetime.now(timezone.utc).isoformat()
+        for entry in root.findall("atom:entry", ns):
+            title_elem = entry.find("atom:title", ns)
+            pub_elem = entry.find("atom:published", ns)
+            id_elem = entry.find("atom:id", ns)
+            summary_elem = entry.find("atom:summary", ns)
+
+            raw_title = (
+                title_elem.text.strip().replace("\n", " ")
+                if title_elem is not None and title_elem.text
+                else "Untitled Paper"
+            )
+            pub_date = (
+                pub_elem.text[:10]
+                if pub_elem is not None and pub_elem.text
+                else datetime.now(timezone.utc).date().isoformat()
+            )
+            paper_url = (
+                id_elem.text.strip()
+                if id_elem is not None and id_elem.text
+                else "https://arxiv.org"
+            )
+            arxiv_id = paper_url.split("/abs/")[-1] if "/abs/" in paper_url else str(abs(hash(paper_url)))
+            paper_summary = (
+                summary_elem.text.strip().replace("\n", " ")[:240] + "..."
+                if summary_elem is not None and summary_elem.text
+                else ""
+            )
+
+            items.append({
+                "id": f"radar-arxiv-{arxiv_id}",
+                "title": raw_title,
+                "source_url": paper_url,
+                "category": "research_paper",
+                "source_date": pub_date,
+                "retrieved_at_utc": now_utc,
+                "channel_relevance": (
+                    "Recent arXiv preprint in AI/ML; evaluate for an architectural teardown or hands-on tutorial on AI Simplified Lab."
+                ),
+                "summary": paper_summary,
+                "video_angles": [
+                    {
+                        "angle": "Paper Deep-Dive & Code Teardown",
+                        "pitch": f"Explain '{raw_title[:45]}...' and build an open-source reproduction in Python.",
+                    }
+                ],
+                "source_type": "live_research",
+                "is_live_ingested": True,
+            })
+        return items
+    except Exception:
+        return []
+
+
 def _ingest_and_load_radar(owner_id: Optional[str], run_date: str) -> List[Dict[str, Any]]:
-    """Genuine research ingestion process: ingests authoritative AI releases and returns radar items."""
-    now_utc = datetime.now(timezone.utc).isoformat()
-    # Ingest verified authoritative updates with provenance if not already in DB
+    """Genuine research ingestion process: ingests live AI research or curated benchmarks with accurate provenance."""
     existing = get_radar_items(owner_id=owner_id, is_demo=False)
     existing_ids = {it.get("id") for it in existing}
 
-    for item in AUTHORITATIVE_AI_RADAR_SOURCES:
+    # 1. Attempt live arXiv research retrieval
+    live_items = _fetch_live_arxiv_research(limit=3)
+    for item in live_items:
         if item["id"] not in existing_ids:
             try:
                 save_radar_item(
@@ -401,23 +491,54 @@ def _ingest_and_load_radar(owner_id: Optional[str], run_date: str) -> List[Dict[
                     video_angles=item["video_angles"],
                     discovered_date=run_date,
                     source_date=item.get("source_date", run_date),
-                    retrieved_at_utc=now_utc,
+                    retrieved_at_utc=item.get("retrieved_at_utc"),
                     channel_relevance=item.get("channel_relevance", ""),
+                    source_type=item.get("source_type", "live_research"),
+                    is_live_ingested=True,
                     owner_id=owner_id,
                     is_demo=False,
                 )
+                existing_ids.add(item["id"])
             except Exception:
                 pass
 
-    # Retrieve all active radar items with provenance
+    # 2. Ingest curated reference benchmarks if live research yielded no new records
+    if not existing:
+        for item in AUTHORITATIVE_AI_RADAR_SOURCES:
+            if item["id"] not in existing_ids:
+                try:
+                    save_radar_item(
+                        item_id=item["id"],
+                        title=item["title"],
+                        source_url=item["source_url"],
+                        category=item["category"],
+                        summary=item["summary"],
+                        video_angles=item["video_angles"],
+                        discovered_date=run_date,
+                        source_date=item.get("source_date", "2024-10-01"),
+                        retrieved_at_utc="2024-10-15T00:00:00Z",
+                        channel_relevance=item.get("channel_relevance", ""),
+                        source_type="curated_reference",
+                        is_live_ingested=False,
+                        owner_id=owner_id,
+                        is_demo=False,
+                    )
+                except Exception:
+                    pass
+
+    # Retrieve active radar items from database
     items = get_radar_items(limit=3, owner_id=owner_id, is_demo=False)
     if not items:
-        # Fallback to direct authoritative sources
+        # Fallback to direct items with accurate flags
+        if live_items:
+            return live_items[:3]
         return [
             {
                 **src,
-                "retrieved_at_utc": now_utc,
+                "retrieved_at_utc": "2024-10-15T00:00:00Z",
                 "discovered_date": run_date,
+                "source_type": "curated_reference",
+                "is_live_ingested": False,
                 "is_cached": False,
             }
             for src in AUTHORITATIVE_AI_RADAR_SOURCES[:3]
