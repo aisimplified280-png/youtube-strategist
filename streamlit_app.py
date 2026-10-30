@@ -6,7 +6,7 @@ Also exports _resolve_video_title for backward compatibility.
 
 import re
 import streamlit as st
-from app import main
+from app import render_app
 
 # Secondary navigation & return markers for UX compatibility
 # asl_sidebar_view_selector
@@ -89,6 +89,21 @@ def _resolve_video_title(video_id: str | None = None, title_hint: str | None = N
             pass
 
     return "Video title unavailable"
+
+
+def main():
+    """Use the single Metadata Copilot page; ignore all legacy pages/ routes."""
+    st.set_page_config(
+        page_title="AI Simplified Lab — YouTube Metadata Copilot",
+        page_icon="▶",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    page = st.navigation(
+        [st.Page(render_app, title="Metadata Copilot", icon="▶", default=True)],
+        position="hidden",
+    )
+    page.run()
 
 
 if __name__ == "__main__":
