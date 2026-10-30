@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from core.auth import is_demo_mode, set_demo_mode, verify_owner_access
+from core.auth import set_demo_mode, verify_owner_access
 from core.linter import lint_title, lint_description, lint_tags, lint_proposal, score_hook_text
 from core.prompts import build_strategist_prompt
 from core.llm import parse_proposal_json, LLMRouter, LLMError
@@ -91,16 +91,18 @@ class CoreLLMRouterTests(unittest.TestCase):
 
 
 class CoreAuthTests(unittest.TestCase):
-    def test_demo_mode_bypasses_owner_check(self):
-        set_demo_mode(True)
-        self.assertTrue(is_demo_mode())
-        auth, subject, err = verify_owner_access({})
-        self.assertTrue(auth)
-        self.assertIsNone(err)
-        set_demo_mode(False)
+    def test_retired_demo_mode_cannot_be_enabled_or_bypass_owner_check(self):
+        with self.assertRaises(RuntimeError):
+            set_demo_mode(True)
+        secrets = {"access": {"owner_email": "owner@channel.com"}}
+        user_mock = Mock(email="owner@channel.com", email_verified=False, is_logged_in=True)
+        with patch("core.auth.st.user", user_mock):
+            auth, subject, err = verify_owner_access(secrets)
+        self.assertFalse(auth)
+        self.assertIsNone(subject)
+        self.assertIn("Access denied", err)
 
     def test_unverified_owner_denied(self):
-        set_demo_mode(False)
         secrets = {"access": {"owner_email": "owner@channel.com"}}
         user_mock = Mock(email="owner@channel.com", email_verified=False, is_logged_in=True)
         with patch("core.auth.st.user", user_mock):
