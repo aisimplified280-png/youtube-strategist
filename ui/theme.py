@@ -39,7 +39,8 @@ def inject_theme():
         /* Container constraints & padding - Claude-inspired central column (850-900px) */
         .block-container {
             max-width: 880px !important;
-            padding-top: 1.25rem !important;
+            /* Keep the app's own brand/status controls clear of Streamlit's fixed header. */
+            padding-top: 4.5rem !important;
             padding-bottom: 5rem !important;
             padding-left: 1.25rem !important;
             padding-right: 1.25rem !important;
@@ -375,7 +376,7 @@ def inject_theme():
             .block-container {
                 max-width: 100% !important;
                 overflow-x: hidden !important;
-                padding-top: 0.75rem !important;
+                padding-top: 4.25rem !important;
                 padding-left: 0.75rem !important;
                 padding-right: 0.75rem !important;
                 padding-bottom: 7rem !important;
