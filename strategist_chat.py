@@ -235,78 +235,16 @@ def _transcript_text(video_id: str) -> Tuple[str, str]:
         return "", "No accessible transcript; analysis uses public metadata only."
 
 
-def _get_demo_video_details(
-    video_id: str,
-    owner_channel_id: Optional[str] = None,
-    is_short_url: bool = False,
-) -> Dict[str, Any]:
-    """Generate realistic demo video fixtures for testing without credentials."""
-    target_id = video_id if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) else "demo-vid-101"
-    snippet = {
-        "title": "LLM Prompt Caching Explained with Python",
-        "description": "In this video we talk about prompt caching and how it works with language models.\n\nSubscribe for more AI tutorials.",
-        "tags": ["llm", "ai", "python", "prompt caching", "caching"],
-        "categoryId": "28",
-        "channelId": owner_channel_id or getattr(connector, "CHANNEL_ID", "UC_DEMO_CHANNEL"),
-        "channelTitle": "AI Simplified Lab",
-        "publishedAt": "2026-09-18T14:00:00Z",
-        "thumbnails": {
-            "high": {"url": f"https://i.ytimg.com/vi/{target_id}/hqdefault.jpg"},
-            "default": {"url": f"https://i.ytimg.com/vi/{target_id}/default.jpg"},
-        },
-    }
-    dur_sec = 45 if is_short_url else 640
-    dur_fmt = "0:45" if is_short_url else "10:40"
-    format_info = (
-        {"format": "YouTube Short", "badge": "Short", "note": "Confirmed by YouTube Shorts URL path."}
-        if is_short_url
-        else {"format": "Standard Video", "badge": "Video (>3m)", "note": "Standard video (640s)."}
-    )
-    return {
-        "target_id": target_id,
-        "title": snippet["title"],
-        "target_snippet": snippet,
-        "channel_title": snippet["channelTitle"],
-        "channel_id": snippet["channelId"],
-        "published_at": "2026-09-18",
-        "duration_seconds": dur_sec,
-        "duration_formatted": dur_fmt,
-        "format_info": format_info,
-        "views": 3240,
-        "likes": 182,
-        "comments": 24,
-        "is_owner": False,
-        "ownership_status": "Demo Mode (Simulation)",
-        "is_demo": True,
-        "is_short_url": is_short_url,
-        "target_transcript": (
-            "[00:00] In this video we demonstrate prompt caching.\n"
-            "[02:15] Benchmark: cold requests take 1200ms, cached requests take 220ms.\n"
-            "[05:30] Implementing the caching headers in Python."
-        ),
-        "target_transcript_status": "Timestamped transcript available with source cues.",
-        "studio_performance_evidence": [],
-        "reference_id": None,
-        "reference_snippet": {},
-        "transcript": "",
-        "transcript_status": "No reference video supplied; reference comparison is disabled.",
-    }
-
-
 def fetch_full_video_details(
     youtube,
     video_id: str,
     owner_channel_id: Optional[str] = None,
-    is_demo: bool = False,
     is_short_url: bool = False,
 ) -> Dict[str, Any]:
     """Retrieve complete video snippet, content details, statistics, and ownership state."""
-    if is_demo:
-        return _get_demo_video_details(video_id, owner_channel_id, is_short_url=is_short_url)
-
     if youtube is None:
         raise ConnectionError(
-            "YouTube is not connected. Connect your YouTube account in Settings or switch to Demo Mode to explore sample videos."
+            "YouTube is not connected. Connect your YouTube account in Settings to load channel videos."
         )
 
     try:
@@ -688,7 +626,6 @@ def _load_conversation_videos(youtube, secrets, message):
         )
 
     owner_channel_id = secrets.get("youtube", {}).get("channel_id") or connector.CHANNEL_ID
-    is_demo = st.session_state.get("demo_mode", False)
 
     if title_reference:
         matched_video = connector._resolve_video(youtube, title_reference)
@@ -714,7 +651,6 @@ def _load_conversation_videos(youtube, secrets, message):
             youtube,
             target_id,
             owner_channel_id=owner_channel_id,
-            is_demo=is_demo,
             is_short_url=is_short_url,
         )
     except ConnectionError as err:
@@ -722,7 +658,7 @@ def _load_conversation_videos(youtube, secrets, message):
 
     if reference_id:
         try:
-            ref_snippet = _video_snippet(youtube, reference_id) if youtube and not is_demo else {"title": "Reference Video"}
+            ref_snippet = _video_snippet(youtube, reference_id)
             ref_transcript, ref_transcript_status = _transcript_text(reference_id)
         except Exception:
             ref_snippet = {"title": "Reference video (unavailable)"}
@@ -870,7 +806,6 @@ def render_copilot_chat(
     analytics=None,
     reporting=None,
     subject: Optional[str] = None,
-    is_demo: bool = False,
 ):
     """Single canonical conversation renderer for YouTube Metadata Copilot."""
     secrets = secrets or {}
@@ -886,24 +821,6 @@ def render_copilot_chat(
         gemini_fallbacks = [i.strip() for i in gemini_fallbacks.split(",") if i.strip()]
 
     context = st.session_state.get("strategist_target_reference")
-
-    # Demo Mode Indicator Banner
-    if is_demo:
-        st.markdown(
-            """
-            <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 1.1rem;">🎮</span>
-                    <div>
-                        <strong style="color: #FCD34D;">Demo Mode Active:</strong>
-                        <span style="color: #CBD5E1; font-size: 0.88rem;">Exploring sample video data. Publishing to YouTube is disabled (simulated approvals only; no API writes).</span>
-                    </div>
-                </div>
-                <span style="background: #F59E0B; color: #1E293B; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 4px;">DEMO</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
     # 1. Active Video Context Card
     if context:
@@ -1157,43 +1074,7 @@ def render_copilot_chat(
             st.session_state["strategist_chat_digest"] = digest
             is_owner = context.get("is_owner", False)
 
-            if is_demo:
-                st.info("🎮 **Demo Mode Active:** Real YouTube publishing is disabled. You can simulate approval to test the workflow without writing to YouTube.")
-                col_ap1, col_ap2 = st.columns([3, 1])
-                with col_ap1:
-                    sim_clicked = st.button(
-                        f"🧪 Simulate Approval (Demo Mode - No Write)",
-                        type="secondary",
-                        use_container_width=True,
-                        key="btn_simulate_approval",
-                    )
-                with col_ap2:
-                    if st.button("✕ Dismiss Proposal", use_container_width=True, key="btn_dismiss_prop"):
-                        st.session_state.pop("strategist_chat_proposal", None)
-                        st.session_state.pop("strategist_chat_digest", None)
-                        st.rerun()
-
-                if sim_clicked:
-                    # In Demo Mode, NEVER call videos.update() or apply_approved_dashboard_proposal
-                    try:
-                        record_proposal_decision(
-                            video_id=context["target_id"],
-                            proposal_digest=digest,
-                            status="SIMULATED",
-                            proposal_dict=proposal["proposed"],
-                            feedback="Simulated approval in Demo Mode (no YouTube write occurred)",
-                            owner_id=subject,
-                            is_demo=True,
-                        )
-                    except Exception:
-                        pass
-                    st.success(f"✓ [Demo Mode Simulation] Verified mock metadata update for: {proposal['proposed'].get('title', edited_title)}")
-                    st.session_state["strategist_target_reference"]["target_snippet"] = deepcopy(proposal["proposed"])
-                    st.session_state.pop("strategist_chat_proposal", None)
-                    st.session_state.pop("strategist_chat_digest", None)
-                    st.rerun()
-
-            elif not is_owner:
+            if not is_owner:
                 ownership_label = context.get("ownership_status", "Public External Video (Read-Only)")
                 st.warning(f"🔒 **{ownership_label}:** Metadata writes are strictly blocked because ownership is unverified.")
             else:
@@ -1212,7 +1093,7 @@ def render_copilot_chat(
                         st.rerun()
 
                 if approve_clicked:
-                    if is_demo or not is_owner or not youtube:
+                    if not is_owner or not youtube:
                         st.error("Publishing is blocked: verified channel ownership and connected YouTube account required.")
                         return
 
@@ -1415,7 +1296,6 @@ def render_copilot_chat(
 
 def render_chat(youtube, secrets, credentials=None, memory_credentials=None, analytics=None, reporting=None, subject=None):
     """Backward-compatible entry point routing to canonical single-chat copilot."""
-    is_demo = st.session_state.get("demo_mode", False)
     render_copilot_chat(
         youtube=youtube,
         secrets=secrets,
@@ -1424,5 +1304,4 @@ def render_chat(youtube, secrets, credentials=None, memory_credentials=None, ana
         analytics=analytics,
         reporting=reporting,
         subject=subject,
-        is_demo=is_demo,
     )
