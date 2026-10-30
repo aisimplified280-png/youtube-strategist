@@ -354,8 +354,27 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIn("1) Curiosity / Intrigue", prompt)
         self.assertIn("2) Direct Value / Outcome", prompt)
         self.assertIn("3) Search / SEO", prompt)
+        self.assertIn("title_angles (array of exactly 3 objects", prompt)
+        self.assertIn("must exactly match one of the three title_angles titles", prompt)
         self.assertIn("first 150 characters of the description serve as a clear, engaging mobile search preview hook", prompt)
         self.assertIn("Return separate YouTube search tags matching developer query intent", prompt)
+
+    def test_title_angles_accept_only_three_distinct_structured_options(self):
+        angles = strategist_chat._extract_title_angles([
+            {"angle": "curiosity", "title": "Why Prompt Caching Changes AI API Speed"},
+            {"angle": "direct_value", "title": "Speed Up Python LLM Calls with Prompt Caching"},
+            {"angle": "search", "title": "Python Prompt Caching Tutorial for LLM APIs"},
+        ])
+        self.assertEqual(len(angles), 3)
+        self.assertEqual([item["label"] for item in angles], ["💡 Curiosity", "🎯 Direct Value", "🔍 Search / SEO"])
+
+        invalid = strategist_chat._extract_title_angles([
+            {"angle": "curiosity", "title": "Same title"},
+            {"angle": "direct_value", "title": "Same title"},
+            {"angle": "seo", "title": "A separate title"},
+        ])
+        self.assertEqual(invalid, [])
+        self.assertEqual(strategist_chat._extract_title_angles([]), [])
 
     # Criterion 13: Conversational revision flow
     def test_13_conversational_revision_flow(self):
@@ -508,16 +527,11 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertEqual(provider, "Gemini")
         self.assertEqual(result["title"], "Fallback Title")
 
-    # Criterion 19: Owner isolation and Demo Mode safety
-    def test_19_owner_isolation_and_demo_mode_safety(self):
-        """SQLite proposal_history records owner decisions and Demo Mode returns safe static data."""
+    # Criterion 19: Owner-isolated proposal history
+    def test_19_owner_isolation_for_proposal_history(self):
+        """SQLite proposal history is scoped to the authenticated owner."""
         import uuid
         unique_owner = f"owner_{uuid.uuid4().hex}"
-
-        # Test demo mode isolation
-        demo_history = get_recent_proposal_history(limit=5, is_demo=True)
-        self.assertIsInstance(demo_history, list)
-        self.assertGreater(len(demo_history), 0)
 
         # Test live recording with owner isolation
         record_proposal_decision(
@@ -762,7 +776,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         """When is_demo=False and youtube=None, raises ConnectionError without silent fallback to demo data."""
         with self.assertRaises(ConnectionError) as cm:
             strategist_chat.fetch_full_video_details(
-                None, "vid12345678", is_demo=False
+                None, "vid12345678"
             )
         self.assertIn("YouTube is not connected", str(cm.exception))
 
@@ -773,17 +787,18 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIsNone(context, "Context must be None when disconnected in live mode")
         self.assertIn("YouTube is not connected", error_msg)
 
-    # Safety: Demo Mode blocks real publishing and writes
-    def test_28_demo_mode_blocks_real_publishing_and_writes(self):
-        """In Demo Mode, is_owner is False and no YouTube writes can occur."""
-        details = strategist_chat.fetch_full_video_details(
-            None, "demo1234567", is_demo=True
-        )
-        self.assertTrue(details["is_demo"])
-        self.assertFalse(details["is_owner"], "is_owner must be False in Demo Mode")
-        self.assertIn("Demo Mode", details["ownership_status"])
+    # Safety: No synthetic video fixtures or simulated publish pathway remain.
+    def test_28_demo_mode_and_simulated_approval_are_removed(self):
+        """Disconnected requests fail; only the real verified update path remains."""
+        self.assertFalse(hasattr(strategist_chat, "_get_demo_video_details"))
+        import inspect
+        source = inspect.getsource(strategist_chat.render_copilot_chat)
+        self.assertNotIn("Simulate Approval", source)
+        self.assertNotIn("Demo Mode Active", source)
 
-        # Test connector.apply_approved_dashboard_proposal fails if youtube is None
+        with self.assertRaises(ConnectionError):
+            strategist_chat.fetch_full_video_details(None, "demo1234567")
+
         with self.assertRaises(RuntimeError) as cm:
             connector.apply_approved_dashboard_proposal(
                 None, "demo1234567", {"title": "old"}, {"title": "new"}, "a" * 64, audit_callback=MagicMock()
