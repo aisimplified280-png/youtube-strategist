@@ -125,8 +125,11 @@ def call_gemini_api(
     if not api_key:
         raise LLMError("Gemini API key not configured.", provider="gemini", recoverable=True)
 
-    url = GEMINI_ENDPOINT.format(model=model) + f"?key={api_key.strip()}"
-    headers = {"Content-Type": "application/json"}
+    url = GEMINI_ENDPOINT.format(model=model)
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key.strip(),
+    }
     payload = {
         "contents": [
             {"parts": [{"text": prompt}]}
