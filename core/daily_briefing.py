@@ -26,6 +26,9 @@ from core.creator_db import (
     get_creator_preferences,
     get_radar_items,
     save_radar_item,
+    record_briefing_refresh_failure,
+    clear_briefing_refresh_failure,
+    get_briefing_refresh_failure,
 )
 from core.llm import LLMRouter, LLMError
 from core.demo_data import (
@@ -124,6 +127,16 @@ def get_or_create_daily_briefing(
     if not force_refresh:
         cached = get_latest_daily_briefing(channel_id, run_date=today_str, owner_id=owner_id, is_demo=False)
         if cached:
+            # Retain refresh-failure warning visible across reruns until a successful refresh occurs
+            failure = get_briefing_refresh_failure(channel_id, owner_id=owner_id, is_demo=False)
+            if failure:
+                cached = dict(cached)
+                cached["status"] = "stale"
+                cached["refresh_error"] = failure.get("error", "Unknown refresh error")
+                cached["refresh_failed_at"] = failure.get("failed_at_utc")
+                cached["notice"] = (
+                    f"Refresh failed: {failure.get('error')}. Displaying prior successful briefing from {cached.get('run_date')}."
+                )
             return cached
 
     # 2. Acquire run lock to prevent duplicate scans from Streamlit reruns or multi-tabs
@@ -164,10 +177,12 @@ def get_or_create_daily_briefing(
             owner_id=owner_id,
             is_demo=False,
         )
+        clear_briefing_refresh_failure(channel_id, owner_id=owner_id, is_demo=False)
         return briefing
     except Exception as e:
         # Never silently convert an API exception into a successful empty scan.
-        # Preserve the last successful briefing when refresh fails, but show an explicit stale status.
+        # Preserve the last successful briefing when refresh fails, but persist and show an explicit stale status.
+        record_briefing_refresh_failure(channel_id, str(e), owner_id=owner_id, is_demo=False)
         last_successful = get_latest_daily_briefing(channel_id, owner_id=owner_id, is_demo=False)
         if last_successful:
             stale_copy = dict(last_successful)

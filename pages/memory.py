@@ -95,14 +95,25 @@ def render_memory(memory_credentials=None, subject=None):
         else:
             for item in history:
                 status = item.get("status", "unknown").upper()
-                badge_color = "#10B981" if status == "APPROVED" else "#EF4444" if status == "DECLINED" else "#6366F1"
+                if status == "APPLIED":
+                    badge_color = "#10B981"
+                    badge_label = "APPLIED — POST-WRITE VERIFIED"
+                elif status == "APPROVED":
+                    badge_color = "#3B82F6"
+                    badge_label = "APPROVED"
+                elif status == "DECLINED":
+                    badge_color = "#EF4444"
+                    badge_label = "DECLINED"
+                else:
+                    badge_color = "#6366F1"
+                    badge_label = status
                 with st.container(border=True):
                     col_h1, col_h2 = st.columns([3, 1])
                     with col_h1:
                         st.markdown(
                             f"""
                             <span style="background: {badge_color}22; color: {badge_color}; border: 1px solid {badge_color}44; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700;">
-                                {status}
+                                {badge_label}
                             </span>
                             <span style="color: #94A3B8; font-size: 0.8rem; margin-left: 8px;">{item.get('updated_at')}</span>
                             <div style="font-weight: 700; font-size: 1.05rem; margin-top: 6px; color: #FFFFFF;">

@@ -124,6 +124,14 @@ def render_ideas_production(youtube=None, secrets=None, subject=None):
         st.subheader("Script Hook & Opening 15-Second Evaluator")
         st.caption("Score your opening lines against cognitive interest, clarity, and retention cliff prevention.")
 
+        hook_vid_title = st.session_state.get("hook_lab_video_title")
+        hook_vid_id = st.session_state.get("hook_lab_video_id")
+        if hook_vid_title:
+            st.info(
+                f"🎯 **Target Video:** `{hook_vid_title}` (ID: `{hook_vid_id}`)  \n"
+                "This video was flagged for early viewer drop-off. Paste and score your revised opening 15-30 seconds below to test retention strength."
+            )
+
         hook_sample = st.text_area(
             "Paste Opening Script / First 15-30 Seconds",
             height=140,

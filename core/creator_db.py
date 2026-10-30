@@ -16,6 +16,7 @@ from pathlib import Path
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
+import uuid
 
 from core.demo_data import (
     DEMO_CREATOR_PREFERENCES,
@@ -25,6 +26,16 @@ from core.demo_data import (
 )
 
 DEFAULT_OWNER_ID = "default_owner"
+
+# Explicit Growth Task States
+GROWTH_TASK_STATUS_NEW = "new"
+GROWTH_TASK_STATUS_IN_PROGRESS = "in_progress"
+GROWTH_TASK_STATUS_APPLIED_MONITORING = "applied_monitoring"
+GROWTH_TASK_STATUS_RESOLVED = "resolved"
+GROWTH_TASK_STATUS_DISMISSED = "dismissed"
+
+# Demo Mode In-Memory Task Isolation
+_DEMO_GROWTH_TASKS: Dict[str, Dict[str, Any]] = {}
 
 
 def _migrate_legacy_db_file_if_needed(target_path: Path):
@@ -286,6 +297,29 @@ def _init_db(conn: sqlite3.Connection):
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS growth_tasks (
+                task_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL DEFAULT 'default_owner',
+                video_id TEXT NOT NULL,
+                action_type TEXT NOT NULL DEFAULT '',
+                diagnosis TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'new',
+                metadata_applied INTEGER NOT NULL DEFAULT 0,
+                metadata_applied_at_utc TEXT,
+                resolved_at_utc TEXT,
+                notes TEXT,
+                updated_at_utc TEXT NOT NULL
+            );
+            """
+        )
+        _ensure_columns(
+            conn,
+            "growth_tasks",
+            {"owner_id": "TEXT NOT NULL DEFAULT 'default_owner'"},
+        )
+
         # Backfill radar source dates and URLs for authoritative releases
         conn.execute(
             """
@@ -374,6 +408,10 @@ def claim_legacy_owner_records(authenticated_owner_id: str) -> Dict[str, Any]:
             # 7. briefing_locks
             cur.execute("UPDATE briefing_locks SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
             migrated_counts["briefing_locks"] = cur.rowcount
+
+            # 8. growth_tasks
+            cur.execute("UPDATE growth_tasks SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
+            migrated_counts["growth_tasks"] = cur.rowcount
 
             # Record that migration was completed
             cur.execute(
@@ -909,5 +947,380 @@ def save_radar_item(
                 """,
                 (item_id, oid, title, source_url, category, src_date, now_utc, channel_relevance, date_str, summary, json.dumps(video_angles), source_type, 1 if is_live_ingested else 0)
             )
+    finally:
+        conn.close()
+
+
+# --- Growth Tasks & Action Lifecycle States ---
+
+def get_growth_task(
+    video_id: str,
+    owner_id: Optional[str] = None,
+    is_demo: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve current lifecycle task state for an identified video."""
+    if is_demo:
+        return _DEMO_GROWTH_TASKS.get(video_id)
+
+    oid = owner_id or DEFAULT_OWNER_ID
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT task_id, owner_id, video_id, action_type, diagnosis, status, metadata_applied, metadata_applied_at_utc, resolved_at_utc, notes, updated_at_utc
+            FROM growth_tasks WHERE owner_id = ? AND video_id = ?
+            ORDER BY updated_at_utc DESC LIMIT 1
+            """,
+            (oid, video_id)
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "task_id": row[0],
+            "owner_id": row[1],
+            "video_id": row[2],
+            "action_type": row[3],
+            "diagnosis": row[4],
+            "status": row[5],
+            "metadata_applied": bool(row[6]),
+            "metadata_applied_at_utc": row[7],
+            "resolved_at_utc": row[8],
+            "notes": row[9] or "",
+            "updated_at_utc": row[10],
+        }
+    finally:
+        conn.close()
+
+
+def get_all_growth_tasks(
+    owner_id: Optional[str] = None,
+    is_demo: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    """Retrieve map of video_id -> task state for the owner."""
+    if is_demo:
+        return dict(_DEMO_GROWTH_TASKS)
+
+    oid = owner_id or DEFAULT_OWNER_ID
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT task_id, owner_id, video_id, action_type, diagnosis, status, metadata_applied, metadata_applied_at_utc, resolved_at_utc, notes, updated_at_utc
+            FROM growth_tasks WHERE owner_id = ?
+            ORDER BY updated_at_utc ASC
+            """,
+            (oid,)
+        )
+        tasks = {}
+        for row in cur.fetchall():
+            tasks[row[2]] = {
+                "task_id": row[0],
+                "owner_id": row[1],
+                "video_id": row[2],
+                "action_type": row[3],
+                "diagnosis": row[4],
+                "status": row[5],
+                "metadata_applied": bool(row[6]),
+                "metadata_applied_at_utc": row[7],
+                "resolved_at_utc": row[8],
+                "notes": row[9] or "",
+                "updated_at_utc": row[10],
+            }
+        return tasks
+    finally:
+        conn.close()
+
+
+def record_growth_task_state(
+    video_id: str,
+    status: str,
+    diagnosis: str = "",
+    action_type: str = "",
+    metadata_applied: Optional[bool] = None,
+    notes: str = "",
+    owner_id: Optional[str] = None,
+    is_demo: bool = False,
+) -> Dict[str, Any]:
+    """Record an explicit growth task state transition.
+    
+    Valid states:
+    - 'new'
+    - 'in_progress'
+    - 'applied_monitoring'
+    - 'resolved'
+    - 'dismissed'
+    
+    Guarantees:
+    - Demo Mode stores in an isolated in-memory fixture and never writes to owner SQLite.
+    - An applied metadata update never marks a retention issue resolved.
+    """
+    now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if is_demo:
+        existing = _DEMO_GROWTH_TASKS.get(video_id, {})
+        m_applied = existing.get("metadata_applied", False) if metadata_applied is None else bool(metadata_applied)
+        task = {
+            "task_id": existing.get("task_id", f"demo-task-{video_id}"),
+            "owner_id": "demo_owner",
+            "video_id": video_id,
+            "action_type": action_type or existing.get("action_type", ""),
+            "diagnosis": diagnosis or existing.get("diagnosis", ""),
+            "status": status,
+            "metadata_applied": m_applied,
+            "metadata_applied_at_utc": existing.get("metadata_applied_at_utc"),
+            "resolved_at_utc": now_utc if status == "resolved" else existing.get("resolved_at_utc"),
+            "notes": notes or existing.get("notes", ""),
+            "updated_at_utc": now_utc,
+        }
+        _DEMO_GROWTH_TASKS[video_id] = task
+        return task
+
+    oid = owner_id or DEFAULT_OWNER_ID
+    conn = get_db_connection()
+    try:
+        with conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT task_id, metadata_applied, metadata_applied_at_utc, action_type, diagnosis FROM growth_tasks WHERE owner_id = ? AND video_id = ?",
+                (oid, video_id)
+            )
+            row = cur.fetchone()
+            resolved_at = now_utc if status == "resolved" else None
+            if row:
+                t_id = row[0]
+                m_applied = row[1] if metadata_applied is None else (1 if metadata_applied else 0)
+                m_applied_at = row[2]
+                act_type = action_type or row[3]
+                diag = diagnosis or row[4]
+                cur.execute(
+                    """
+                    UPDATE growth_tasks SET
+                        status = ?,
+                        action_type = ?,
+                        diagnosis = ?,
+                        metadata_applied = ?,
+                        resolved_at_utc = COALESCE(?, resolved_at_utc),
+                        notes = COALESCE(NULLIF(?, ''), notes),
+                        updated_at_utc = ?
+                    WHERE task_id = ?
+                    """,
+                    (status, act_type, diag, m_applied, resolved_at, notes, now_utc, t_id)
+                )
+            else:
+                t_id = f"task-{uuid.uuid4().hex[:8]}"
+                m_applied = 1 if metadata_applied else 0
+                m_applied_at = now_utc if metadata_applied else None
+                cur.execute(
+                    """
+                    INSERT INTO growth_tasks (task_id, owner_id, video_id, action_type, diagnosis, status, metadata_applied, metadata_applied_at_utc, resolved_at_utc, notes, updated_at_utc)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (t_id, oid, video_id, action_type, diagnosis, status, m_applied, m_applied_at, resolved_at, notes, now_utc)
+                )
+            return {
+                "task_id": t_id,
+                "owner_id": oid,
+                "video_id": video_id,
+                "action_type": action_type,
+                "diagnosis": diagnosis,
+                "status": status,
+                "metadata_applied": bool(m_applied),
+                "metadata_applied_at_utc": m_applied_at,
+                "resolved_at_utc": resolved_at,
+                "notes": notes,
+                "updated_at_utc": now_utc,
+            }
+    finally:
+        conn.close()
+
+
+def mark_growth_task_applied(
+    video_id: str,
+    proposal_dict: Optional[Dict[str, Any]] = None,
+    proposal_digest: Optional[str] = None,
+    diagnosis: str = "",
+    action_type: str = "",
+    notes: str = "",
+    baseline_metrics: Optional[Dict[str, Any]] = None,
+    owner_id: Optional[str] = None,
+    is_demo: bool = False,
+) -> Dict[str, Any]:
+    """Record that metadata update was successfully verified and written to YouTube.
+    
+    Guarantees:
+    - Status transitions to 'applied_monitoring'.
+    - Retention tasks are NEVER marked resolved just because metadata was applied.
+    - Records an 'APPLIED' entry in proposal_history.
+    - Records an experiment row in SQLite.
+    """
+    now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    new_status = GROWTH_TASK_STATUS_APPLIED_MONITORING
+
+    if not is_demo:
+        # Record proposal decision as APPLIED in Creator Memory
+        if proposal_dict:
+            record_proposal_decision(
+                video_id=video_id,
+                proposal_digest=proposal_digest or f"digest-{uuid.uuid4().hex[:8]}",
+                status="APPLIED",
+                proposal_dict=proposal_dict,
+                feedback=notes or "Applied to YouTube and post-write verified",
+                owner_id=owner_id,
+                is_demo=False,
+            )
+        # Record in experiments table
+        conn = get_db_connection()
+        try:
+            with conn:
+                exp_id = f"exp-{video_id}-{uuid.uuid4().hex[:6]}"
+                v_title = (proposal_dict or {}).get("title", f"Video {video_id}")
+                p_digest = proposal_digest or ""
+                b_metrics = json.dumps(baseline_metrics or {})
+                conn.execute(
+                    """
+                    INSERT INTO experiments (id, owner_id, video_id, video_title, proposal_digest, applied_at_utc, baseline_metrics_json, outcome_notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (exp_id, owner_id or DEFAULT_OWNER_ID, video_id, v_title, p_digest, now_utc, b_metrics, notes or "Metadata applied via Creator Growth Agent")
+                )
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    # Update growth task record
+    if is_demo:
+        task = record_growth_task_state(
+            video_id=video_id,
+            status=new_status,
+            diagnosis=diagnosis,
+            action_type=action_type,
+            metadata_applied=True,
+            notes=notes or "Metadata applied in Demo Studio",
+            owner_id=owner_id,
+            is_demo=True,
+        )
+        task["metadata_applied_at_utc"] = now_utc
+        return task
+
+    oid = owner_id or DEFAULT_OWNER_ID
+    conn = get_db_connection()
+    try:
+        with conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT task_id, action_type, diagnosis FROM growth_tasks WHERE owner_id = ? AND video_id = ?",
+                (oid, video_id)
+            )
+            row = cur.fetchone()
+            if row:
+                t_id = row[0]
+                act_type = action_type or row[1]
+                diag = diagnosis or row[2]
+                cur.execute(
+                    """
+                    UPDATE growth_tasks SET
+                        status = ?,
+                        action_type = ?,
+                        diagnosis = ?,
+                        metadata_applied = 1,
+                        metadata_applied_at_utc = ?,
+                        notes = COALESCE(NULLIF(?, ''), notes),
+                        updated_at_utc = ?
+                    WHERE task_id = ?
+                    """,
+                    (new_status, act_type, diag, now_utc, notes, now_utc, t_id)
+                )
+            else:
+                t_id = f"task-{uuid.uuid4().hex[:8]}"
+                cur.execute(
+                    """
+                    INSERT INTO growth_tasks (task_id, owner_id, video_id, action_type, diagnosis, status, metadata_applied, metadata_applied_at_utc, notes, updated_at_utc)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    """,
+                    (t_id, oid, video_id, action_type, diagnosis, new_status, now_utc, notes, now_utc)
+                )
+            return {
+                "task_id": t_id,
+                "owner_id": oid,
+                "video_id": video_id,
+                "action_type": action_type,
+                "diagnosis": diagnosis,
+                "status": new_status,
+                "metadata_applied": True,
+                "metadata_applied_at_utc": now_utc,
+                "notes": notes,
+                "updated_at_utc": now_utc,
+            }
+    finally:
+        conn.close()
+
+
+# --- Persistent Briefing Refresh Failure ---
+
+def record_briefing_refresh_failure(
+    channel_id: str,
+    error: str,
+    owner_id: Optional[str] = None,
+    is_demo: bool = False,
+) -> None:
+    """Persist a failed refresh attempt in SQLite so warning remains visible across reruns."""
+    if is_demo:
+        return
+    oid = owner_id or DEFAULT_OWNER_ID
+    meta_key = f"briefing_refresh_failure:{oid}:{channel_id}"
+    now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    val = json.dumps({"error": error, "failed_at_utc": now_utc})
+    conn = get_db_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO system_metadata (meta_key, meta_value, updated_at_utc) VALUES (?, ?, ?)",
+                (meta_key, val, now_utc)
+            )
+    finally:
+        conn.close()
+
+
+def clear_briefing_refresh_failure(
+    channel_id: str,
+    owner_id: Optional[str] = None,
+    is_demo: bool = False,
+) -> None:
+    """Clear active refresh failure upon a verified successful scan."""
+    if is_demo:
+        return
+    oid = owner_id or DEFAULT_OWNER_ID
+    meta_key = f"briefing_refresh_failure:{oid}:{channel_id}"
+    conn = get_db_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM system_metadata WHERE meta_key = ?", (meta_key,))
+    finally:
+        conn.close()
+
+
+def get_briefing_refresh_failure(
+    channel_id: str,
+    owner_id: Optional[str] = None,
+    is_demo: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Retrieve active refresh failure info if previous scan attempt failed."""
+    if is_demo:
+        return None
+    oid = owner_id or DEFAULT_OWNER_ID
+    meta_key = f"briefing_refresh_failure:{oid}:{channel_id}"
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT meta_value FROM system_metadata WHERE meta_key = ?", (meta_key,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return json.loads(row[0])
+        return None
+    except Exception:
+        return None
     finally:
         conn.close()

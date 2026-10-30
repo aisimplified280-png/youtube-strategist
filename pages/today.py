@@ -6,12 +6,13 @@ First screen after owner login:
 3. System status and freshness metadata with one-click refresh.
 """
 
-from datetime import date
+from datetime import date, datetime
 import html
 import streamlit as st
 
 from core.auth import is_demo_mode
 from core.daily_briefing import get_or_create_daily_briefing
+from core.creator_db import get_all_growth_tasks, record_growth_task_state, save_pipeline_item
 from ui.components import demo_banner, metric_tile, evidence_chip, status_pill, connection_status_banner
 from pages.workspace import render_video_optimizer
 
@@ -60,32 +61,6 @@ def render_today(
                 st.success(notice)
                 st.balloons()
 
-    # Header with date and status
-    today_str = date.today().strftime("%A, %B %d, %Y")
-    col_h1, col_h2 = st.columns([3, 1])
-    with col_h1:
-        st.markdown(
-            f"""
-            <div style="margin-bottom: 20px;">
-                <div style="color: #6366F1; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px;">
-                    Daily Creator Briefing
-                </div>
-                <h1 style="font-size: 2.2rem; font-weight: 800; letter-spacing: -0.03em; margin: 0 0 6px 0;">
-                    Good morning, Creator
-                </h1>
-                <p style="color: #94A3B8; font-size: 0.95rem; margin: 0;">
-                    {today_str} • Verified opportunities for AI Simplified Lab
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with col_h2:
-        st.write("")
-        if st.button("🔄 Refresh Analysis", use_container_width=True, help="Force a fresh scan of recent uploads and metrics"):
-            st.session_state["force_briefing_refresh"] = True
-            st.rerun()
-
     force_refresh = st.session_state.pop("force_briefing_refresh", False)
 
     # Load or compute the briefing
@@ -101,8 +76,45 @@ def render_today(
             is_demo=is_demo,
         )
 
+    # Persist briefing to session state so Workspace and cross-page selectors are synchronized
+    st.session_state["daily_briefing"] = briefing
+
     status = briefing.get("status", "ready")
     notice = briefing.get("notice")
+
+    # Header with date, refresh timestamp, and manual refresh button
+    today_str = date.today().strftime("%A, %B %d, %Y")
+    refreshed_at_str = ""
+    if briefing.get("generated_at_utc"):
+        try:
+            dt = datetime.fromisoformat(briefing["generated_at_utc"])
+            refreshed_at_str = f" • Refreshed at {dt.strftime('%H:%M')} UTC"
+        except Exception:
+            pass
+
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.markdown(
+            f"""
+            <div style="margin-bottom: 20px;">
+                <div style="color: #6366F1; font-weight: 700; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px;">
+                    Daily Creator Briefing
+                </div>
+                <h1 style="font-size: 2.2rem; font-weight: 800; letter-spacing: -0.03em; margin: 0 0 6px 0;">
+                    Good morning, Creator
+                </h1>
+                <p style="color: #94A3B8; font-size: 0.95rem; margin: 0;">
+                    {today_str}{refreshed_at_str} • Verified opportunities for AI Simplified Lab
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_h2:
+        st.write("")
+        if st.button("🔄 Refresh Analysis", use_container_width=True, help="Force a fresh scan of recent uploads and metrics"):
+            st.session_state["force_briefing_refresh"] = True
+            st.rerun()
 
     # Explicit status banners for stale, scan failure, connection failure, insufficient metrics, or pending
     if status == "connection_failure":
@@ -110,7 +122,7 @@ def render_today(
     elif status == "scan_failed":
         st.error(f"❌ Channel scan failed: {notice or 'API exception occurred during scan.'}")
     elif status in ("stale", "refresh_failed"):
-        st.warning(f"⚠️ Refresh Notice: {notice or 'Using prior briefing.'}")
+        st.warning(f"⚠️ **Refresh Notice**: {notice or 'Refresh attempt failed. Using prior briefing.'}")
     elif status in ("insufficient_metrics", "unavailable_metrics"):
         st.warning(f"⚠️ Insufficient Analytics Data: {notice or 'YouTube Analytics metrics are unavailable or delayed for recent uploads.'}")
     elif status == "insufficient_peer_sample":
@@ -180,6 +192,8 @@ def render_today(
         else:
             st.info("No underperforming videos detected in the current window. All recent uploads are performing in line with or above peer medians.")
     else:
+        all_growth_tasks = get_all_growth_tasks(owner_id=subject, is_demo=is_demo)
+
         for act in actions:
             p_idx = act.get("priority", 1)
             vid = act.get("video_id")
@@ -191,6 +205,22 @@ def render_today(
             effort = html.escape(act.get("estimated_effort", "15m"))
             caveat = html.escape(act.get("caveat", ""))
             next_step = html.escape(act.get("recommended_next_step", ""))
+            diagnosis = act.get("diagnosis", "")
+
+            task = all_growth_tasks.get(vid, {})
+            task_status = task.get("status", "new")
+            metadata_applied = task.get("metadata_applied", False) or task_status == "applied_monitoring"
+
+            if metadata_applied:
+                status_badge_html = '<span style="background: rgba(16, 185, 129, 0.2); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">APPLIED — MONITORING</span>'
+            elif task_status == "in_progress":
+                status_badge_html = '<span style="background: rgba(59, 130, 246, 0.2); color: #60A5FA; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">IN PROGRESS</span>'
+            elif task_status == "resolved":
+                status_badge_html = '<span style="background: rgba(100, 116, 139, 0.2); color: #94A3B8; border: 1px solid rgba(100, 116, 139, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">RESOLVED</span>'
+            elif task_status == "dismissed":
+                status_badge_html = '<span style="background: rgba(100, 116, 139, 0.2); color: #64748B; border: 1px solid rgba(100, 116, 139, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">DISMISSED</span>'
+            else:
+                status_badge_html = '<span style="background: rgba(99, 102, 241, 0.2); color: #818CF8; border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">NEW OPPORTUNITY</span>'
 
             with st.container(border=True):
                 col_c1, col_c2 = st.columns([3, 1])
@@ -201,6 +231,7 @@ def render_today(
                             <span style="background: rgba(99, 102, 241, 0.15); color: #818CF8; border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 6px; padding: 2px 8px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;">
                                 #{p_idx} • {action_type}
                             </span>
+                            {status_badge_html}
                             <span style="color: #94A3B8; font-size: 0.8rem; margin-left: 8px;">Effort: {effort} • Confidence: {confidence}</span>
                         </div>
                         <h3 style="font-size: 1.25rem; font-weight: 700; margin: 0 0 8px 0; color: #FFFFFF;">
@@ -212,6 +243,69 @@ def render_today(
                         """,
                         unsafe_allow_html=True,
                     )
+
+                    # Distinctive status messaging when metadata update was applied
+                    if metadata_applied:
+                        applied_box = """
+                        <div style="background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10B981; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+                            <div style="font-weight: 700; color: #34D399; font-size: 0.88rem;">✓ Metadata Applied</div>
+                            <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
+                                Your YouTube title, description and tags were updated and verified.
+                            </div>
+                        </div>
+                        """
+                        st.markdown(applied_box, unsafe_allow_html=True)
+
+                        if diagnosis == "Retention review":
+                            attention_box = """
+                            <div style="background: rgba(245, 158, 11, 0.08); border-left: 3px solid #F59E0B; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+                                <div style="font-weight: 700; color: #FBBF24; font-size: 0.88rem;">⚠️ Still Needs Attention: Opening Hook & Retention</div>
+                                <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
+                                    Your retention metrics remain below comparable videos. Metadata changes do not fix the video's opening or pacing.
+                                </div>
+                                <div style="font-size: 0.80rem; color: #94A3B8; margin-top: 5px;">
+                                    <strong style="color: #F1F5F9;">Next step:</strong> Open Hook Lab to review the first 15 seconds.
+                                    <br/><strong style="color: #F1F5F9;">Performance outcome:</strong> Waiting for sufficient post-update analytics (YouTube Analytics typically updates on a 24–48h delay).
+                                </div>
+                            </div>
+                            """
+                            st.markdown(attention_box, unsafe_allow_html=True)
+                        elif diagnosis == "Reach review":
+                            attention_box = """
+                            <div style="background: rgba(168, 85, 247, 0.08); border-left: 3px solid #A855F7; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+                                <div style="font-weight: 700; color: #C084FC; font-size: 0.88rem;">🔍 Still Needs Attention: Topic & Distribution Positioning</div>
+                                <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
+                                    Impressions trail format-matched peers. Evaluate search and browse topic demand in Ideas & Production.
+                                </div>
+                                <div style="font-size: 0.80rem; color: #94A3B8; margin-top: 5px;">
+                                    <strong style="color: #F1F5F9;">Performance outcome:</strong> Waiting for post-update distribution signals (24–48h delay).
+                                </div>
+                            </div>
+                            """
+                            st.markdown(attention_box, unsafe_allow_html=True)
+                        elif diagnosis == "Engagement review":
+                            attention_box = """
+                            <div style="background: rgba(236, 72, 153, 0.08); border-left: 3px solid #EC4899; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+                                <div style="font-weight: 700; color: #F472B6; font-size: 0.88rem;">💬 Still Needs Attention: Community & Delivery</div>
+                                <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
+                                    Likes and comments per view remain below peers. Consider pinning a clarifying question or discussion prompt.
+                                </div>
+                                <div style="font-size: 0.80rem; color: #94A3B8; margin-top: 5px;">
+                                    <strong style="color: #F1F5F9;">Performance outcome:</strong> Waiting for audience interaction signals.
+                                </div>
+                            </div>
+                            """
+                            st.markdown(attention_box, unsafe_allow_html=True)
+                        else:
+                            attention_box = """
+                            <div style="background: rgba(59, 130, 246, 0.08); border-left: 3px solid #3B82F6; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+                                <div style="font-weight: 700; color: #60A5FA; font-size: 0.88rem;">📊 Performance Outcome Monitoring</div>
+                                <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
+                                    Waiting for sufficient post-update analytics to measure CTR and impressions changes (24–48h delay).
+                                </div>
+                            </div>
+                            """
+                            st.markdown(attention_box, unsafe_allow_html=True)
 
                     # Evidence and Caveat Chips
                     chips = [
@@ -234,36 +328,98 @@ def render_today(
                 with col_c2:
                     st.write("")
                     st.write("")
-                    if is_optimizing:
-                        if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
-                            st.session_state[f"active_today_optimizer_{vid}"] = False
-                            st.rerun()
-                    else:
-                        if st.button("⚡ Optimize & Publish Here", key=f"btn_act_{p_idx}_{vid}", type="primary", use_container_width=True):
-                            st.session_state[f"active_today_optimizer_{vid}"] = True
+                    # Action button matched to diagnosis
+                    if diagnosis == "Retention review":
+                        if st.button("🎙️ Open Hook Lab", key=f"btn_hook_{p_idx}_{vid}", type="primary", use_container_width=True):
+                            st.session_state["hook_lab_video_id"] = vid
+                            st.session_state["hook_lab_video_title"] = act.get("title")
+                            st.session_state["nav_destination"] = "ideas"
+                            record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
                             st.rerun()
 
+                        if is_optimizing:
+                            if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
+                                st.session_state[f"active_today_optimizer_{vid}"] = False
+                                st.rerun()
+                        else:
+                            if st.button("⚡ Edit Metadata", key=f"btn_act_{p_idx}_{vid}", use_container_width=True, help="Update title, description, or tags (note: metadata changes do not fix retention or pacing)"):
+                                st.session_state[f"active_today_optimizer_{vid}"] = True
+                                record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                                st.rerun()
+
+                    elif diagnosis == "Reach review":
+                        if st.button("🔍 Research Demand", key=f"btn_reach_{p_idx}_{vid}", type="primary", use_container_width=True):
+                            st.session_state["nav_destination"] = "ideas"
+                            record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                            st.rerun()
+
+                        if is_optimizing:
+                            if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
+                                st.session_state[f"active_today_optimizer_{vid}"] = False
+                                st.rerun()
+                        else:
+                            if st.button("⚡ Optimize Metadata", key=f"btn_act_{p_idx}_{vid}", use_container_width=True):
+                                st.session_state[f"active_today_optimizer_{vid}"] = True
+                                record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                                st.rerun()
+
+                    elif diagnosis == "Engagement review":
+                        st.link_button("💬 Review Comments", f"https://www.youtube.com/watch?v={vid}", use_container_width=True)
+                        if is_optimizing:
+                            if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
+                                st.session_state[f"active_today_optimizer_{vid}"] = False
+                                st.rerun()
+                        else:
+                            if st.button("⚡ Edit Metadata", key=f"btn_act_{p_idx}_{vid}", use_container_width=True):
+                                st.session_state[f"active_today_optimizer_{vid}"] = True
+                                record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                                st.rerun()
+
+                    else:
+                        # Packaging review or baseline
+                        if is_optimizing:
+                            if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
+                                st.session_state[f"active_today_optimizer_{vid}"] = False
+                                st.rerun()
+                        else:
+                            if st.button("⚡ Optimize & Publish Here", key=f"btn_act_{p_idx}_{vid}", type="primary", use_container_width=True):
+                                st.session_state[f"active_today_optimizer_{vid}"] = True
+                                record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                                st.rerun()
+
+                        if st.button("Open in Workspace Tab ↗", key=f"btn_open_ws_{p_idx}_{vid}", use_container_width=True):
+                            st.session_state["pending_optimizer_video_id"] = vid
+                            st.session_state["pending_optimizer_video_title"] = act.get("title")
+                            st.session_state["nav_destination"] = "agent_workspace"
+                            record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                            st.rerun()
+
+                    # Task management controls
                     if is_demo:
-                        st.caption("Pipeline saves disabled in Demo Mode")
+                        st.caption("Task controls disabled in Demo Mode")
                     else:
-                        if st.button("Add to Pipeline", key=f"btn_pipe_{p_idx}_{vid}", use_container_width=True):
-                            from core.creator_db import save_pipeline_item
-                            save_pipeline_item(
-                                item_id=f"pipe-{vid}",
-                                title=act.get("title"),
-                                stage="idea",
-                                target_format=act.get("metrics", {}).get("format", "long"),
-                                notes=f"Surfaced from briefing. Evidence: {act.get('evidence')}",
-                                owner_id=subject,
-                                is_demo=False,
-                            )
-                            st.toast("Saved to Ideas & Production pipeline!")
-
-                    if st.button("Open in Workspace Tab ↗", key=f"btn_open_ws_{p_idx}_{vid}", use_container_width=True):
-                        st.session_state["pending_optimizer_video_id"] = vid
-                        st.session_state["pending_optimizer_video_title"] = act.get("title")
-                        st.session_state["nav_destination"] = "agent_workspace"
-                        st.rerun()
+                        col_t1, col_t2 = st.columns(2)
+                        with col_t1:
+                            if st.button("Add to Pipeline", key=f"btn_pipe_{p_idx}_{vid}", use_container_width=True):
+                                save_pipeline_item(
+                                    item_id=f"pipe-{vid}",
+                                    title=act.get("title"),
+                                    stage="idea",
+                                    target_format=act.get("metrics", {}).get("format", "long"),
+                                    notes=f"Surfaced from briefing. Evidence: {act.get('evidence')}",
+                                    owner_id=subject,
+                                    is_demo=False,
+                                )
+                                st.toast("Saved to Ideas & Production pipeline!")
+                        with col_t2:
+                            if task_status == "resolved":
+                                if st.button("↩ Reopen", key=f"btn_reopen_{p_idx}_{vid}", use_container_width=True):
+                                    record_growth_task_state(vid, "new", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=False)
+                                    st.rerun()
+                            else:
+                                if st.button("✓ Resolve", key=f"btn_resolve_{p_idx}_{vid}", use_container_width=True):
+                                    record_growth_task_state(vid, "resolved", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=False)
+                                    st.rerun()
 
                 # Inline Execution Studio (everything happens right on Today with no page switching)
                 if is_optimizing:

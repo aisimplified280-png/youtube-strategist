@@ -22,7 +22,7 @@ from core.llm import LLMRouter, LLMError
 from core.linter import lint_proposal
 from core.prompts import build_strategist_prompt
 from core.metadata_apply import compute_proposal_digest, apply_proposal
-from core.creator_db import record_proposal_decision, get_creator_preferences
+from core.creator_db import record_proposal_decision, get_creator_preferences, mark_growth_task_applied, get_latest_daily_briefing
 from ui.components import demo_banner, diff_viewer, char_counter, status_pill, error_state, connection_status_banner
 import strategist_chat
 import youtube_analytics_connector as connector
@@ -94,9 +94,14 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
 
     # Selection bar
     with st.expander("Target Video Selector", expanded=not bool(target_video_id)):
-        # Recent opportunities / uploads options
+        # Recent opportunities / uploads options (ensure persistent briefing is loaded across pages)
         recent_options = []
-        daily_b = st.session_state.get("daily_briefing") or {}
+        daily_b = st.session_state.get("daily_briefing")
+        if not daily_b and not is_demo:
+            daily_b = get_latest_daily_briefing(channel_id="UCS6Sb5rfaEnWTVPGyQlnHFQ", owner_id=subject, is_demo=False)
+            if daily_b:
+                st.session_state["daily_briefing"] = daily_b
+        daily_b = daily_b or {}
         briefing_actions = daily_b.get("prioritized_actions", [])
         for act in briefing_actions:
             if act.get("video_id") and act.get("title"):
@@ -430,6 +435,19 @@ def render_video_optimizer(
                                 success_msg = f"🎉 Update Applied and Verified! {res.get('message', '')}"
                                 st.success(success_msg)
                                 st.balloons()
+                                # Record as APPLIED in Creator Memory and transition growth task to applied_monitoring
+                                mark_growth_task_applied(
+                                    video_id=video_id,
+                                    proposal_dict=proposed_snip,
+                                    proposal_digest=approved_digest or compute_proposal_digest(video_id, ctx.get("snippet", {}), proposed_snip),
+                                    notes=f"Applied via {key_prefix} studio and post-write verified",
+                                    baseline_metrics=ctx.get("metrics", {}),
+                                    owner_id=subject,
+                                    is_demo=is_demo,
+                                )
+                                # Signal briefing refresh so Today reflects the applied status
+                                st.session_state["force_briefing_refresh"] = True
+
                                 if memory_creds:
                                     try:
                                         from content_memory import GoogleSheetsMemoryStore

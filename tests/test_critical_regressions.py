@@ -1003,6 +1003,150 @@ class TestCriticalRegressions(unittest.TestCase):
             mock_balloons.assert_called()
             self.assertNotIn(f"_applied_inline_notice_{video_id}", st.session_state)
 
+    # --- Scenario 24: Action lifecycle, diagnosis buttons, applied monitoring, and persistent failure status ---
+    def test_opportunity_lifecycle_and_diagnosis_action_matching(self):
+        """Verify action buttons match diagnosis, updates record as APPLIED, task states are explicit, and refresh failure persists."""
+        from datetime import datetime, timezone
+        import uuid
+        from core.creator_db import (
+            record_growth_task_state,
+            mark_growth_task_applied,
+            get_growth_task,
+            get_all_growth_tasks,
+            record_briefing_refresh_failure,
+            get_briefing_refresh_failure,
+            clear_briefing_refresh_failure,
+            get_recent_proposal_history,
+            GROWTH_TASK_STATUS_NEW,
+            GROWTH_TASK_STATUS_IN_PROGRESS,
+            GROWTH_TASK_STATUS_APPLIED_MONITORING,
+            GROWTH_TASK_STATUS_RESOLVED,
+        )
+        from core.daily_briefing import get_or_create_daily_briefing
+        from pages.today import render_today
+        from pages.workspace import render_workspace, render_video_optimizer
+        import streamlit as st
+
+        owner = f"owner-test-lifecycle-{uuid.uuid4().hex[:6]}"
+        vid_retention = "vid-retention-101"
+        vid_packaging = "vid-packaging-202"
+
+        # 1. Verify task state initialization and transitions
+        t_init = record_growth_task_state(vid_retention, GROWTH_TASK_STATUS_NEW, diagnosis="Retention review", owner_id=owner)
+        self.assertEqual(t_init["status"], "new")
+        self.assertFalse(t_init["metadata_applied"])
+
+        # 2. Applying metadata transitions task to applied_monitoring (NEVER resolved for retention issues)
+        prop = {"title": "New Title", "description": "New Desc", "tags": ["tag1"]}
+        t_applied = mark_growth_task_applied(
+            video_id=vid_retention,
+            proposal_dict=prop,
+            proposal_digest="digest-123",
+            diagnosis="Retention review",
+            action_type="Opening Hook & Retention Polish",
+            notes="Applied and verified",
+            owner_id=owner,
+            is_demo=False,
+        )
+        self.assertEqual(t_applied["status"], "applied_monitoring")
+        self.assertTrue(t_applied["metadata_applied"])
+        # Verify it is NEVER resolved automatically
+        self.assertNotEqual(t_applied["status"], "resolved")
+
+        # 3. Creator Memory records successful update as APPLIED
+        history = get_recent_proposal_history(limit=5, owner_id=owner)
+        applied_items = [h for h in history if h["video_id"] == vid_retention and h["status"] == "APPLIED"]
+        self.assertTrue(len(applied_items) > 0)
+        self.assertEqual(applied_items[0]["status"], "APPLIED")
+
+        # 4. Action buttons match diagnosis on Today
+        # Retention gets "Open Hook Lab", Packaging gets "Optimize & Publish Here"
+        actions = [
+            {
+                "priority": 1,
+                "video_id": vid_retention,
+                "title": "Retention Video Title",
+                "action_type": "Opening Hook & Retention Polish",
+                "diagnosis": "Retention review",
+                "why_today": "Drop off early",
+                "evidence": "21% retention vs 49% median",
+                "confidence": "High",
+                "estimated_effort": "20m",
+                "recommended_next_step": "Open Hook Lab",
+                "caveat": "Changing tags will not fix retention",
+            },
+            {
+                "priority": 2,
+                "video_id": vid_packaging,
+                "title": "Packaging Video Title",
+                "action_type": "Packaging & Title Contrast",
+                "diagnosis": "Packaging review",
+                "why_today": "CTR trails peers",
+                "evidence": "CTR 2.1% vs 5.5% median",
+                "confidence": "High",
+                "estimated_effort": "15m",
+                "recommended_next_step": "Optimize title and thumbnail",
+                "caveat": "High impressions confirm topic interest",
+            },
+        ]
+        mock_briefing = {
+            "status": "ready",
+            "prioritized_actions": actions,
+            "summary": {"total_recent_videos": 10, "opportunity_count": 2, "reach_reporting_active": True},
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+
+        rendered_buttons = []
+        with patch("pages.today.get_or_create_daily_briefing", return_value=mock_briefing), \
+             patch("pages.today.connection_status_banner"), \
+             patch("pages.today.demo_banner"), \
+             patch.object(st, "button", side_effect=lambda label, *args, **kwargs: rendered_buttons.append(label) or False), \
+             patch.object(st, "markdown") as mock_markdown:
+            render_today(subject=owner)
+
+        # Assert correct action button matching
+        self.assertTrue(any("Open Hook Lab" in b for b in rendered_buttons), f"Buttons rendered: {rendered_buttons}")
+        self.assertTrue(any("Optimize & Publish Here" in b for b in rendered_buttons), f"Buttons rendered: {rendered_buttons}")
+
+        # Assert retention callout indicates metadata applied but still needs attention
+        markdown_calls = " ".join(str(call) for call in mock_markdown.mock_calls)
+        self.assertIn("Metadata Applied", markdown_calls)
+        self.assertIn("Still Needs Attention", markdown_calls)
+        self.assertIn("Metadata changes do not fix the video", markdown_calls)
+
+        # 5. Refresh failure status persists across reruns until cleared
+        channel_id = "UCS6Sb5rfaEnWTVPGyQlnHFQ"
+        record_briefing_refresh_failure(channel_id, "API Timeout 504", owner_id=owner)
+        failure_record = get_briefing_refresh_failure(channel_id, owner_id=owner)
+        self.assertIsNotNone(failure_record)
+        self.assertIn("504", failure_record["error"])
+
+        # Cached briefing retrieves the stale status with error message
+        with patch("core.daily_briefing.get_latest_daily_briefing", return_value={"status": "ready", "run_date": "2026-10-29"}):
+            briefing_with_stale = get_or_create_daily_briefing(
+                youtube=MagicMock(),
+                analytics=MagicMock(),
+                owner_id=owner,
+                channel_id=channel_id,
+                force_refresh=False,
+            )
+            self.assertEqual(briefing_with_stale["status"], "stale")
+            self.assertIn("504", briefing_with_stale["notice"])
+
+        # Clearing upon successful refresh removes the failure record
+        clear_briefing_refresh_failure(channel_id, owner_id=owner)
+        self.assertIsNone(get_briefing_refresh_failure(channel_id, owner_id=owner))
+
+        # 6. Workspace selector loads recommendations from persistent briefing across sessions
+        st.session_state.pop("daily_briefing", None)
+        with patch("pages.workspace.get_latest_daily_briefing", return_value=mock_briefing), \
+             patch("pages.workspace.connection_status_banner"), \
+             patch("pages.workspace.demo_banner"), \
+             patch.object(st, "selectbox") as mock_select:
+            render_workspace(subject=owner)
+            self.assertIn("daily_briefing", st.session_state)
+            self.assertEqual(st.session_state["daily_briefing"]["prioritized_actions"], actions)
+
 
 if __name__ == "__main__":
     unittest.main()
