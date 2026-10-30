@@ -13,7 +13,7 @@ import streamlit as st
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from core.auth import verify_owner_access, is_demo_mode, set_demo_mode
+from core.auth import verify_owner_access
 from core.creator_db import claim_legacy_owner_records
 from core.oauth import test_or_refresh_credentials, build_flow, YOUTUBE_SCOPES, MEMORY_SCOPES, get_auth_url
 from ui.theme import inject_theme
@@ -84,7 +84,8 @@ def render_app():
     inject_theme()
 
     secrets = _read_secrets_safe()
-    is_demo = is_demo_mode()
+    # Discard stale flags from older app versions. They never bypass owner authorization.
+    st.session_state.pop("demo_mode", None)
 
     # Access Gate
     authorized, subject, error_msg = verify_owner_access(secrets)
@@ -112,27 +113,21 @@ def render_app():
             if error_msg:
                 st.error(error_msg)
 
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                try:
-                    st.button("Sign in with Google", type="primary", on_click=st.login, use_container_width=True)
-                except Exception:
-                    st.caption("Streamlit auth provider not configured in local environment.")
-            with col2:
-                if st.button("Explore Demo Mode (No Sign-in)", use_container_width=True):
-                    st.session_state["demo_mode"] = True
-                    st.rerun()
+            try:
+                st.button("Sign in with Google", type="primary", on_click=st.login, use_container_width=True)
+            except Exception:
+                st.caption("Streamlit auth provider not configured in local environment.")
         return
 
-    # Claim legacy owner records if authorized owner is logged in
-    if authorized and subject and not is_demo:
+    # Claim legacy owner records for the verified channel owner.
+    if authorized and subject:
         try:
             claim_legacy_owner_records(subject)
         except Exception:
             pass
 
     # Vault & Token Management
-    state_secret = secrets.get("security", {}).get("state_secret", "dummy-secret-for-demo-mode-at-least-32-chars")
+    state_secret = secrets.get("security", {}).get("state_secret", "local-oauth-state-secret-change-in-production-32chars")
     token_store = None
     if len(state_secret) >= 32:
         try:
@@ -141,13 +136,13 @@ def render_app():
             token_store = None
 
     # Handle incoming OAuth callback
-    if subject and token_store and not is_demo:
+    if subject and token_store:
         _handle_oauth_callback(secrets, subject, token_store)
 
     # Hydrate stored credentials
     yt_creds = None
     memory_creds = None
-    if subject and token_store and not is_demo:
+    if subject and token_store:
         yt_json = st.session_state.get("youtube_credentials_json")
         if not yt_json:
             yt_rec = token_store.get_credentials_record(subject, "youtube")
@@ -158,11 +153,14 @@ def render_app():
         if yt_json:
             try:
                 raw_creds = Credentials.from_authorized_user_info(json.loads(yt_json))
-                yt_creds, status = test_or_refresh_credentials(raw_creds)
-                if status == "needs_reconnect":
+                if not raw_creds.has_scopes(YOUTUBE_SCOPES):
                     st.session_state["youtube_needs_reconnect"] = True
                 else:
-                    st.session_state.pop("youtube_needs_reconnect", None)
+                    yt_creds, status = test_or_refresh_credentials(raw_creds)
+                    if status == "needs_reconnect":
+                        st.session_state["youtube_needs_reconnect"] = True
+                    else:
+                        st.session_state.pop("youtube_needs_reconnect", None)
             except Exception:
                 st.session_state["youtube_needs_reconnect"] = True
 
@@ -211,8 +209,6 @@ def render_app():
         with sub_c1:
             if yt_creds:
                 st.markdown('<span class="status-pill status-connected">● Connected</span>', unsafe_allow_html=True)
-            elif is_demo:
-                st.markdown('<span class="status-pill status-connected">● Demo Mode</span>', unsafe_allow_html=True)
             elif st.session_state.get("youtube_needs_reconnect"):
                 st.markdown('<span class="status-pill status-reconnect">● Reconnect Needed</span>', unsafe_allow_html=True)
             else:
@@ -221,7 +217,7 @@ def render_app():
         with sub_c2:
             with st.popover("⚙️ Settings", use_container_width=True):
                 st.markdown("#### Settings & Access")
-                st.caption(f"Authenticated Owner: `{subject or 'Demo Mode'}`")
+                st.caption(f"Authenticated Owner: `{subject}`")
                 st.divider()
 
                 st.markdown("**YouTube Integration**")
@@ -233,24 +229,13 @@ def render_app():
                         st.session_state.pop("youtube_credentials_json", None)
                         st.rerun()
                 else:
-                    yt_auth_url, yt_err = get_auth_url("youtube", subject or "demo-owner-subject-12345", secrets)
+                    yt_auth_url, yt_err = get_auth_url("youtube", subject, secrets)
                     if yt_auth_url:
                         btn_text = "🔄 Reconnect YouTube" if st.session_state.get("youtube_needs_reconnect") else "▶ Connect YouTube"
                         st.link_button(btn_text, yt_auth_url, type="primary", use_container_width=True)
-                    elif yt_err and not is_demo:
+                    elif yt_err:
                         st.caption(f"OAuth notice: {yt_err}")
 
-                st.divider()
-                st.markdown("**Simulated / Demo State**")
-                demo_toggled = st.toggle(
-                    "🎮 Demo Mode",
-                    value=is_demo,
-                    key="pop_demo_toggle",
-                    help="Toggle realistic simulated channel data without live API calls",
-                )
-                if demo_toggled != is_demo:
-                    set_demo_mode(demo_toggled)
-                    st.rerun()
 
     # Canonical Single-Chat Landing
     render_copilot_chat(
@@ -261,7 +246,6 @@ def render_app():
         analytics=analytics,
         reporting=reporting,
         subject=subject,
-        is_demo=is_demo,
     )
 
 
