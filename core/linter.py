@@ -107,12 +107,15 @@ def lint_description(description: str) -> Dict[str, Any]:
     warnings: List[str] = []
     passes: List[str] = []
 
+    byte_count = len(d.encode("utf-8"))
     if n == 0:
         warnings.append("Description is empty. The opening 2 lines are critical for viewer context and search.")
+    elif byte_count > 5000:
+        warnings.append(f"Description exceeds YouTube's 5,000 UTF-8 byte limit ({byte_count}/5000 bytes, {n} chars).")
     elif n > 5000:
         warnings.append(f"Description exceeds YouTube's 5,000 character limit ({n}/5000).")
     else:
-        passes.append(f"Description length is within limits ({n}/5000 chars).")
+        passes.append(f"Description length is within limits ({byte_count}/5000 bytes, {n}/5000 chars).")
 
     hashtags = re.findall(r"#\w+", d)
     if len(hashtags) > 15:

@@ -76,6 +76,7 @@ HEADER_ALIASES = {
         "absolute audience retention",
     },
     "relative_retention": {"relative audience retention", "relative retention"},
+    "content_type": {"content type", "video type", "format", "media type", "video format", "content format"},
 }
 
 NUMERIC_FIELDS = {
@@ -417,7 +418,7 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
                 else:
                     record["video_id"] = None
             elif field in {"date", "traffic_source", "search_term",
-                         "geography", "age_group", "gender", "device_type"}:
+                         "geography", "age_group", "gender", "device_type", "content_type"}:
                 record[field] = raw or None
             elif field == "elapsed_time":
                 elapsed = _parse_elapsed(raw)
@@ -548,6 +549,8 @@ def _video_summaries(records):
         date_values = [row.get("date") for row in rows if row.get("date")]
         item["date_start"] = min(date_values) if date_values else None
         item["date_end"] = max(date_values) if date_values else None
+        content_types = [row.get("content_type") for row in rows if row.get("content_type")]
+        item["content_type"] = content_types[0] if content_types else None
         result.append(item)
     return result
 
@@ -1140,6 +1143,7 @@ def build_evidence_index(reports: list[dict]) -> dict:
             evidence = {
                 "source_file": filename,
                 "report_type": report.get("report_type"),
+                "content_type": row.get("content_type"),
                 "views": row.get("views"),
                 "watch_time_minutes": row.get("watch_time_minutes"),
                 "average_view_duration_seconds": row.get("average_view_duration_seconds"),
@@ -1221,3 +1225,39 @@ def find_video_evidence(index: dict, video_id: str | None, title: str | None) ->
                 seen.add(identity)
                 matches.append(item)
     return matches
+
+
+def analyze_uploaded_files(file_payloads: list[tuple[str, bytes]]) -> dict:
+    """Analyze uploaded files in-memory and return report structures."""
+    reports = []
+    for filename, data in file_payloads:
+        try:
+            parsed = parse_studio_export(filename, data)
+            analyzed = analyze_studio_export(parsed)
+            reports.append(analyzed)
+        except Exception:
+            pass
+    return {"reports": reports}
+
+
+def build_video_evidence_index(reports: list[dict]) -> dict:
+    """Alias for building evidence index from report structures."""
+    return build_evidence_index(reports)
+
+
+def index_uploaded_studio_files(files) -> tuple[dict, list[str]]:
+    """Parse multiple uploaded files in memory and build evidence index."""
+    reports = []
+    notices = []
+    for f in files:
+        name = getattr(f, "name", "uploaded_file")
+        data = f.getvalue() if hasattr(f, "getvalue") else f
+        try:
+            parsed = parse_studio_export(name, data)
+            analyzed = analyze_studio_export(parsed)
+            reports.append(analyzed)
+            notices.append(f"Parsed {name}")
+        except Exception as e:
+            notices.append(f"Failed {name}: {str(e)}")
+    return build_evidence_index(reports), notices
+
