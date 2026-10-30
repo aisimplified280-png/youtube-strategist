@@ -74,15 +74,112 @@ def get_db_path() -> Path:
         return fallback
 
 
-def get_db_connection() -> sqlite3.Connection:
-    """Get a thread-safe connection to the persistent SQLite database."""
-    db_file = get_db_path()
-    db_file.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_file), timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=15000;")
-    _init_db(conn)
-    return conn
+class StorageBackend:
+    """Pluggable persistence backend interface for development and hosted environments."""
+    def get_connection(self):
+        raise NotImplementedError
+    
+    def is_remote(self) -> bool:
+        return False
+    
+    @property
+    def name(self) -> str:
+        return "abstract"
+
+
+class SQLiteBackend(StorageBackend):
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+
+    def get_connection(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=15000;")
+        _init_db(conn)
+        return conn
+
+    def is_remote(self) -> bool:
+        return False
+
+    @property
+    def name(self) -> str:
+        return "sqlite"
+
+
+class PostgresBackend(StorageBackend):
+    def __init__(self, connection_url: str):
+        self.connection_url = connection_url
+        self._driver = None
+        for mod in ("psycopg2", "psycopg", "pg8000"):
+            try:
+                self._driver = __import__(mod)
+                break
+            except ImportError:
+                continue
+        if self._driver is None:
+            raise ImportError(
+                "Remote PostgreSQL connection configured but no PostgreSQL driver (psycopg2, psycopg, pg8000) is installed."
+            )
+
+    def get_connection(self):
+        conn = self._driver.connect(self.connection_url)
+        _init_db(conn)
+        return conn
+
+    def is_remote(self) -> bool:
+        return True
+
+    @property
+    def name(self) -> str:
+        return "postgres"
+
+
+_CURRENT_BACKEND: Optional[StorageBackend] = None
+
+
+def get_storage_backend(secrets: Optional[Dict[str, Any]] = None) -> StorageBackend:
+    """Resolve authoritative persistent database backend for local or hosted execution."""
+    global _CURRENT_BACKEND
+    if _CURRENT_BACKEND is not None:
+        return _CURRENT_BACKEND
+
+    # Check for remote database URL in secrets or environment
+    remote_url = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
+    if not remote_url and secrets:
+        remote_url = secrets.get("database", {}).get("url") or secrets.get("postgres", {}).get("url")
+    if not remote_url:
+        try:
+            import streamlit as st
+            remote_url = getattr(st, "secrets", {}).get("DATABASE_URL")
+            if not remote_url:
+                db_cfg = getattr(st, "secrets", {}).get("database", {})
+                if isinstance(db_cfg, dict):
+                    remote_url = db_cfg.get("url")
+        except Exception:
+            pass
+
+    if remote_url and (remote_url.startswith("postgres://") or remote_url.startswith("postgresql://")):
+        try:
+            return PostgresBackend(remote_url)
+        except Exception:
+            pass
+
+    # Default to durable managed SQLite
+    p = get_db_path()
+    return SQLiteBackend(p)
+
+
+def set_storage_backend(backend: Optional[StorageBackend]) -> None:
+    """Set or override active backend (primarily for tests)."""
+    global _CURRENT_BACKEND
+    _CURRENT_BACKEND = backend
+
+
+def get_db_connection(secrets: Optional[Dict[str, Any]] = None):
+    """Get a thread-safe connection to the persistent database backend."""
+    backend = get_storage_backend(secrets=secrets)
+    return backend.get_connection()
 
 
 def _ensure_columns(conn: sqlite3.Connection, table_name: str, required_columns: Dict[str, str]):
@@ -271,11 +368,134 @@ def _init_db(conn: sqlite3.Connection):
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS system_metadata (
+                meta_key TEXT PRIMARY KEY,
+                meta_value TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+            );
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_credentials (
+                app_key TEXT NOT NULL,
+                subject_key TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                encrypted_value BLOB NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (app_key, subject_key, purpose)
+            );
+            """
+        )
         _ensure_columns(
             conn,
-            "experiments",
-            {"owner_id": "TEXT NOT NULL DEFAULT 'default_owner'"},
+            "oauth_credentials",
+            {"revoked": "INTEGER NOT NULL DEFAULT 0"},
         )
+
+        # Backfill radar source dates and URLs for authoritative releases
+        conn.execute(
+            """
+            UPDATE research_radar 
+            SET source_date = '2024-10-11', 
+                source_url = 'https://blog.crewai.com/announcing-crewai-flows/'
+            WHERE id = 'radar-crewai-flows';
+            """
+        )
+        conn.execute(
+            """
+            UPDATE research_radar 
+            SET source_date = '2024-09-25'
+            WHERE id = 'radar-llama-3.2-edge' AND source_date = '2026-09-25';
+            """
+        )
+        conn.execute(
+            """
+            UPDATE research_radar 
+            SET source_date = '2024-10-03'
+            WHERE id = 'radar-gemini-1.5-flash-8b' AND source_date = '2026-10-03';
+            """
+        )
+
+
+# --- Legacy Owner Migration ---
+
+def claim_legacy_owner_records(authenticated_owner_id: str) -> Dict[str, Any]:
+    """Safely migrate legacy 'default_owner' records to the verified authenticated owner.
+
+    Ensures:
+    - Never maps records to demo or unauthenticated visitors.
+    - One-time safe operation: once claimed, does not re-map to other owners.
+    - Migrates preferences, proposal history, pipeline, radar, briefings, experiments, and locks.
+    """
+    if not authenticated_owner_id or authenticated_owner_id in (DEFAULT_OWNER_ID, "demo", "demo_owner", "anonymous"):
+        return {}
+
+    conn = get_db_connection()
+    migrated_counts: Dict[str, Any] = {}
+    now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    try:
+        with conn:
+            cur = conn.cursor()
+            cur.execute("SELECT meta_value FROM system_metadata WHERE meta_key = 'legacy_owner_claimed'")
+            row = cur.fetchone()
+            if row:
+                return {"success": False, "already_claimed_by": row[0]}
+
+            # 1. creator_preferences: migrate default_owner preferences if authenticated owner doesn't have them
+            cur.execute("SELECT pref_key, pref_value, updated_at_utc FROM creator_preferences WHERE owner_id = ?", (DEFAULT_OWNER_ID,))
+            default_prefs = cur.fetchall()
+            pref_count = 0
+            for p_key, p_val, p_upd in default_prefs:
+                cur.execute("SELECT 1 FROM creator_preferences WHERE owner_id = ? AND pref_key = ?", (authenticated_owner_id, p_key))
+                if not cur.fetchone():
+                    cur.execute(
+                        "INSERT OR REPLACE INTO creator_preferences (owner_id, pref_key, pref_value, updated_at_utc) VALUES (?, ?, ?, ?)",
+                        (authenticated_owner_id, p_key, p_val, p_upd)
+                    )
+                    pref_count += 1
+            cur.execute("DELETE FROM creator_preferences WHERE owner_id = ?", (DEFAULT_OWNER_ID,))
+            migrated_counts["creator_preferences"] = pref_count
+
+            # 2. proposal_history
+            cur.execute("UPDATE proposal_history SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
+            migrated_counts["proposal_history"] = cur.rowcount
+
+            # 3. production_pipeline
+            cur.execute("UPDATE production_pipeline SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
+            migrated_counts["production_pipeline"] = cur.rowcount
+
+            # 4. research_radar
+            cur.execute("UPDATE research_radar SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
+            migrated_counts["research_radar"] = cur.rowcount
+
+            # 5. daily_briefings
+            cur.execute("UPDATE daily_briefings SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
+            migrated_counts["daily_briefings"] = cur.rowcount
+
+            # 6. experiments
+            cur.execute("UPDATE experiments SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
+            migrated_counts["experiments"] = cur.rowcount
+
+            # 7. briefing_locks
+            cur.execute("UPDATE briefing_locks SET owner_id = ? WHERE owner_id = ?", (authenticated_owner_id, DEFAULT_OWNER_ID))
+            migrated_counts["briefing_locks"] = cur.rowcount
+
+            # Record that migration was completed
+            cur.execute(
+                "INSERT OR REPLACE INTO system_metadata (meta_key, meta_value, updated_at_utc) VALUES ('legacy_owner_claimed', ?, ?)",
+                (authenticated_owner_id, now_utc)
+            )
+            migrated_counts["success"] = True
+            migrated_counts["claimed_by"] = authenticated_owner_id
+        return migrated_counts
+    finally:
+        conn.close()
 
 
 # --- Mutex Lock with Safe Lease Renewal ---

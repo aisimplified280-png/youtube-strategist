@@ -85,6 +85,8 @@ def render_today(
         st.warning(f"⚠️ Refresh Notice: {notice or 'Using prior briefing.'}")
     elif status in ("insufficient_metrics", "unavailable_metrics"):
         st.warning(f"⚠️ Insufficient Analytics Data: {notice or 'YouTube Analytics metrics are unavailable or delayed for recent uploads.'}")
+    elif status == "insufficient_peer_sample":
+        st.info(f"ℹ️ {notice or 'Insufficient peer sample. Uploads do not have at least 3 same-format, age-matched peers for comparison.'}")
     elif status == "pending":
         st.info("⏳ Daily briefing scan is currently in progress. Please check back shortly.")
     elif notice:
@@ -133,6 +135,10 @@ def render_today(
             st.warning(
                 f"⚠️ {notice or 'Analytics metrics are unavailable or delayed for recent uploads. Cannot benchmark performance without valid metrics.'}"
             )
+        elif status == "insufficient_peer_sample":
+            st.info(
+                f"ℹ️ {notice or 'Insufficient peer sample. Uploads do not have at least 3 same-format, age-matched peers for comparison.'}"
+            )
         elif status == "connection_failure":
             st.info("Connect YouTube in Settings or explore in Demo Mode to view prioritized growth actions.")
         elif status == "scan_failed":
@@ -141,6 +147,8 @@ def render_today(
             st.info("No video uploads detected in the last 90 days.")
         elif summary.get("measured_videos_count", 0) < 3:
             st.warning("⚠️ Analytics metrics are unavailable or delayed for recent uploads. Cannot benchmark performance without valid metrics.")
+        elif summary.get("comparable_videos_count", 0) < 1:
+            st.info("ℹ️ Insufficient peer coverage: none of the recent uploads have at least 3 same-format, age-matched peers to establish a reliable baseline.")
         else:
             st.info("No underperforming videos detected in the current window. All recent uploads are performing in line with or above peer medians.")
     else:

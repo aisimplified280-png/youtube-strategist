@@ -42,6 +42,20 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
     is_demo = is_demo_mode()
     secrets = secrets or {}
 
+    # Reset proposal inputs cleanly at the start of rerun BEFORE widgets are rendered
+    if st.session_state.pop("_deferred_workspace_reset", False):
+        st.session_state.pop("prop_title_in", None)
+        st.session_state.pop("prop_desc_in", None)
+        st.session_state.pop("prop_tags_in", None)
+        st.session_state.pop("workspace_proposal", None)
+        st.session_state.pop("workspace_approved_digest", None)
+
+    # Display applied success banner across reruns if present
+    applied_notice = st.session_state.pop("_applied_success_notice", None)
+    if applied_notice:
+        st.success(applied_notice)
+        st.balloons()
+
     # Actionable outside connection banner when disconnected
     connection_status_banner(secrets, subject=subject, yt_creds=youtube, memory_creds=memory_creds, is_demo=is_demo)
 
@@ -384,9 +398,11 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
                                         st.toast("Experiment logged to Google Sheets memory!")
                                     except Exception:
                                         pass
-                                # Refresh context and reset proposal widget state cleanly
+                                # Defer widget reset to next rerun to avoid modifying instantiated widget keys
+                                st.session_state["_deferred_workspace_reset"] = True
+                                st.session_state["_applied_success_notice"] = f"🎉 Update Applied and Verified! {res.get('message', '')}"
                                 st.session_state.pop("workspace_target_context", None)
-                                _clear_workspace_proposal_state()
+                                st.rerun()
                             else:
                                 st.error(f"Apply failed: {res.get('message', 'Unknown error')}")
 

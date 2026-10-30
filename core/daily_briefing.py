@@ -55,9 +55,9 @@ AUTHORITATIVE_AI_RADAR_SOURCES = [
     {
         "id": "radar-crewai-flows",
         "title": "CrewAI Flows Architecture Release",
-        "source_url": "https://github.com/crewAIInc/crewAI",
+        "source_url": "https://blog.crewai.com/announcing-crewai-flows/",
         "category": "agent_tool",
-        "source_date": "2024-10-15",
+        "source_date": "2024-10-11",
         "channel_relevance": "Deterministic routing and state machines solve unconstrained agent hallucination loops, matching our engineering audience.",
         "summary": "Deterministic state management and flow control for multi-agent workflows.",
         "video_angles": [
@@ -225,10 +225,32 @@ def _generate_briefing_data(
         extend_briefing_lock(lock_key, lock_token, extend_seconds=90)
 
     # B. Deterministic Candidate Ranking
-    # Distinguish insufficient sample size, insufficient metrics, and healthy channel
-    measured_video_rows = [
-        row for row in video_rows
-        if isinstance(row.get("views"), (int, float)) and row["views"] > 0
+    # Distinguish insufficient sample size, insufficient metrics, insufficient peer sample, and ready state.
+    # Treat numeric zero as an observed metric (not missing data).
+    def _is_observed_view(row: Dict[str, Any]) -> bool:
+        v = row.get("views")
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+
+    observed_video_rows = [row for row in video_rows if _is_observed_view(row)]
+
+    def _find_peers(v: Dict[str, Any], pool: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        v_id = v.get("video_id")
+        v_fmt = v.get("format")
+        v_age = v.get("age_days")
+        if v_age is None or not _is_observed_view(v):
+            return []
+        return [
+            peer for peer in pool
+            if peer.get("video_id") != v_id
+            and peer.get("format") == v_fmt
+            and peer.get("age_days") is not None
+            and abs(peer["age_days"] - v_age) <= max(14, int(v_age * 0.5))
+            and _is_observed_view(peer)
+        ]
+
+    comparable_video_rows = [
+        row for row in observed_video_rows
+        if len(_find_peers(row, observed_video_rows)) >= 3
     ]
 
     if len(video_rows) < 3:
@@ -238,12 +260,19 @@ def _generate_briefing_data(
             f"Insufficient sample size: {len(video_rows)} video(s) found in the 90-day window. "
             "At least 3 format-matched uploads are needed for peer benchmarking."
         )
-    elif len(measured_video_rows) < 3:
+    elif len(observed_video_rows) < 3:
         status = "insufficient_metrics"
         ranked_candidates = []
         notice = (
-            f"Insufficient analytics metrics: only {len(measured_video_rows)} of {len(video_rows)} video(s) "
-            "have verified view metrics. YouTube Analytics data may be delayed, pending, or unavailable."
+            f"Insufficient analytics metrics: only {len(observed_video_rows)} of {len(video_rows)} video(s) "
+            "have observed view metrics. YouTube Analytics data may be delayed, pending, or unavailable."
+        )
+    elif len(comparable_video_rows) == 0:
+        status = "insufficient_peer_sample"
+        ranked_candidates = []
+        notice = (
+            f"Insufficient peer sample: none of the {len(observed_video_rows)} uploads with observed views have at least 3 "
+            "same-format, age-matched peers. A reliable baseline cannot be established without comparable peer uploads."
         )
     else:
         # Feed only correctly measured data into rank_optimization_candidates()
@@ -383,7 +412,8 @@ def _generate_briefing_data(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "total_recent_videos": len(video_rows),
-            "measured_videos_count": len(measured_video_rows),
+            "measured_videos_count": len(observed_video_rows),
+            "comparable_videos_count": len(comparable_video_rows),
             "opportunity_count": len(ranked_candidates),
             "reach_reporting_active": reach_available,
         },

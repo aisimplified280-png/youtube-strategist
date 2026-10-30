@@ -43,8 +43,10 @@ class TestCriticalRegressions(unittest.TestCase):
         self.test_db_path = Path(self.temp_dir.name) / "test_creator_memory.sqlite3"
         self._orig_db_env = os.environ.get("CREATOR_GROWTH_DB_PATH")
         os.environ["CREATOR_GROWTH_DB_PATH"] = str(self.test_db_path)
+        creator_db.set_storage_backend(None)
 
     def tearDown(self):
+        creator_db.set_storage_backend(None)
         if self._orig_db_env is not None:
             os.environ["CREATOR_GROWTH_DB_PATH"] = self._orig_db_env
         else:
@@ -561,6 +563,7 @@ class TestCriticalRegressions(unittest.TestCase):
         conn.close()
 
         # Point environment to this database and run get_db_connection()
+        creator_db.set_storage_backend(None)
         with patch.dict(os.environ, {"CREATOR_GROWTH_DB_PATH": str(legacy_db_file)}):
             migrated_conn = creator_db.get_db_connection()
             cur = migrated_conn.cursor()
@@ -573,20 +576,24 @@ class TestCriticalRegressions(unittest.TestCase):
             prefs = creator_db.get_creator_preferences(owner_id="default_owner", is_demo=False)
             self.assertEqual(prefs.get("voice_tone"), "Authoritative Engineering")
             self.assertEqual(prefs.get("target_audience"), "Senior Python Devs")
+        creator_db.set_storage_backend(None)
 
-        # Test legacy oauth token store migration
+        # Test legacy oauth token store migration with real populated database
         from oauth_token_store import OAuthTokenStore
-        legacy_oauth_file = Path(self.temp_dir.name) / "legacy_oauth.sqlite3"
-        target_oauth_file = Path(self.temp_dir.name) / "target_oauth.sqlite3"
-        lconn = sqlite3.connect(str(legacy_oauth_file))
-        with lconn:
-            lconn.execute("CREATE TABLE oauth_credentials (app_key TEXT, subject_key TEXT, purpose TEXT, encrypted_value BLOB, updated_at REAL, PRIMARY KEY (app_key, subject_key, purpose))")
-        lconn.close()
+        signing_secret = "test-secret-at-least-32-chars-legacy-token"
+        legacy_oauth_file = Path(self.temp_dir.name) / "ai-simplified-lab-strategist-oauth.sqlite3"
+        target_oauth_file = Path(self.temp_dir.name) / "migrated_oauth" / "ai-simplified-lab-strategist-oauth.sqlite3"
 
-        with patch("tempfile.gettempdir", return_value=self.temp_dir.name), \
-             patch("pathlib.Path.exists", side_effect=lambda: False if str(target_oauth_file) in str(self) else True):
-            store = OAuthTokenStore(signing_secret="a" * 32, path=str(target_oauth_file))
-            self.assertTrue(target_oauth_file.parent.exists())
+        legacy_store = OAuthTokenStore(signing_secret, path=str(legacy_oauth_file))
+        legacy_store.save_credentials_json("legacy_subject_1", "youtube", '{"access_token": "token-xyz-123"}')
+        self.assertTrue(legacy_oauth_file.exists())
+        self.assertFalse(target_oauth_file.exists())
+
+        with patch("tempfile.gettempdir", return_value=self.temp_dir.name):
+            migrated_store = OAuthTokenStore(signing_secret, path=str(target_oauth_file))
+            self.assertTrue(target_oauth_file.exists())
+            decrypted = migrated_store.get_credentials_json("legacy_subject_1", "youtube")
+            self.assertEqual(decrypted, '{"access_token": "token-xyz-123"}')
 
     # --- Scenario 15: Workspace clears widget keys on video switch and apply ---
     def test_workspace_clears_widget_keys_on_video_switch_and_apply(self):
@@ -611,6 +618,222 @@ class TestCriticalRegressions(unittest.TestCase):
         self.assertNotIn("prop_tags_in", st.session_state)
         self.assertNotIn("workspace_proposal", st.session_state)
         self.assertNotIn("workspace_approved_digest", st.session_state)
+
+    # --- Scenario 16: Analytics peer coverage and zero views as observed metric ---
+    def test_analytics_peer_coverage_and_zero_views_observed(self):
+        """Zero views is an observed metric; briefings require sufficient same-format, age-matched peers."""
+        from core.daily_briefing import _generate_briefing_data
+        from pages.today import render_today
+        import streamlit as st
+
+        # Video rows with observed metrics (including 0 views), but mismatched formats and ages
+        # vid-1 is short (age 10), vid-2 is longform (age 10), vid-3 is longform (age 80)
+        # vid-2 has age 10, vid-3 has age 80 -> abs(80 - 10) = 70 > max(14, 5) -> not peers!
+        # None have >= 3 peers!
+        video_rows = [
+            {"video_id": "vid-1", "title": "Zero views short", "format": "short", "views": 0, "age_days": 10},
+            {"video_id": "vid-2", "title": "Recent longform", "format": "longform", "views": 100, "age_days": 10},
+            {"video_id": "vid-3", "title": "Old longform", "format": "longform", "views": 500, "age_days": 80},
+        ]
+
+        with patch("youtube_dashboard.load_dashboard_data", return_value={"video_rows": video_rows, "reach_status": "Ready", "api_warnings": []}):
+            briefing = _generate_briefing_data(
+                youtube=None,
+                analytics=None,
+                reporting=None,
+                credentials=None,
+                owner_id="owner-test",
+                secrets={},
+                channel_id="chan-test",
+                run_date="2026-10-30",
+            )
+        self.assertEqual(briefing["status"], "insufficient_peer_sample")
+        self.assertEqual(briefing["summary"]["measured_videos_count"], 3)
+        self.assertEqual(briefing["summary"]["comparable_videos_count"], 0)
+        self.assertEqual(briefing["summary"]["opportunity_count"], 0)
+        self.assertEqual(briefing["prioritized_actions"], [])
+
+        # Verify Today page does NOT display healthy channel message without peer coverage
+        with patch("pages.today.get_or_create_daily_briefing", return_value=briefing), \
+             patch.object(st, "warning") as mock_warn, \
+             patch.object(st, "info") as mock_info, \
+             patch.object(st, "columns", side_effect=lambda spec, *args, **kwargs: [MagicMock() for _ in range(spec if isinstance(spec, int) else len(spec))]), \
+             patch("pages.today.connection_status_banner"), \
+             patch("pages.today.demo_banner"):
+            render_today(subject="owner-test")
+            info_calls = [str(call) for call in mock_info.call_args_list]
+            self.assertTrue(any("Insufficient peer sample" in c or "same-format" in c for c in info_calls))
+            self.assertFalse(any("All recent uploads are performing in line" in c for c in info_calls))
+
+    # --- Scenario 17: Workspace post-apply render lifecycle ---
+    def test_workspace_post_apply_render_lifecycle(self):
+        """Deferred reset clears widget keys at the start of rerun before widgets are instantiated."""
+        import streamlit as st
+        from pages.workspace import render_workspace
+
+        # Simulate state after an apply operation has succeeded
+        st.session_state["_deferred_workspace_reset"] = True
+        st.session_state["_applied_success_notice"] = "🎉 Update Applied and Verified! Metadata saved."
+        st.session_state["prop_title_in"] = "Applied Title"
+        st.session_state["prop_desc_in"] = "Applied Desc"
+        st.session_state["prop_tags_in"] = "applied, tags"
+        st.session_state["workspace_proposal"] = {"title": "Applied Title"}
+        st.session_state["workspace_approved_digest"] = "digest123"
+
+        with patch.object(st, "success") as mock_success, \
+             patch.object(st, "balloons") as mock_balloons, \
+             patch.object(st, "info"), patch.object(st, "warning"), patch.object(st, "error"), \
+             patch.object(st, "text_input"), patch.object(st, "text_area"), \
+             patch.object(st, "button", return_value=False), \
+             patch.object(st, "columns", side_effect=lambda spec, *args, **kwargs: [MagicMock() for _ in range(spec if isinstance(spec, int) else len(spec))]), \
+             patch("pages.workspace.connection_status_banner"):
+
+            # Rendering workspace on the rerun pass
+            render_workspace(youtube=MagicMock(), secrets={}, subject="owner-subject-1")
+
+            # Must have cleared keys at the top of render_workspace before widgets were created
+            self.assertNotIn("prop_title_in", st.session_state)
+            self.assertNotIn("prop_desc_in", st.session_state)
+            self.assertNotIn("prop_tags_in", st.session_state)
+            self.assertNotIn("workspace_proposal", st.session_state)
+            self.assertNotIn("workspace_approved_digest", st.session_state)
+            self.assertNotIn("_deferred_workspace_reset", st.session_state)
+            self.assertNotIn("_applied_success_notice", st.session_state)
+            mock_success.assert_called_with("🎉 Update Applied and Verified! Metadata saved.")
+            mock_balloons.assert_called_once()
+
+    # --- Scenario 18: Owner data migration security and durability ---
+    def test_owner_data_migration_security_and_durability(self):
+        """claim_legacy_owner_records safely maps default_owner records to authenticated owner only."""
+        from core.creator_db import (
+            SQLiteBackend, set_storage_backend, claim_legacy_owner_records,
+            get_creator_preferences, DEFAULT_OWNER_ID
+        )
+
+        test_db_path = Path(self.temp_dir.name) / "migration_test.sqlite3"
+        backend = SQLiteBackend(test_db_path)
+        set_storage_backend(backend)
+
+        # Populate legacy records under DEFAULT_OWNER_ID
+        conn = backend.get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO creator_preferences (owner_id, pref_key, pref_value, updated_at_utc) VALUES (?, ?, ?, ?)",
+                (DEFAULT_OWNER_ID, "channel_niche", "Autonomous AI Agents", "2026-10-30T00:00:00Z")
+            )
+            conn.execute(
+                "INSERT INTO production_pipeline (id, owner_id, title, stage, target_format, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                ("pipe-legacy-1", DEFAULT_OWNER_ID, "Legacy Pipeline Title", "idea", "longform", "2026-10-30T00:00:00Z")
+            )
+            conn.execute(
+                "INSERT INTO proposal_history (owner_id, video_id, proposal_digest, status, proposal_json, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?)",
+                (DEFAULT_OWNER_ID, "vid-legacy", "digest123", "accepted", "{}", "2026-10-30T00:00:00Z")
+            )
+        conn.close()
+
+        # Attempt to claim with unauthorized / demo subjects -> must fail / return empty
+        self.assertEqual(claim_legacy_owner_records("demo"), {})
+        self.assertEqual(claim_legacy_owner_records("anonymous"), {})
+        self.assertEqual(claim_legacy_owner_records(""), {})
+
+        # Claim with authenticated owner
+        claimed = claim_legacy_owner_records("auth_owner_real_789")
+        self.assertTrue(claimed.get("success"))
+
+        # Verify owner has access to claimed data
+        prefs = get_creator_preferences(owner_id="auth_owner_real_789")
+        self.assertEqual(prefs.get("channel_niche"), "Autonomous AI Agents")
+
+        # Verify intruder cannot re-claim already migrated data
+        intruder_result = claim_legacy_owner_records("intruder_owner_000")
+        self.assertFalse(intruder_result.get("success", False))
+
+        # Demo mode must never see the claimed owner records
+        demo_prefs = get_creator_preferences(is_demo=True)
+        self.assertNotEqual(demo_prefs.get("channel_niche"), "Autonomous AI Agents")
+
+    # --- Scenario 19: Hosted restart persistence integration ---
+    def test_hosted_restart_persistence_integration(self):
+        """Simulates app restart across connection teardown, verifying persistence of memory and credentials."""
+        from core.creator_db import (
+            SQLiteBackend, set_storage_backend, set_creator_preference,
+            get_creator_preferences, save_pipeline_item, get_pipeline_items
+        )
+        from oauth_token_store import OAuthTokenStore
+
+        persist_db_path = Path(self.temp_dir.name) / "restart_persist.sqlite3"
+        backend = SQLiteBackend(persist_db_path)
+        set_storage_backend(backend)
+
+        # 1. Save data before restart
+        set_creator_preference("upload_frequency", "2x/week", owner_id="owner_persist")
+        save_pipeline_item("item-persist-1", "Agents in Prod", "scripting", "longform", owner_id="owner_persist")
+
+        signing_secret = "secret-key-at-least-32-chars-long-12345"
+        token_store = OAuthTokenStore(
+            signing_secret,
+            connection_factory=lambda: SQLiteBackend(persist_db_path).get_connection()
+        )
+        token_store.save_credentials_json("owner_persist", "youtube", '{"token": "persisted_oauth_token_val"}')
+
+        # 2. Simulate complete restart: clear backend singleton and instantiate fresh store
+        set_storage_backend(None)
+
+        fresh_backend = SQLiteBackend(persist_db_path)
+        set_storage_backend(fresh_backend)
+        fresh_token_store = OAuthTokenStore(
+            signing_secret,
+            connection_factory=lambda: SQLiteBackend(persist_db_path).get_connection()
+        )
+
+        # 3. Verify data survived restart
+        prefs = get_creator_preferences(owner_id="owner_persist")
+        self.assertEqual(prefs.get("upload_frequency"), "2x/week")
+
+        pipeline = get_pipeline_items(owner_id="owner_persist")
+        self.assertEqual(len(pipeline), 1)
+        self.assertEqual(pipeline[0]["title"], "Agents in Prod")
+
+        creds = fresh_token_store.get_credentials_json("owner_persist", "youtube")
+        self.assertEqual(creds, '{"token": "persisted_oauth_token_val"}')
+
+    # --- Scenario 20: Research Radar provenance and backfill ---
+    def test_radar_provenance_and_backfill(self):
+        """Authoritative releases have verified source dates and existing records are backfilled."""
+        from core.daily_briefing import AUTHORITATIVE_AI_RADAR_SOURCES
+        from core.creator_db import SQLiteBackend, set_storage_backend, _init_db
+
+        # Verify CrewAI Flows source date and URL
+        crewai_item = next(item for item in AUTHORITATIVE_AI_RADAR_SOURCES if item["id"] == "radar-crewai-flows")
+        self.assertEqual(crewai_item["source_date"], "2024-10-11")
+        self.assertEqual(crewai_item["source_url"], "https://blog.crewai.com/announcing-crewai-flows/")
+
+        # Verify backfill on existing DB with old dates
+        radar_db_path = Path(self.temp_dir.name) / "radar_backfill.sqlite3"
+        backend = SQLiteBackend(radar_db_path)
+        set_storage_backend(backend)
+        conn = backend.get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO research_radar (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json) "
+                "VALUES ('radar-llama-3.2-edge', 'default_owner', 'Llama 3.2', 'https://ai.meta.com', 'model_release', '2026-09-25', '2026-10-30T00:00:00Z', 'relevance', '2026-10-30', 'summary', '[]')"
+            )
+            conn.execute(
+                "INSERT INTO research_radar (id, owner_id, title, source_url, category, source_date, retrieved_at_utc, channel_relevance, discovered_date, summary, video_angles_json) "
+                "VALUES ('radar-gemini-1.5-flash-8b', 'default_owner', 'Flash 8B', 'https://developers.googleblog.com', 'model_release', '2026-10-03', '2026-10-30T00:00:00Z', 'relevance', '2026-10-30', 'summary', '[]')"
+            )
+        # Run init/migration which triggers backfill queries
+        _init_db(conn)
+
+        cur = conn.cursor()
+        cur.execute("SELECT source_date, retrieved_at_utc FROM research_radar WHERE id = 'radar-llama-3.2-edge'")
+        llama_row = cur.fetchone()
+        self.assertEqual(llama_row[0], "2024-09-25")
+        self.assertEqual(llama_row[1], "2026-10-30T00:00:00Z")  # Preserves retrieval timestamp separately
+
+        cur.execute("SELECT source_date FROM research_radar WHERE id = 'radar-gemini-1.5-flash-8b'")
+        self.assertEqual(cur.fetchone()[0], "2024-10-03")
+        conn.close()
 
 
 if __name__ == "__main__":
