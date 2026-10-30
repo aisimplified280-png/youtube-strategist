@@ -521,7 +521,7 @@ Reference material is for learning high-level structure and editorial techniques
 
 Return ONLY a JSON object with exactly these keys:
 assistant_message (string), title (string), description (string), tags (array of strings),
-rationale (array of strings), title_angles (array of structured angle/title objects; empty only when the title must be preserved).
+rationale (array of strings), title_angles (array of exactly 3 objects with angle/title fields, or an empty array when the current title must be preserved).
 
 Rules:
 - Return a complete title, description, and separate tags, but conservatism is more important than filling space.
