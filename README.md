@@ -1,7 +1,7 @@
 # YouTube Strategist
 
-> **A private, owner-only AI co-pilot for YouTube creators.**  
-> It reads real channel telemetry (YouTube Analytics, Reporting API reach metrics, Studio CSV/Excel exports), surfaces the **ONE most valuable packaging action to take next**, helps craft better titles/descriptions/tags in a conversational editor, and applies changes to YouTube **only after explicit approval of the exact proposal**.
+> **A private, owner-only YouTube Metadata Copilot for AI Simplified Lab.**  
+> One conversational interface to scan recent channel performance, find videos worth optimizing, formulate evidence-based title options, improve descriptions and tags, and publish only after explicit approval of the exact proposal.
 
 ---
 
@@ -13,23 +13,24 @@ This repository contains two complementary components:
 
 ---
 
-# Part 1: Streamlit Dashboard
+# Part 1: Streamlit Metadata Copilot
 
 ## What It Does
 
-- **Home ("What should I do today?")**: Delivers 5-second clarity. Features a single hero card with the highest-leverage optimization candidate, a 3-step setup strip, channel pulse tiles with period-over-period deltas, and recent verified experiments.
-- **Find Videos & Studio Export Analysis**: Drag-and-drop multiple YouTube Studio CSV, TSV, or `.xlsx` workbooks. Detects report types, recognized vs ignored columns, and surfaces candidates one at a time with evidence chips (CTR vs baseline, APV, retention cliff timestamp) and Skip / Undo Skip buttons.
-- **Strategist Co-Pilot**: Split-screen conversational editor. Chat on the left, live proposal on the right. Shows visual word-level diffs, real-time character counters (desktop 60-char cutoff, mobile 40-char cutoff, tag budget 500 chars), packaging warnings, and an approval gate.
-- **Channel Dashboard**: Date range presets (7d, 28d, 90d, custom), period-over-period comparison, sortable/filterable video performance table, and an Evidence Drawer detailing peer grouping rules (minimum 3 peers, duration format, age bucket).
-- **Memory & Experiments**: Timeline of verified applied metadata changes (recorded only after YouTube confirms the write) and weekly scan snapshots.
-- **Settings & Connections**: Health status cards for Google sign-in, YouTube, Google Sheets memory, AI providers, diagnostics, and a Demo Mode toggle.
+- **Single conversational workspace:** The owner signs in with the configured Google account. There is no sample-channel mode or simulated publishing path.
+- **Channel opportunity scan:** The landing action scans up to 200 recent channel uploads and reviews the last 28 complete days of available YouTube Analytics data. It ranks below-benchmark videos using format-aware channel comparisons.
+- **Video-specific optimization:** Paste a YouTube video or Short link to load current metadata, public metrics, and available captions. The assistant prepares title, description, and separate-tag recommendations grounded in the supplied content.
+- **Three structured title angles:** Curiosity, direct value, and search. Missing or invalid options are rejected rather than filled with generic titles. Description-only and tag-only edits preserve the current title.
+- **Studio evidence:** Attach CSV, TSV, TXT, or XLSX exports. Impressions and CTR are used only when both values are present together in matching video-level evidence from the same report period; CTR is never guessed from views.
+- **Approval-gated publishing:** The exact proposed metadata is shown for editing and comparison. A real YouTube write is available only for the verified owner channel, after explicit approval, a stale-metadata check, and post-write verification.
+- **AI providers:** Groq is primary and Gemini is the configured fallback. No other pages or dashboards are exposed by the app entry point.
 
 ---
 
 ## Non-Negotiable Safety & Privacy Rules
 
 1. **Owner-Only Gate:** Strict Google OpenID Connect email and verified-email check against `secrets.access.owner_email` occurs *before* any API client is instantiated or private channel data is shown.
-2. **Strictly Decoupled OAuth Flows:** Google rejects combined YouTube and Google Drive requests. YouTube Analytics/Metadata (`yt-analytics.readonly`, `youtube.force-ssl`) and private Sheets memory (`drive.file`) use separate OAuth grants and encrypted vaults.
+2. **Strictly Decoupled OAuth Flows:** Google rejects combined YouTube and Google Drive requests. YouTube channel discovery (`youtube.readonly`), Analytics (`yt-analytics.readonly`), and approved metadata writes (`youtube.force-ssl`) use a YouTube grant; private Sheets memory (`drive.file`) remains a separate grant and encrypted vault.
 3. **Exact Approval Gate:** Nothing is written to YouTube without explicit user approval of the exact title, full description, and tags shown. Editing a proposal invalidates prior approvals. Stale metadata checks re-fetch live data before saving, and post-write verification checks the result.
 4. **Zero Metric Hallucination:** If impressions, CTR, or transcripts are unavailable, the app clearly displays "Unavailable" with the reason. No guessed CTR, no causal claims, and videos $\le$180s are labelled as *Short candidates*, not confirmed Shorts.
 5. **No Secrets or Tokens in Git:** Secrets are loaded only via Streamlit Secrets. Tokens are encrypted at rest with Fernet.
@@ -99,7 +100,7 @@ fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
 - **Audit & History Persistence:** In the hosted dashboard, active chat turns and session audit records are stored in server-side session state. Verified experiments and weekly scans can be saved to your private Google Sheet ("Strategist Memory") using the `drive.file` scope. The command-line script writes local files to `~/.ai-simplified-youtube/metadata_audit.jsonl`.
 - **Google OAuth Testing Refresh Token Expiry:** Google specifies that refresh tokens in "Testing" mode expire after 7 days when accessing sensitive YouTube scopes. When this occurs, the app displays a clear "Reconnect needed" status pill and button rather than crashing.
 - **Reporting API Reach Data Delay:** Thumbnail impressions and CTR are sourced from the asynchronous `channel_reach_basic_a1` report. When first enabled, Google can take up to 48 hours to generate the first daily report file.
-- **Demo Mode:** Toggleable in Settings (or from the landing page) when no channel credentials are connected. Renders realistic sample data across all pages with zero external network requests.
+- **Owner-only operation:** The hosted Copilot has no Demo Mode, synthetic channel fixtures, or simulated approval. If Google or YouTube credentials are disconnected, it asks the owner to sign in or reconnect before accessing channel data.
 
 ---
 
