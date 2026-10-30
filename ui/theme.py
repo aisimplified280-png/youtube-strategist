@@ -278,21 +278,6 @@ def inject_theme():
             font-size: 1.1rem;
         }
 
-        /* Demo Mode Banner */
-        .demo-banner {
-            background: linear-gradient(90deg, #3B82F6 0%, #1D4ED8 100%);
-            color: white;
-            padding: 8px 16px;
-            border-radius: 8px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 16px;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
-        }
-
         /* Diff Viewer */
         .diff-panel {
             background: #111520;
