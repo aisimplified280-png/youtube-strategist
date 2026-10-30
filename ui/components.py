@@ -203,7 +203,6 @@ def connection_status_banner(secrets: Dict[str, Any], subject: Optional[str] = N
         return
 
     from core.oauth import get_auth_url
-    from core.auth import set_demo_mode
 
     # Case 1: YouTube Disconnected
     if not yt_creds:
@@ -229,11 +228,6 @@ def connection_status_banner(secrets: Dict[str, Any], subject: Optional[str] = N
                     st.link_button("▶ Connect YouTube", auth_url, type="primary", use_container_width=True)
                 else:
                     st.caption("OAuth not configured")
-            with col_b3:
-                st.write("")
-                if st.button("🎮 Try Demo Mode", key="banner_try_demo", use_container_width=True, help="Explore with realistic sample channel data"):
-                    set_demo_mode(True)
-                    st.rerun()
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
     # Case 2: Memory Disconnected (YouTube is connected, but Memory is not)
