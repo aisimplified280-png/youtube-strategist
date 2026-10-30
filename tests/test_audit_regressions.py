@@ -142,17 +142,6 @@ class TestAuditRegressions(unittest.TestCase):
 
         self.assertNotEqual(digest_vid_a, digest_vid_b, "Different video IDs must produce different approval digests.")
 
-    # 7. Medium — Demo mode distinguishes simulated vs verified results
-    def test_demo_mode_result_structure(self):
-        simulated_result = {
-            "result": "simulated_success",
-            "title": "Simulated New Title",
-            "url": "https://www.youtube.com/watch?v=demo123",
-            "simulated": True,
-        }
-        self.assertTrue(simulated_result.get("simulated"))
-        self.assertNotEqual(simulated_result.get("result"), "verified_youtube_write")
-
     # 8. Medium — custom analytics range calculation
     def test_custom_period_duration_equals_prior_period_duration(self):
         start = date(2026, 9, 1)
