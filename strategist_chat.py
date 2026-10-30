@@ -511,12 +511,18 @@ Reference material is for learning high-level structure and editorial techniques
 
 Return ONLY a JSON object with exactly these keys:
 assistant_message (string), title (string), description (string), tags (array of strings),
-rationale (array of strings).
+rationale (array of strings), title_angles (array of exactly 3 objects with angle and title fields).
 
 Rules:
 - Return a complete title, description, and separate tags, but conservatism is more important than filling space.
+- Return title_angles as exactly three structured objects, in this order:
+  {"angle":"curiosity","title":"..."},
+  {"angle":"direct_value","title":"..."},
+  {"angle":"search","title":"..."}.
+- Each title must be a distinct, publishable title supported by the target title, description, and transcript. Keep each at or below 100 characters. Never fill missing options with generic templates or unsupported claims.
+- The 'title' field must exactly match one of the three title_angles titles: choose the strongest supported option and explain the choice in assistant_message.
 - The target title, existing target description, target tags, and TARGET TRANSCRIPT are the only evidence for claims about the video's content. Use STUDIO PERFORMANCE EVIDENCE only for numeric performance claims.
-- Provide 3 genuinely distinct title angles in assistant_message:
+- Provide the three genuinely distinct title angles:
   1) Curiosity / Intrigue
   2) Direct Value / Outcome
   3) Search / SEO
@@ -680,16 +686,18 @@ def _load_conversation_videos(youtube, secrets, message):
 
 
 def _is_channel_opportunity_request(message: str) -> bool:
-    """Recognize channel-wide scan requests."""
+    """Recognize requests to discover which owned uploads should be optimized."""
     text = (message or "").casefold()
     has_video_scope = bool(re.search(r"\b(channel|videos?|shorts?|uploads?)\b", text))
-    has_performance_intent = bool(re.search(
+    has_opportunity_intent = bool(re.search(
         r"\b(least performing|lowest performing|underperform(?:ing)?|"
         r"worst performing|bad performing|low views|lowest views|bad ctr|"
-        r"lowest ctr|least views|fix bottleneck|channel health|channel pulse)\b",
+        r"lowest ctr|least views|fix bottleneck|channel health|channel pulse|"
+        r"which videos|what videos|videos to optimize|find videos|"
+        r"recommend videos|optimization opportunit(?:y|ies)|scan my channel)\b",
         text,
     ))
-    return has_video_scope and has_performance_intent
+    return has_video_scope and has_opportunity_intent
 
 
 def _apply_error_message(error: Exception) -> str:
@@ -715,38 +723,39 @@ def _apply_error_message(error: Exception) -> str:
     return f"The update could not be confirmed ({type(error).__name__}). Reload metadata before retrying."
 
 
-def _extract_title_angles(assistant_message: str, current_title: str, proposed_title: str) -> List[Dict[str, str]]:
-    """Extract or formulate 3 distinct title angles."""
-    angles = []
-    lines = assistant_message.split("\n")
-    cur_pat = re.compile(r"(?:1\b|curiosity|intrigue)[:\-\s*]+[\"“]?([^\"\n\r]+)[\"”]?", re.I)
-    val_pat = re.compile(r"(?:2\b|value|outcome)[:\-\s*]+[\"“]?([^\"\n\r]+)[\"”]?", re.I)
-    sec_pat = re.compile(r"(?:3\b|search|seo)[:\-\s*]+[\"“]?([^\"\n\r]+)[\"”]?", re.I)
+def _extract_title_angles(structured_angles: Any) -> List[Dict[str, str]]:
+    """Validate three model-authored title angles; never manufacture missing options."""
+    angle_config = {
+        "curiosity": ("💡 Curiosity", {"curiosity", "intrigue", "curiosity / intrigue"}),
+        "direct_value": ("🎯 Direct Value", {"direct_value", "value", "outcome", "direct value / outcome"}),
+        "search": ("🔍 Search / SEO", {"search", "seo", "search / seo"}),
+    }
+    if not isinstance(structured_angles, list) or len(structured_angles) != 3:
+        return []
 
-    for line in lines:
-        if not any(a["label"] == "💡 Curiosity" for a in angles):
-            m1 = cur_pat.search(line)
-            if m1 and len(m1.group(1).strip()) > 8:
-                angles.append({"label": "💡 Curiosity", "title": m1.group(1).strip().strip('"\'“”')})
-        if not any(a["label"] == "🎯 Direct Value" for a in angles):
-            m2 = val_pat.search(line)
-            if m2 and len(m2.group(1).strip()) > 8:
-                angles.append({"label": "🎯 Direct Value", "title": m2.group(1).strip().strip('"\'“”')})
-        if not any(a["label"] == "🔍 Search / SEO" for a in angles):
-            m3 = sec_pat.search(line)
-            if m3 and len(m3.group(1).strip()) > 8:
-                angles.append({"label": "🔍 Search / SEO", "title": m3.group(1).strip().strip('"\'“”')})
+    by_angle = {}
+    normalized_titles = set()
+    for item in structured_angles:
+        if not isinstance(item, dict):
+            return []
+        key = str(item.get("angle", "")).strip().casefold().replace("-", "_")
+        title = item.get("title")
+        canonical = next((name for name, (_, aliases) in angle_config.items() if key in aliases), None)
+        if canonical is None or canonical in by_angle or not isinstance(title, str):
+            return []
+        clean_title = re.sub(r"\s+", " ", title).strip().strip('"\'“”')
+        normalized = clean_title.casefold()
+        if not clean_title or len(clean_title) > 100 or normalized in normalized_titles:
+            return []
+        by_angle[canonical] = clean_title
+        normalized_titles.add(normalized)
 
-    base = proposed_title or current_title
-    if len(angles) < 3:
-        clean_base = re.sub(r"^\s*Why\s+", "", base, flags=re.I)
-        default_angles = [
-            {"label": "💡 Curiosity", "title": f"Why Most Developers Get {clean_base[:40]} Wrong"},
-            {"label": "🎯 Direct Value", "title": proposed_title if proposed_title else f"How to Build {clean_base[:40]} (Full Guide)"},
-            {"label": "🔍 Search / SEO", "title": f"{clean_base[:40]} Tutorial for Developers"},
-        ]
-        return default_angles
-    return angles[:3]
+    if set(by_angle) != set(angle_config):
+        return []
+    return [
+        {"label": angle_config[key][0], "title": by_angle[key]}
+        for key in ("curiosity", "direct_value", "search")
+    ]
 
 
 def update_studio_attachments(
@@ -911,12 +920,18 @@ def render_copilot_chat(
             ("description", "📱 Description hook"),
             ("tags", "🔎 Search tags"),
             ("review", "✨ Full review"),
+            ("opportunities", "📊 Find videos to optimize"),
         )
-        starter_cols = st.columns(4)
+        starter_cols = st.columns(5)
         for starter_col, (action_key, action_label) in zip(starter_cols, starter_actions):
             with starter_col:
                 if st.button(action_label, key=f"starter_focus_{action_key}", use_container_width=True):
-                    st.session_state["copilot_initial_optimization"] = action_key
+                    if action_key == "opportunities":
+                        st.session_state["strategist_pending_instruction"] = (
+                            "Find the videos on my channel that most need optimization."
+                        )
+                    else:
+                        st.session_state["copilot_initial_optimization"] = action_key
                     st.rerun()
 
         selected_action = st.session_state.get("copilot_initial_optimization")
@@ -928,8 +943,8 @@ def render_copilot_chat(
             )
         else:
             st.caption(
-                "Paste a YouTube video or Short link in the chat box below. Choose a focus above, "
-                "or let me review all metadata."
+                "Paste a video or Short link to optimize it, or choose **Find videos to optimize** "
+                "to scan your channel's recent performance."
             )
 
     # 3. Studio Export Uploader Drawer (accessible before and after video loading)
@@ -951,6 +966,54 @@ def render_copilot_chat(
         with st.chat_message("user" if turn["role"] == "user" else "assistant"):
             st.markdown(turn["content"])
 
+    # 4a. Ranked channel opportunities remain inside the same conversation.
+    opportunity_scan = st.session_state.get("copilot_channel_opportunities")
+    if opportunity_scan:
+        with st.container(border=True):
+            period = opportunity_scan.get("period", {})
+            st.markdown("### 📊 Videos worth optimizing")
+            st.caption(
+                f"Scanned {opportunity_scan.get('scanned_uploads', 0)} recent uploads; "
+                f"analytics period {period.get('start_date', '?')} to {period.get('end_date', '?')}."
+            )
+            if not opportunity_scan.get("studio_ctr_available"):
+                st.caption(
+                    "CTR-specific flags need a matching YouTube Studio export with impressions and CTR. "
+                    "No CTR values are being inferred from views."
+                )
+            if not opportunity_scan.get("recommendations"):
+                st.info(
+                    "No clear below-benchmark opportunities were found in the available sample. "
+                    "This can happen when too few comparable videos have analytics or when no metric is materially below its cohort baseline."
+                )
+            for index, item in enumerate(opportunity_scan.get("recommendations", []), start=1):
+                with st.container(border=True):
+                    st.markdown(f"**{index}. {html.escape(item.get('title') or 'Untitled video')}**")
+                    st.markdown(f"[Open on YouTube]({item.get('url', '')})")
+                    metric_cols = st.columns(4)
+                    views_value = item.get("views")
+                    watch_value = item.get("watch_time_minutes")
+                    ctr_value = item.get("ctr_percent")
+                    impressions_value = item.get("impressions")
+                    apv_value = item.get("average_view_percentage")
+                    metric_cols[0].metric("Views (period)", f"{views_value:,.0f}" if isinstance(views_value, (int, float)) else "Unavailable")
+                    metric_cols[1].metric("Watch time", f"{watch_value:,.0f} min" if isinstance(watch_value, (int, float)) else "Unavailable")
+                    metric_cols[2].metric("Impressions", f"{impressions_value:,.0f}" if isinstance(impressions_value, (int, float)) else "Unavailable")
+                    metric_cols[3].metric("CTR", f"{ctr_value:.2f}%" if isinstance(ctr_value, (int, float)) else "Unavailable")
+                    if isinstance(apv_value, (int, float)):
+                        st.caption(f"Average percentage viewed: {apv_value:.1f}% • {item.get('format_group', 'Format unconfirmed')}")
+                    else:
+                        st.caption(item.get("format_group", "Format unconfirmed"))
+                    for reason in item.get("reasons", []):
+                        st.markdown(f"- {reason}")
+                    if st.button("Optimize this video", key=f"btn_optimize_opportunity_{index}", use_container_width=True):
+                        st.session_state["strategist_pending_instruction"] = (
+                            f"{item.get('url')} Please review and optimize this video's title, description and tags "
+                            "using its available transcript and performance evidence."
+                        )
+                        st.session_state.pop("copilot_channel_opportunities", None)
+                        st.rerun()
+
     # 5. Proposed Metadata Card (Inside conversation stream)
     proposal = st.session_state.get("strategist_chat_proposal")
     if context and proposal and proposal.get("target_id") == context["target_id"]:
@@ -970,23 +1033,20 @@ def render_copilot_chat(
                 unsafe_allow_html=True,
             )
 
-            # Title Angles Selector
-            angles = proposal.get("title_angles") or _extract_title_angles(
-                proposal.get("assistant_message", ""),
-                proposal["before"].get("title", ""),
-                proposal["proposed"].get("title", ""),
-            )
-            proposal["title_angles"] = angles
-
-            st.caption("Select a formulated title angle to stage:")
-            ang_cols = st.columns(3)
-            for a_idx, ang in enumerate(angles):
-                with ang_cols[a_idx]:
-                    if st.button(f"{ang['label']}\n{ang['title'][:45]}...", key=f"btn_ang_{a_idx}", use_container_width=True):
-                        proposal["proposed"]["title"] = ang["title"]
-                        st.session_state.pop("strategist_chat_digest", None)
-                        st.session_state.pop("copilot_approval_digest", None)
-                        st.rerun()
+            # Title Angles Selector: display only validated model-authored options.
+            angles = proposal.get("title_angles", [])
+            if len(angles) == 3:
+                st.caption("Three content-supported title angles. Select one to stage:")
+                ang_cols = st.columns(3)
+                for a_idx, ang in enumerate(angles):
+                    with ang_cols[a_idx]:
+                        if st.button(f"{ang['label']}\n{ang['title'][:45]}...", key=f"btn_ang_{a_idx}", use_container_width=True):
+                            proposal["proposed"]["title"] = ang["title"]
+                            st.session_state.pop("strategist_chat_digest", None)
+                            st.session_state.pop("copilot_approval_digest", None)
+                            st.rerun()
+            else:
+                st.warning("Three distinct title angles were not validated. Ask me to regenerate title options before publishing.")
 
             # Proposed Title Input with Counter
             prop_title = proposal["proposed"].get("title", "")
@@ -1157,6 +1217,54 @@ def render_copilot_chat(
         urls = _youtube_references_from_message(instruction)
         title_reference = _quoted_title_reference(instruction)
 
+        if _is_channel_opportunity_request(instruction) and not urls and not title_reference:
+            _append_history(history, "user", instruction)
+            try:
+                if youtube is None or analytics is None:
+                    raise ConnectionError(
+                        "Connect or reconnect YouTube in Settings before scanning channel performance."
+                    )
+                with st.spinner("Scanning your recent uploads and comparing real channel analytics…"):
+                    scan = connector.discover_video_opportunities(
+                        youtube,
+                        analytics,
+                        st.session_state.get("studio_export_evidence_index", {}),
+                        days=28,
+                        limit=10,
+                    )
+                st.session_state["copilot_channel_opportunities"] = scan
+                count = len(scan.get("recommendations", []))
+                if count:
+                    summary = (
+                        f"I scanned {scan.get('scanned_uploads', 0)} recent uploads using "
+                        f"{scan['period']['start_date']} to {scan['period']['end_date']} channel analytics. "
+                        f"I found {count} videos with measurable below-benchmark signals. "
+                        "The reasons and metrics are shown with each recommendation."
+                    )
+                else:
+                    summary = (
+                        f"I scanned {scan.get('scanned_uploads', 0)} recent uploads for "
+                        f"{scan['period']['start_date']} to {scan['period']['end_date']}. "
+                        "I couldn't validate a clear below-benchmark opportunity from the available data."
+                    )
+            except connector.HttpError as error:
+                status = getattr(getattr(error, "resp", None), "status", None)
+                if status in (401, 403):
+                    summary = (
+                        "YouTube Analytics denied this scan. Reconnect YouTube in Settings to grant the "
+                        "current read permissions, then try the scan again."
+                    )
+                else:
+                    summary = f"The channel scan failed because YouTube returned HTTP {status or 'unknown'}."
+            except Exception as error:
+                summary = str(error) if isinstance(error, (ConnectionError, ValueError)) else (
+                    "I couldn't complete the channel scan. Reconnect YouTube and try again."
+                )
+            _append_history(history, "assistant", summary)
+            with st.chat_message("assistant"):
+                st.markdown(summary)
+            st.rerun()
+
         # Detect target video switch or fresh target load
         is_new_video_selection = len(urls) >= 2 or (bool(urls) and not context) or bool(title_reference)
         if len(urls) == 1 and context:
@@ -1272,7 +1380,18 @@ def render_copilot_chat(
                     st.markdown(asst_msg)
                     st.caption(f"{used_provider} • {used_model}")
 
-                    angles = _extract_title_angles(asst_msg, target["title"], proposed["title"])
+                    angles = _extract_title_angles(result.get("title_angles"))
+                    if len(angles) != 3:
+                        raise ValueError(
+                            "The AI provider did not return three distinct, valid title angles. "
+                            "Please retry the optimization; no placeholder titles were created."
+                        )
+                    angle_titles = {angle["title"] for angle in angles}
+                    if proposed["title"] not in angle_titles:
+                        raise ValueError(
+                            "The AI provider's staged title did not match one of its three validated title angles. "
+                            "Please retry the optimization."
+                        )
 
                     st.session_state["strategist_chat_proposal"] = {
                         "target_id": context["target_id"],
