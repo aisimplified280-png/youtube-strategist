@@ -37,6 +37,7 @@ VERIFICATION_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "data" / "youtube_analytics"
 SCOPES = [
+    "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
@@ -532,8 +533,25 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
         else:
             format_group = "Under-3-minute uploads (format unconfirmed)"
 
-        impressions, impressions_source = latest_value("impressions")
-        ctr_percent, ctr_source = latest_value("ctr_percent")
+        # CTR and impressions must come from the same Studio report row; never mix periods/files.
+        reach_records = [
+            item for item in evidence
+            if isinstance(item.get("ctr_percent"), (int, float))
+            and isinstance(item.get("impressions"), (int, float))
+        ]
+        reach_record = max(
+            reach_records,
+            key=lambda item: (
+                str(item.get("date_end") or ""),
+                str(item.get("date_start") or ""),
+                str(item.get("source_file") or ""),
+            ),
+        ) if reach_records else {}
+        impressions = reach_record.get("impressions")
+        ctr_percent = reach_record.get("ctr_percent")
+        reach_period = None
+        if reach_record.get("date_start") or reach_record.get("date_end"):
+            reach_period = f"{reach_record.get('date_start') or '?'} to {reach_record.get('date_end') or '?'}"
         average_view_percentage = metrics.get("averageViewPercentage")
         if not isinstance(average_view_percentage, (int, float)):
             average_view_percentage, _ = latest_value("average_view_percentage")
@@ -559,8 +577,8 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             "subscribers_gained": metrics.get("subscribersGained"),
             "impressions": impressions,
             "ctr_percent": ctr_percent,
-            "ctr_source": impressions_source.get("source_file") if impressions_source else None,
-            "ctr_period": ctr_source.get("period") if ctr_source else None,
+            "ctr_source": reach_record.get("source_file") if reach_record else None,
+            "ctr_period": reach_period,
         })
 
     recommendations = rank_channel_video_opportunities(enriched, limit=limit)
