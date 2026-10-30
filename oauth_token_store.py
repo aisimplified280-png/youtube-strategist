@@ -20,7 +20,12 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 _ALLOWED_PURPOSES = {"youtube", "memory"}
-_DEFAULT_PATH = Path(tempfile.gettempdir()) / "ai-simplified-lab-strategist-oauth.sqlite3"
+_DURABLE_DIR = Path.home() / ".creator_growth_agent"
+try:
+    _DURABLE_DIR.mkdir(parents=True, exist_ok=True)
+    _DEFAULT_PATH = _DURABLE_DIR / "ai-simplified-lab-strategist-oauth.sqlite3"
+except Exception:
+    _DEFAULT_PATH = Path(tempfile.gettempdir()) / "ai-simplified-lab-strategist-oauth.sqlite3"
 
 
 class OAuthTokenStore:

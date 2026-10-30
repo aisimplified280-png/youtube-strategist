@@ -1,6 +1,9 @@
 """Page: Ideas & Production (Pipeline, Hook Scoring & Creative Direction).
 
 Organize ideas, multi-concept titles, hook scores, and production status.
+- Handles hook evaluator with full dimension extraction.
+- Fails closed safely if hook scoring tools are unavailable.
+- In Demo Mode, operates purely on in-memory fixtures without modifying owner SQLite database.
 """
 
 import html
@@ -18,7 +21,7 @@ from core.linter import score_hook_text
 from ui.components import demo_banner, status_pill
 
 
-def render_ideas_production(youtube=None, secrets=None):
+def render_ideas_production(youtube=None, secrets=None, subject=None):
     """Render the Ideas & Production destination."""
     demo_banner()
     is_demo = is_demo_mode()
@@ -46,10 +49,13 @@ def render_ideas_production(youtube=None, secrets=None):
     with tab_pipeline:
         col_btn1, col_btn2 = st.columns([3, 1])
         with col_btn2:
-            if st.button("➕ New Concept", use_container_width=True, type="primary"):
-                st.session_state["show_new_idea_form"] = True
+            if is_demo:
+                st.caption("Pipeline edits disabled in Demo Mode")
+            else:
+                if st.button("➕ New Concept", use_container_width=True, type="primary"):
+                    st.session_state["show_new_idea_form"] = True
 
-        if st.session_state.get("show_new_idea_form"):
+        if st.session_state.get("show_new_idea_form") and not is_demo:
             with st.form("new_idea_form"):
                 st.subheader("Add Content Idea")
                 new_title = st.text_input("Working Title / Concept", placeholder="e.g. Fine-Tuning Llama 3.2 Locally with Unsloth")
@@ -67,20 +73,18 @@ def render_ideas_production(youtube=None, secrets=None):
                         stage=new_stage,
                         target_format=new_format,
                         notes=new_notes,
+                        owner_id=subject,
+                        is_demo=False,
                     )
                     st.session_state["show_new_idea_form"] = False
                     st.toast("Concept saved!")
                     st.rerun()
 
-        # Render Pipeline Columns
+        # Render Pipeline Columns using owner-scoped or demo-isolated data
         stages = [("idea", "💡 Ideas"), ("scripting", "✍️ Scripting"), ("recording", "🎥 Recording"), ("published", "✅ Published")]
         cols = st.columns(len(stages))
 
-        items = get_pipeline_items()
-        # Seed demo items if empty
-        if not items and is_demo:
-            _seed_demo_pipeline()
-            items = get_pipeline_items()
+        items = get_pipeline_items(owner_id=subject, is_demo=is_demo)
 
         for idx, (stg_key, stg_label) in enumerate(stages):
             with cols[idx]:
@@ -102,14 +106,19 @@ def render_ideas_production(youtube=None, secrets=None):
                         st.caption(f"Format: {fmt}")
                         if it.get("notes"):
                             st.markdown(f"<p style='color: #94A3B8; font-size: 0.82rem;'>{html.escape(it.get('notes'))}</p>", unsafe_allow_html=True)
+                        if it.get("hook_text"):
+                            st.caption(f"Hook: {html.escape(it['hook_text'][:60])}...")
                         
                         # Move to next stage button
                         if stg_key != "published":
                             next_stage_map = {"idea": "scripting", "scripting": "recording", "recording": "published"}
                             next_stage = next_stage_map.get(stg_key)
-                            if st.button("Advance ➔", key=f"adv_{it['id']}", use_container_width=True):
-                                update_pipeline_stage(it["id"], next_stage)
-                                st.rerun()
+                            if is_demo:
+                                st.caption("Stage changes disabled in Demo Mode")
+                            else:
+                                if st.button("Advance ➔", key=f"adv_{it['id']}", use_container_width=True):
+                                    update_pipeline_stage(it["id"], next_stage, owner_id=subject, is_demo=False)
+                                    st.rerun()
 
     with tab_hook_lab:
         st.subheader("Script Hook & Opening 15-Second Evaluator")
@@ -126,45 +135,36 @@ def render_ideas_production(youtube=None, secrets=None):
             if not hook_sample.strip():
                 st.warning("Please paste an opening hook to score.")
             else:
-                score, feedback = score_hook_text(hook_sample)
-                col_sc1, col_sc2 = st.columns([1, 2])
-                with col_sc1:
-                    score_color = "#10B981" if score >= 80 else "#F59E0B" if score >= 60 else "#EF4444"
-                    st.markdown(
-                        f"""
-                        <div style="background: #1E293B; border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #334155;">
-                            <div style="color: #94A3B8; font-size: 0.85rem; font-weight: 700; text-transform: uppercase;">Hook Score</div>
-                            <div style="font-size: 3rem; font-weight: 800; color: {score_color};">{score}/100</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                with col_sc2:
-                    st.markdown("#### Hook Analysis & Diagnostics")
-                    for fb in feedback:
-                        st.markdown(f"- {fb}")
-
-
-def _seed_demo_pipeline():
-    """Seed initial demo items if pipeline is empty."""
-    save_pipeline_item(
-        item_id="demo-pipe-1",
-        title="Deploying Local LLMs with Ollama and FastAPI",
-        stage="idea",
-        target_format="long",
-        notes="High viewer demand from comment section; show streaming responses.",
-    )
-    save_pipeline_item(
-        item_id="demo-pipe-2",
-        title="Prompt Caching Deep Dive (Python)",
-        stage="scripting",
-        target_format="long",
-        notes="Include cost reduction benchmarks.",
-    )
-    save_pipeline_item(
-        item_id="demo-pipe-3",
-        title="Speed Test: Flash-8B vs Groq",
-        stage="recording",
-        target_format="short",
-        notes="Side-by-side terminal recording.",
-    )
+                eval_res = score_hook_text(hook_sample)
+                if eval_res is None:
+                    st.warning("⚠️ Hook scoring tool is currently unavailable in this environment.")
+                else:
+                    overall = eval_res.get("overall_score", 0)
+                    col_sc1, col_sc2 = st.columns([1, 2])
+                    with col_sc1:
+                        score_color = "#10B981" if overall >= 80 else "#F59E0B" if overall >= 60 else "#EF4444"
+                        st.markdown(
+                            f"""
+                            <div style="background: #1E293B; border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #334155;">
+                                <div style="color: #94A3B8; font-size: 0.85rem; font-weight: 700; text-transform: uppercase;">Hook Score</div>
+                                <div style="font-size: 3rem; font-weight: 800; color: {score_color};">{overall}/100</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    with col_sc2:
+                        st.markdown("#### Hook Analysis & Dimensions")
+                        d_cols = st.columns(5)
+                        with d_cols[0]:
+                            st.metric("Specificity", f"{eval_res.get('specificity', 0)}/100")
+                        with d_cols[1]:
+                            st.metric("Address", f"{eval_res.get('address', 0)}/100")
+                        with d_cols[2]:
+                            st.metric("Stakes", f"{eval_res.get('stakes', 0)}/100")
+                        with d_cols[3]:
+                            st.metric("Curiosity", f"{eval_res.get('curiosity', 0)}/100")
+                        with d_cols[4]:
+                            st.metric("Brevity", f"{eval_res.get('brevity', 0)}/100")
+                        
+                        if eval_res.get("note"):
+                            st.caption(eval_res["note"])

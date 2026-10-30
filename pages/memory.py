@@ -4,7 +4,7 @@ Persistent memory destination:
 - Voice profile & tone parameters
 - Prohibited terms
 - Historical proposals (accepted/declined with feedback)
-- Optional Google Drive / Sheets mirror sync
+- Isolated demo fixtures in Demo Mode
 """
 
 import html
@@ -19,7 +19,7 @@ from core.creator_db import (
 from ui.components import demo_banner
 
 
-def render_memory(memory_credentials=None):
+def render_memory(memory_credentials=None, subject=None):
     """Render the Creator Memory destination."""
     demo_banner()
     is_demo = is_demo_mode()
@@ -47,7 +47,7 @@ def render_memory(memory_credentials=None):
         st.subheader("Creator Voice & Audience Persona")
         st.caption("These rules directly ground the LLM prompt generator, preventing generic hype or off-brand phrasing.")
 
-        prefs = get_creator_preferences()
+        prefs = get_creator_preferences(owner_id=subject, is_demo=is_demo)
 
         with st.form("creator_pref_form"):
             new_tone = st.text_area(
@@ -72,20 +72,24 @@ def render_memory(memory_credentials=None):
                 help="Core video formats produced."
             )
 
-            saved = st.form_submit_button("Save Preferences", type="primary")
-            if saved:
-                set_creator_preference("voice_tone", new_tone)
-                set_creator_preference("prohibited_words", new_prohibited)
-                set_creator_preference("target_audience", new_audience)
-                set_creator_preference("primary_format", new_format)
-                st.toast("Creator preferences updated and persisted!")
-                st.rerun()
+            if is_demo:
+                st.caption("Editing preferences is disabled in Demo Mode")
+                st.form_submit_button("Save Preferences (Disabled in Demo)", disabled=True)
+            else:
+                saved = st.form_submit_button("Save Preferences", type="primary")
+                if saved:
+                    set_creator_preference("voice_tone", new_tone, owner_id=subject, is_demo=False)
+                    set_creator_preference("prohibited_words", new_prohibited, owner_id=subject, is_demo=False)
+                    set_creator_preference("target_audience", new_audience, owner_id=subject, is_demo=False)
+                    set_creator_preference("primary_format", new_format, owner_id=subject, is_demo=False)
+                    st.toast("Creator preferences updated and persisted!")
+                    st.rerun()
 
     with tab_history:
         st.subheader("Historical Proposal Log")
         st.caption("Decisions made in the Agent Workspace are recorded here to prevent repeating declined patterns.")
 
-        history = get_recent_proposal_history(limit=25)
+        history = get_recent_proposal_history(limit=25, owner_id=subject, is_demo=is_demo)
         if not history:
             st.info("No proposals logged yet. Once you approve or decline suggestions in the Agent Workspace, they will appear here.")
         else:

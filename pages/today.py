@@ -15,7 +15,15 @@ from core.daily_briefing import get_or_create_daily_briefing
 from ui.components import demo_banner, metric_tile, evidence_chip, status_pill, connection_status_banner
 
 
-def render_today(youtube=None, analytics=None, reporting=None, secrets=None, subject=None, memory_creds=None):
+def render_today(
+    youtube=None,
+    analytics=None,
+    reporting=None,
+    credentials=None,
+    secrets=None,
+    subject=None,
+    memory_creds=None,
+):
     """Render the Today daily briefing destination."""
     demo_banner()
     is_demo = is_demo_mode()
@@ -58,13 +66,25 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
             youtube=youtube,
             analytics=analytics,
             reporting=reporting,
+            credentials=credentials,
+            owner_id=subject,
             secrets=secrets,
             force_refresh=force_refresh,
             is_demo=is_demo,
         )
 
-    if briefing.get("notice"):
-        st.info(briefing["notice"])
+    status = briefing.get("status", "ready")
+    notice = briefing.get("notice")
+
+    # Explicit status banners for stale, scan failure, or connection failure
+    if status == "connection_failure":
+        st.warning(f"⚠️ {notice or 'YouTube authorization is missing or disconnected. Please connect YouTube in Settings.'}")
+    elif status == "scan_failed":
+        st.error(f"❌ Channel scan failed: {notice or 'API exception occurred during scan.'}")
+    elif status in ("stale", "refresh_failed"):
+        st.warning(f"⚠️ Refresh Notice: {notice or 'Using prior briefing.'}")
+    elif notice:
+        st.info(notice)
 
     # High-level health strip
     summary = briefing.get("summary", {})
@@ -76,6 +96,13 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
     with col_m3:
         reporting_status = "Active" if summary.get("reach_reporting_active") else "Pending"
         metric_tile("Reach Reporting", reporting_status, "Thumbnail impressions & CTR")
+
+    # Display coverage notes or API warnings if present
+    coverage = briefing.get("coverage", {})
+    if coverage.get("api_warnings"):
+        with st.expander("API Report Notices", expanded=False):
+            for warn in coverage["api_warnings"]:
+                st.caption(f"• {warn}")
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
@@ -92,7 +119,18 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
 
     actions = briefing.get("prioritized_actions", [])
     if not actions:
-        st.info("No underperforming videos detected in the current window. All recent uploads are performing in line with or above peer medians.")
+        if status == "insufficient_sample":
+            st.info(
+                f"ℹ️ {notice or 'Insufficient sample size. At least 3 format-matched uploads are needed for peer benchmarking.'}"
+            )
+        elif status == "connection_failure":
+            st.info("Connect YouTube in Settings or explore in Demo Mode to view prioritized growth actions.")
+        elif status == "scan_failed":
+            st.warning("Action cards unavailable due to channel scan failure. Check your API credentials and network connection.")
+        elif summary.get("total_recent_videos", 0) == 0:
+            st.info("No video uploads detected in the last 90 days.")
+        else:
+            st.info("No underperforming videos detected in the current window. All recent uploads are performing in line with or above peer medians.")
     else:
         for act in actions:
             p_idx = act.get("priority", 1)
@@ -152,16 +190,21 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
                         st.session_state["nav_destination"] = "agent_workspace"
                         st.rerun()
 
-                    if st.button("Add to Pipeline", key=f"btn_pipe_{p_idx}_{vid}", use_container_width=True):
-                        from core.creator_db import save_pipeline_item
-                        save_pipeline_item(
-                            item_id=f"pipe-{vid}",
-                            title=act.get("title"),
-                            stage="idea",
-                            target_format=act.get("metrics", {}).get("format", "long"),
-                            notes=f"Surfaced from briefing. Evidence: {act.get('evidence')}",
-                        )
-                        st.toast("Saved to Ideas & Production pipeline!")
+                    if is_demo:
+                        st.caption("Pipeline saves disabled in Demo Mode")
+                    else:
+                        if st.button("Add to Pipeline", key=f"btn_pipe_{p_idx}_{vid}", use_container_width=True):
+                            from core.creator_db import save_pipeline_item
+                            save_pipeline_item(
+                                item_id=f"pipe-{vid}",
+                                title=act.get("title"),
+                                stage="idea",
+                                target_format=act.get("metrics", {}).get("format", "long"),
+                                notes=f"Surfaced from briefing. Evidence: {act.get('evidence')}",
+                                owner_id=subject,
+                                is_demo=False,
+                            )
+                            st.toast("Saved to Ideas & Production pipeline!")
 
     # Secondary Section: AI Research Radar
     radar_items = briefing.get("research_radar", [])
@@ -182,7 +225,9 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
             r_url = html.escape(r.get("source_url", "#"))
             r_summary = html.escape(r.get("summary", ""))
             r_cat = html.escape(r.get("category", "tech").replace("_", " ").title())
-            r_date = html.escape(r.get("discovered_date", ""))
+            r_date = html.escape(r.get("source_date") or r.get("discovered_date", ""))
+            r_cached = r.get("is_cached", False)
+            cache_tag = " [Cached]" if r_cached else ""
 
             with st.container(border=True):
                 col_r1, col_r2 = st.columns([3, 1])
@@ -193,7 +238,7 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
                             <span style="background: rgba(16, 185, 129, 0.15); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;">
                                 {r_cat}
                             </span>
-                            <span style="color: #94A3B8; font-size: 0.78rem; margin-left: 8px;">Discovered: {r_date}</span>
+                            <span style="color: #94A3B8; font-size: 0.78rem; margin-left: 8px;">Source Date: {r_date}{cache_tag}</span>
                         </div>
                         <h4 style="margin: 4px 0 6px 0; font-size: 1.1rem; font-weight: 700;">
                             <a href="{r_url}" target="_blank" style="color: #FFFFFF; text-decoration: none;">{r_title} ↗</a>
@@ -202,6 +247,11 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
                         """,
                         unsafe_allow_html=True,
                     )
+                    if r.get("channel_relevance"):
+                        st.markdown(
+                            f"<p style='color: #818CF8; font-size: 0.83rem; margin-bottom: 6px;'><strong>Channel Fit:</strong> {html.escape(r.get('channel_relevance'))}</p>",
+                            unsafe_allow_html=True,
+                        )
                     angles = r.get("video_angles", [])
                     if angles:
                         st.markdown("<strong style='font-size: 0.85rem; color: #94A3B8;'>Creator Video Angles:</strong>", unsafe_allow_html=True)
@@ -209,13 +259,18 @@ def render_today(youtube=None, analytics=None, reporting=None, secrets=None, sub
                             st.markdown(f"- **{html.escape(a.get('angle', ''))}**: {html.escape(a.get('pitch', ''))}")
                 with col_r2:
                     st.write("")
-                    if st.button("➕ Adopt Concept", key=f"btn_radar_{r.get('id')}", use_container_width=True):
-                        from core.creator_db import save_pipeline_item
-                        save_pipeline_item(
-                            item_id=f"radar-{r.get('id')}",
-                            title=r.get("title"),
-                            stage="idea",
-                            target_format="long",
-                            notes=f"Source: {r.get('source_url')}. Summary: {r.get('summary')}",
-                        )
-                        st.toast("Adopted concept into Ideas pipeline!")
+                    if is_demo:
+                        st.caption("Adoption disabled in Demo Mode")
+                    else:
+                        if st.button("➕ Adopt Concept", key=f"btn_radar_{r.get('id')}", use_container_width=True):
+                            from core.creator_db import save_pipeline_item
+                            save_pipeline_item(
+                                item_id=f"radar-{r.get('id')}",
+                                title=r.get("title"),
+                                stage="idea",
+                                target_format="long",
+                                notes=f"Source: {r.get('source_url')}. Summary: {r.get('summary')}",
+                                owner_id=subject,
+                                is_demo=False,
+                            )
+                            st.toast("Adopted concept into Ideas pipeline!")

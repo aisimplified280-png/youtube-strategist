@@ -91,15 +91,17 @@ def status_pill(status: str, label: str):
     )
 
 
-def char_counter(current_len: int, max_len: int, warn_len: Optional[Any] = None) -> str:
-    """Return HTML string for character count badge with warnings."""
-    # Handle case where warn_len is passed as a string label or threshold int
+def char_counter(current_len: int, max_len: int, warn_len: Optional[int] = None) -> str:
+    """Return HTML string for character count badge with warnings.
+    
+    warn_len: Optional integer threshold above which to display a warning.
+    """
     warn_threshold = warn_len if isinstance(warn_len, (int, float)) else None
     label_suffix = f" &bull; {html.escape(str(warn_len))}" if isinstance(warn_len, str) else ""
 
     if current_len > max_len:
         cls = "char-over"
-    elif warn_threshold and current_len > warn_threshold:
+    elif warn_threshold is not None and current_len > warn_threshold:
         cls = "char-warn"
     else:
         cls = "char-ok"
@@ -130,13 +132,23 @@ def word_level_diff(before: str, after: str) -> str:
     return " ".join(diff_parts)
 
 
-def diff_viewer(before: str, after: str, label: str = "Diff"):
-    """Render a word-level visual diff container."""
-    diff_html = word_level_diff(before or "", after or "")
+def diff_viewer(before: str = "", after: str = "", label: str = "Diff", *args, **kwargs):
+    """Render a word-level visual diff container.
+    
+    Accepts 3-argument signature: before, after, label="Diff".
+    Also handles 4-argument calls gracefully: (lbl1, val1, lbl2, val2).
+    """
+    if args and len(args) == 1 and isinstance(after, str):
+        # Called as diff_viewer(lbl1, val1, lbl2, val2)
+        diff_label = label or "Diff"
+        diff_html = word_level_diff(after or "", args[0] or "")
+    else:
+        diff_label = label
+        diff_html = word_level_diff(before or "", after or "")
     st.markdown(
         f"""
         <div class="diff-panel">
-            <div style="font-size:0.75rem; color:#94A3B8; font-weight:700; text-transform:uppercase; margin-bottom:6px;">{html.escape(label)}</div>
+            <div style="font-size:0.75rem; color:#94A3B8; font-weight:700; text-transform:uppercase; margin-bottom:6px;">{html.escape(diff_label)}</div>
             <div>{diff_html}</div>
         </div>
         """,

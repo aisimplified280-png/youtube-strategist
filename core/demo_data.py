@@ -212,3 +212,105 @@ DEMO_STUDIO_ANALYSIS = {
         },
     ]
 }
+
+DEMO_CREATOR_PREFERENCES: Dict[str, str] = {
+    "voice_tone": "Conversational, direct, technical depth without hype, practical code focus.",
+    "prohibited_words": "insane, mind-blowing, game-changer, secret trick, guaranteed",
+    "target_audience": "Software developers, AI engineers, Python builders, tech curious makers",
+    "primary_format": "Long-form tutorials (10-20 mins) + fast technical Shorts (<60s)",
+}
+
+DEMO_PIPELINE_ITEMS: List[Dict[str, Any]] = [
+    {
+        "id": "demo-pipe-1",
+        "title": "Deploying Local LLMs with Ollama and FastAPI",
+        "stage": "idea",
+        "target_format": "long",
+        "notes": "High viewer demand from comment section; show streaming responses.",
+        "concepts": [],
+        "hook_text": "Most developers run Ollama locally, but fail when scaling concurrent FastAPI endpoints. Here is the production fix.",
+        "updated_at": "2026-10-28T10:00:00Z",
+    },
+    {
+        "id": "demo-pipe-2",
+        "title": "Prompt Caching Deep Dive (Python)",
+        "stage": "scripting",
+        "target_format": "long",
+        "notes": "Benchmark cold vs cached requests using Anthropic and Gemini SDKs.",
+        "concepts": [],
+        "hook_text": "In this video we benchmark prompt caching across three providers and test latency differences.",
+        "updated_at": "2026-10-29T14:30:00Z",
+    },
+    {
+        "id": "demo-pipe-3",
+        "title": "Agent Memory Architecture Guide",
+        "stage": "recording",
+        "target_format": "long",
+        "notes": "Vector retrieval vs graph memory vs structured JSON.",
+        "concepts": [],
+        "hook_text": "Stop using vector search for agent memory; here is why key-value graphs outperform semantic similarity for state.",
+        "updated_at": "2026-10-30T09:00:00Z",
+    },
+    {
+        "id": "demo-pipe-4",
+        "title": "3 Signs Your Embeddings Are Biased #Shorts",
+        "stage": "published",
+        "target_format": "short",
+        "notes": "Published Short highlighting cosine similarity edge cases.",
+        "concepts": [],
+        "hook_text": "Cosine distance can mislead your search pipeline if you forget this normalization step.",
+        "updated_at": "2026-10-25T11:20:00Z",
+    },
+]
+
+DEMO_RADAR_ITEMS: List[Dict[str, Any]] = [
+    {
+        "id": "radar-gemini-1.5-flash-8b",
+        "title": "Gemini 1.5 Flash-8B Production Benchmarks",
+        "source_url": "https://deepmind.google/technologies/gemini/",
+        "category": "model_release",
+        "source_date": "2026-10-03",
+        "retrieved_at_utc": "2026-10-30T08:00:00Z",
+        "channel_relevance": "Lightweight sub-second latency model optimal for streaming agent tool-calls; highly relevant to AI Simplified Lab audience.",
+        "discovered_date": "2026-10-30",
+        "summary": "Lightweight high-speed model with sub-second latency for agent pipelines and prompt caching.",
+        "video_angles": [
+            {"angle": "Speed & Cost Breakdown", "pitch": "Test latency vs Groq and GPT-4o-mini in a live agent demo."},
+            {"angle": "Prompt Caching Tutorial", "pitch": "How to cut production token costs by 80% using context caching."}
+        ],
+        "status": "active",
+        "is_cached": False,
+    },
+    {
+        "id": "radar-crewai-flows",
+        "title": "CrewAI Flows Architecture Release",
+        "source_url": "https://github.com/crewAIInc/crewAI",
+        "category": "agent_tool",
+        "source_date": "2026-10-15",
+        "retrieved_at_utc": "2026-10-30T08:00:00Z",
+        "channel_relevance": "Deterministic routing solves unconstrained multi-agent loops; matches channel focus on reliable software engineering with AI.",
+        "discovered_date": "2026-10-30",
+        "summary": "Deterministic state management and flow control for multi-agent workflows.",
+        "video_angles": [
+            {"angle": "Structured vs Unstructured Agents", "pitch": "Why deterministic routing stops agent hallucination loops."}
+        ],
+        "status": "active",
+        "is_cached": False,
+    },
+]
+
+DEMO_PROPOSAL_HISTORY: List[Dict[str, Any]] = [
+    {
+        "id": 1,
+        "video_id": "demo-vid-101",
+        "proposal_digest": "49edc289b24372698029",
+        "status": "approved",
+        "proposal": {
+            "title": "Cut LLM Latency by 80%: Prompt Caching in Python",
+            "description": "Learn how prompt caching slashes API latency by 80% in Python.",
+            "tags": ["prompt caching", "python ai", "llm optimization"]
+        },
+        "feedback": "Approved in demo session",
+        "updated_at": "2026-10-29T16:00:00Z",
+    }
+]

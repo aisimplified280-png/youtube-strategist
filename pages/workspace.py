@@ -6,6 +6,8 @@ Guarantees:
 - Re-fetches current YouTube metadata immediately before update.
 - Verifies post-write state.
 - Editing invalidates pending approval hash.
+- Immutable snippet fields are preserved.
+- Public writes are strictly disabled in Demo Mode.
 """
 
 import copy
@@ -17,7 +19,7 @@ import streamlit as st
 from core.auth import is_demo_mode
 from core.demo_data import DEMO_HERO_ACTION
 from core.llm import LLMRouter, LLMError
-from core.linter import lint_proposal, score_hook_text
+from core.linter import lint_proposal
 from core.prompts import build_strategist_prompt
 from core.metadata_apply import compute_proposal_digest, apply_proposal
 from core.creator_db import record_proposal_decision, get_creator_preferences
@@ -180,19 +182,13 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
             if st.button("⚡ Generate AI Concepts", use_container_width=True, type="primary"):
                 with st.spinner("Generating evidence-grounded options..."):
                     router = LLMRouter(secrets=secrets)
-                    prefs = get_creator_preferences()
+                    prefs = get_creator_preferences(owner_id=subject, is_demo=is_demo)
                     prompt = build_strategist_prompt(
-                        video_id=target_video_id,
-                        title=current_snippet.get("title", ""),
-                        description=current_snippet.get("description", ""),
-                        tags=current_snippet.get("tags", []),
-                        metrics=ctx.get("metrics", {}),
-                        user_request=f"Optimize packaging for AI tech audience. Tone: {prefs.get('voice_tone')}. Prohibited: {prefs.get('prohibited_words')}",
+                        target_snippet=current_snippet,
+                        instruction=f"Optimize packaging for AI tech audience. Tone: {prefs.get('voice_tone')}. Prohibited: {prefs.get('prohibited_words')}",
                     )
                     try:
-                        raw_out, prov = router.complete(prompt)
-                        from core.llm import parse_proposal_json
-                        parsed = parse_proposal_json(raw_out)
+                        parsed, provider, model = router.generate_structured_proposal(prompt)
                         if parsed:
                             st.session_state["workspace_proposal"] = parsed
                             st.session_state.pop("workspace_approved_digest", None)
@@ -240,39 +236,46 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
             st.session_state.pop("workspace_approved_digest", None)
 
         # Real-time Linter checks
-        lint_results = lint_proposal(proposal, current_snippet)
+        lint_results = lint_proposal(proposal, thumbnail_concept=None)
         with st.expander("Packaging Linter Analysis", expanded=True):
-            if not lint_results:
+            warnings = lint_results.get("warnings", [])
+            passes = lint_results.get("passes", [])
+            if not warnings:
                 st.success("✅ Clean packaging passed all mobile, truncation, and character limits.")
             else:
-                for issue in lint_results:
-                    severity = issue.get("severity", "warning")
-                    msg = issue.get("message", "")
-                    if severity == "error":
-                        st.error(f"❌ {msg}")
-                    else:
-                        st.warning(f"⚠️ {msg}")
+                for warn in warnings:
+                    st.warning(f"⚠️ {warn}")
+            if passes:
+                with st.expander("Passed Verifications", expanded=False):
+                    for p in passes:
+                        st.caption(f"✓ {p}")
+
+    # Build proposed snippet preserving all immutable snippet fields
+    proposed_snip = copy.deepcopy(current_snippet)
+    proposed_snip["title"] = proposal.get("title", "")
+    proposed_snip["description"] = proposal.get("description", "")
+    proposed_snip["tags"] = proposal.get("tags", [])
 
     with col_right:
         st.subheader("2. Review Diff & Approval Gate")
         
-        # Display side-by-side diff
+        # Display side-by-side diff using 3-argument signature
         st.markdown("**Title Comparison**")
-        diff_viewer("Current Title", current_snippet.get("title", ""), "Proposed Title", proposal.get("title", ""))
+        diff_viewer(before=current_snippet.get("title", ""), after=proposal.get("title", ""), label="Title Comparison")
 
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
         with st.expander("Description Comparison", expanded=False):
-            diff_viewer("Current Description", current_snippet.get("description", ""), "Proposed Description", proposal.get("description", ""))
+            diff_viewer(before=current_snippet.get("description", ""), after=proposal.get("description", ""), label="Description Comparison")
 
         with st.expander("Tags Comparison", expanded=False):
             st.write("**Current Tags:**", current_snippet.get("tags", []))
             st.write("**Proposed Tags:**", proposal.get("tags", []))
 
-        # Compute deterministic digest
+        # Compute deterministic digest using canonical parameters
         current_digest = compute_proposal_digest(
             video_id=target_video_id,
             before_snippet=current_snippet,
-            proposal=proposal,
+            proposed_snippet=proposed_snip,
         )
 
         st.markdown(
@@ -294,13 +297,16 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
             if not is_approved:
                 if st.button("✅ Approve This Exact Proposal", use_container_width=True, type="primary"):
                     st.session_state["workspace_approved_digest"] = current_digest
-                    record_proposal_decision(
-                        video_id=target_video_id,
-                        proposal_digest=current_digest,
-                        status="approved",
-                        proposal_dict=proposal,
-                        feedback="Creator approved proposal digest in Agent Workspace."
-                    )
+                    if not is_demo:
+                        record_proposal_decision(
+                            video_id=target_video_id,
+                            proposal_digest=current_digest,
+                            status="approved",
+                            proposal_dict=proposal,
+                            feedback="Creator approved proposal digest in Agent Workspace.",
+                            owner_id=subject,
+                            is_demo=False,
+                        )
                     st.toast("Proposal approved! Ready for YouTube write.")
                     st.rerun()
             else:
@@ -312,64 +318,64 @@ def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None
         with col_app2:
             if st.button("❌ Decline Proposal", use_container_width=True):
                 st.session_state.pop("workspace_approved_digest", None)
-                record_proposal_decision(
-                    video_id=target_video_id,
-                    proposal_digest=current_digest,
-                    status="declined",
-                    proposal_dict=proposal,
-                    feedback="Declined in Workspace."
-                )
-                st.warning("Proposal declined and recorded in creator memory.")
+                if not is_demo:
+                    record_proposal_decision(
+                        video_id=target_video_id,
+                        proposal_digest=current_digest,
+                        status="declined",
+                        proposal_dict=proposal,
+                        feedback="Declined in Workspace.",
+                        owner_id=subject,
+                        is_demo=False,
+                    )
+                st.warning("Proposal declined and recorded.")
                 st.rerun()
 
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
-        # 4. Final Write to YouTube (Strictly Approval Gated)
+        # 4. Final Write to YouTube (Strictly Approval Gated and Disabled in Demo Mode)
         if is_approved:
             with st.container(border=True):
                 st.markdown("<h4 style='margin:0 0 8px 0; color:#FFFFFF;'>Ready to Apply to YouTube</h4>", unsafe_allow_html=True)
                 st.caption("Writes to YouTube Data API v3 snippet (title, description, tags). Pre-write check verifies current metadata has not changed.")
                 
-                if st.button("🚀 Push to YouTube Now", type="primary", use_container_width=True):
-                    with st.spinner("Verifying snippet and updating YouTube..."):
-                        before_snip = current_snippet.copy()
-                        proposed_snip = before_snip.copy()
-                        proposed_snip["title"] = proposal.get("title", "")
-                        proposed_snip["description"] = proposal.get("description", "")
-                        proposed_snip["tags"] = proposal.get("tags", [])
-
-                        is_demo_target = is_demo or str(target_video_id).startswith("demo-")
-                        res = apply_proposal(
-                            youtube=youtube,
-                            video_id=target_video_id,
-                            before_snippet=before_snip,
-                            proposed_snippet=proposed_snip,
-                            approved_digest=current_digest,
-                            is_demo=is_demo_target,
-                        )
-                        if res.get("status") == "success":
-                            st.success(f"🎉 Update Applied and Verified! {res.get('message')}")
-                            st.balloons()
-                            if memory_creds:
-                                try:
-                                    from content_memory import GoogleSheetsMemoryStore
-                                    mem_store = GoogleSheetsMemoryStore.from_credentials(memory_creds)
-                                    mem_store.append_experiment(
-                                        video_id=target_video_id,
-                                        video_url=f"https://www.youtube.com/watch?v={target_video_id}",
-                                        title=proposed_snip.get("title", ""),
-                                        experiment_type="metadata_packaging",
-                                        baseline_metrics=ctx.get("metrics", {}),
-                                        notes=proposal.get("rationale", "Applied via Agent Workspace"),
-                                    )
-                                    st.toast("Experiment logged to Google Sheets memory!")
-                                except Exception:
-                                    pass
-                            # Refresh context
-                            st.session_state.pop("workspace_target_context", None)
-                            st.session_state.pop("workspace_approved_digest", None)
-                        else:
-                            st.error(f"Apply failed: {res.get('message')}")
+                if is_demo:
+                    st.info("🔒 Public write actions are disabled in Demo Mode. Connect your channel in Settings to apply changes to YouTube.")
+                    st.button("🚀 Push to YouTube Now (Disabled in Demo Mode)", disabled=True, use_container_width=True)
+                else:
+                    if st.button("🚀 Push to YouTube Now", type="primary", use_container_width=True):
+                        with st.spinner("Verifying snippet and updating YouTube..."):
+                            res = apply_proposal(
+                                youtube=youtube,
+                                video_id=target_video_id,
+                                before_snippet=current_snippet,
+                                proposed_snippet=proposed_snip,
+                                approved_digest=approved_digest,
+                                is_demo=False,
+                            )
+                            if res.get("status") == "success":
+                                st.success(f"🎉 Update Applied and Verified! {res.get('message', '')}")
+                                st.balloons()
+                                if memory_creds:
+                                    try:
+                                        from content_memory import GoogleSheetsMemoryStore
+                                        mem_store = GoogleSheetsMemoryStore.from_credentials(memory_creds)
+                                        mem_store.append_experiment(
+                                            video_id=target_video_id,
+                                            video_url=f"https://www.youtube.com/watch?v={target_video_id}",
+                                            title=proposed_snip.get("title", ""),
+                                            experiment_type="metadata_packaging",
+                                            baseline_metrics=ctx.get("metrics", {}),
+                                            notes=proposal.get("rationale", "Applied via Agent Workspace"),
+                                        )
+                                        st.toast("Experiment logged to Google Sheets memory!")
+                                    except Exception:
+                                        pass
+                                # Refresh context
+                                st.session_state.pop("workspace_target_context", None)
+                                st.session_state.pop("workspace_approved_digest", None)
+                            else:
+                                st.error(f"Apply failed: {res.get('message', 'Unknown error')}")
 
 
 def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False) -> Dict[str, Any]:
@@ -388,7 +394,7 @@ def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False)
             "metrics": {
                 "views": DEMO_HERO_ACTION["views"],
                 "ctr": DEMO_HERO_ACTION["ctr"],
-            }
+            },
         }
 
     try:

@@ -187,16 +187,24 @@ def main():
 
     # Multipage Navigation Setup: 5 Core Creator Growth Destinations
     def show_today():
-        render_today(youtube=youtube, analytics=analytics, reporting=reporting, secrets=secrets, subject=subject, memory_creds=memory_creds)
+        render_today(
+            youtube=youtube,
+            analytics=analytics,
+            reporting=reporting,
+            credentials=yt_creds,
+            secrets=secrets,
+            subject=subject,
+            memory_creds=memory_creds,
+        )
 
     def show_workspace():
         render_workspace(youtube=youtube, secrets=secrets, subject=subject, memory_creds=memory_creds)
 
     def show_ideas():
-        render_ideas_production(youtube=youtube, secrets=secrets)
+        render_ideas_production(youtube=youtube, secrets=secrets, subject=subject)
 
     def show_memory():
-        render_memory(memory_credentials=memory_creds)
+        render_memory(memory_credentials=memory_creds, subject=subject)
 
     def show_connections():
         render_settings(secrets=secrets, subject=subject, youtube_creds=yt_creds, memory_creds=memory_creds, token_store=token_store)
