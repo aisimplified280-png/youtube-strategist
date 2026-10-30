@@ -1147,6 +1147,175 @@ class TestCriticalRegressions(unittest.TestCase):
             self.assertIn("daily_briefing", st.session_state)
             self.assertEqual(st.session_state["daily_briefing"]["prioritized_actions"], actions)
 
+    def test_scenario_25_lifecycle_navigation_precedence_and_monitoring_defense(self):
+        """Scenario 25: Lifecycle badge precedence, deep-link navigation, and packaging monitoring defense."""
+        import uuid
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock, patch
+        import streamlit as st
+
+        from core.creator_db import (
+            record_growth_task_state,
+            mark_growth_task_applied,
+            get_growth_task,
+            GROWTH_TASK_STATUS_NEW,
+            GROWTH_TASK_STATUS_IN_PROGRESS,
+            GROWTH_TASK_STATUS_APPLIED_MONITORING,
+            GROWTH_TASK_STATUS_RESOLVED,
+            GROWTH_TASK_STATUS_DISMISSED,
+            GROWTH_TASK_STATUS_REOPENED,
+        )
+        from pages.today import render_today
+        from pages.ideas_production import render_ideas_production
+
+        owner = f"owner-test-s25-{uuid.uuid4().hex[:6]}"
+        vid_pkg = "vid-pkg-501"
+        vid_ret = "vid-ret-502"
+        vid_res = "vid-res-503"
+
+        # 1. Badge precedence: RESOLVED takes precedence even if metadata_applied is True
+        t_app = mark_growth_task_applied(
+            video_id=vid_pkg,
+            proposal_dict={"title": "T1", "description": "D1", "tags": []},
+            proposal_digest="dig-501",
+            diagnosis="Packaging review",
+            action_type="Packaging & Title Contrast",
+            owner_id=owner,
+        )
+        self.assertTrue(t_app["metadata_applied"])
+        self.assertEqual(t_app["status"], GROWTH_TASK_STATUS_APPLIED_MONITORING)
+
+        # Creator resolves the applied task
+        t_res = record_growth_task_state(vid_pkg, GROWTH_TASK_STATUS_RESOLVED, owner_id=owner)
+        self.assertEqual(t_res["status"], GROWTH_TASK_STATUS_RESOLVED)
+        self.assertIsNotNone(t_res["resolved_at_utc"])
+
+        # Creator reopens the task: resolved_at_utc must be cleared
+        t_reopened = record_growth_task_state(vid_pkg, GROWTH_TASK_STATUS_REOPENED, owner_id=owner)
+        self.assertEqual(t_reopened["status"], GROWTH_TASK_STATUS_REOPENED)
+        self.assertIsNone(t_reopened["resolved_at_utc"])
+        self.assertTrue(t_reopened["metadata_applied"])
+
+        # Creator dismisses the task
+        t_dis = record_growth_task_state(vid_pkg, GROWTH_TASK_STATUS_DISMISSED, owner_id=owner)
+        self.assertEqual(t_dis["status"], GROWTH_TASK_STATUS_DISMISSED)
+        self.assertIsNone(t_dis["resolved_at_utc"])
+
+        # 2. Prevent repeated metadata-edit suggestion when task is in applied_monitoring
+        record_growth_task_state(vid_pkg, GROWTH_TASK_STATUS_APPLIED_MONITORING, owner_id=owner)
+        pkg_action = {
+            "priority": 1,
+            "video_id": vid_pkg,
+            "title": "Packaging Video Alpha",
+            "action_type": "Packaging & Title Contrast",
+            "diagnosis": "Packaging review",
+            "why_today": "Low CTR",
+            "evidence": "CTR 2.0% vs 5.0% median",
+            "confidence": "High",
+            "estimated_effort": "15m",
+            "recommended_next_step": "Monitor performance",
+            "caveat": "",
+        }
+        ret_action = {
+            "priority": 2,
+            "video_id": vid_ret,
+            "title": "Retention Video Beta",
+            "action_type": "Opening Hook & Retention Polish",
+            "diagnosis": "Retention review",
+            "why_today": "Early drop-off",
+            "evidence": "20% retention",
+            "confidence": "High",
+            "estimated_effort": "20m",
+            "recommended_next_step": "Open Hook Lab",
+            "caveat": "",
+        }
+        reach_action = {
+            "priority": 3,
+            "video_id": vid_res,
+            "title": "Reach Video Gamma",
+            "action_type": "Search & Topic Demand Positioning",
+            "diagnosis": "Reach review",
+            "why_today": "Low search impressions",
+            "evidence": "50 impressions vs 500 median",
+            "confidence": "Medium",
+            "estimated_effort": "25m",
+            "recommended_next_step": "Research Demand",
+            "caveat": "",
+        }
+        briefing = {
+            "status": "ready",
+            "prioritized_actions": [pkg_action, ret_action, reach_action],
+            "summary": {"total_recent_videos": 10, "opportunity_count": 3, "reach_reporting_active": True},
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+
+        rendered_buttons = []
+        captured_markdown = []
+        with patch("pages.today.get_or_create_daily_briefing", return_value=briefing), \
+             patch("pages.today.connection_status_banner"), \
+             patch("pages.today.demo_banner"), \
+             patch.object(st, "button", side_effect=lambda label, *args, **kwargs: rendered_buttons.append(label) or False), \
+             patch.object(st, "markdown", side_effect=lambda text, *args, **kwargs: captured_markdown.append(str(text))):
+            render_today(subject=owner)
+
+        md_combined = " ".join(captured_markdown)
+        # Packaging task in applied_monitoring displays monitoring badge and intentional re-edit option
+        self.assertIn("APPLIED — MONITORING", md_combined)
+        self.assertIn("Monitoring Performance", md_combined)
+        self.assertNotIn("⚡ Optimize & Publish Here", rendered_buttons)
+        self.assertTrue(any("Edit Metadata Again" in b for b in rendered_buttons))
+
+        # Retention and Reach tasks preserve their specific action targets
+        self.assertTrue(any("Open Hook Lab" in b for b in rendered_buttons))
+        self.assertTrue(any("Research Demand" in b for b in rendered_buttons))
+
+        # 3. Deep-link navigation to Hook Lab
+        st.session_state.clear()
+        st.session_state["ideas_active_tab"] = "hook_lab"
+        st.session_state["hook_lab_video_id"] = vid_ret
+        st.session_state["hook_lab_video_title"] = "Retention Video Beta"
+
+        ideas_buttons = []
+        with patch("pages.ideas_production.demo_banner"), \
+             patch.object(st, "button", side_effect=lambda label, *args, **kwargs: ideas_buttons.append(label) or False):
+            render_ideas_production(subject=owner)
+
+        self.assertEqual(st.session_state.get("ideas_view_selector"), "🎯 Hook & Opening Review")
+        self.assertEqual(st.session_state.get("hook_lab_video_id"), vid_ret)
+        self.assertTrue(any("Return to Today" in b for b in ideas_buttons))
+        self.assertTrue(any("Evaluate Hook" in b for b in ideas_buttons))
+
+        # 4. Deep-link navigation to Topic Demand & Research
+        st.session_state.clear()
+        st.session_state["ideas_active_tab"] = "research_demand"
+        st.session_state["research_video_id"] = vid_res
+        st.session_state["research_video_title"] = "Reach Video Gamma"
+        st.session_state["research_video_evidence"] = "50 impressions vs 500 median"
+
+        ideas_res_buttons = []
+        with patch("pages.ideas_production.demo_banner"), \
+             patch.object(st, "button", side_effect=lambda label, *args, **kwargs: ideas_res_buttons.append(label) or False):
+            render_ideas_production(subject=owner)
+
+        self.assertEqual(st.session_state.get("ideas_view_selector"), "🔍 Topic Demand & Research")
+        self.assertEqual(st.session_state.get("research_video_id"), vid_res)
+        self.assertTrue(any("Return to Today" in b for b in ideas_res_buttons))
+        self.assertTrue(any("Analyze Topic Demand" in b for b in ideas_res_buttons))
+
+        # 5. Briefing lock conflict decorates stale saved briefing
+        from core.daily_briefing import get_or_create_daily_briefing
+        with patch("core.daily_briefing.acquire_briefing_lock", return_value=False), \
+             patch("core.daily_briefing.get_latest_daily_briefing", return_value={"status": "ready", "run_date": "2026-10-28"}):
+            lock_briefing = get_or_create_daily_briefing(
+                youtube=MagicMock(),
+                analytics=MagicMock(),
+                owner_id=owner,
+                channel_id="channel-123",
+                force_refresh=True,
+            )
+            self.assertEqual(lock_briefing["status"], "stale")
+            self.assertIn("in progress by another session", lock_briefing["notice"])
+
 
 if __name__ == "__main__":
     unittest.main()

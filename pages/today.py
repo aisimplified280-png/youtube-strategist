@@ -194,7 +194,21 @@ def render_today(
     else:
         all_growth_tasks = get_all_growth_tasks(owner_id=subject, is_demo=is_demo)
 
+        active_actions = []
+        handled_actions = []
         for act in actions:
+            vid = act.get("video_id")
+            task = all_growth_tasks.get(vid, {})
+            task_status = task.get("status", "new")
+            if task_status in ("resolved", "dismissed"):
+                handled_actions.append(act)
+            else:
+                active_actions.append(act)
+
+        if not active_actions and handled_actions:
+            st.success("🎉 All priority actions for today have been completed or handled.")
+
+        for act in active_actions:
             p_idx = act.get("priority", 1)
             vid = act.get("video_id")
             title = html.escape(act.get("title", "Untitled Video"))
@@ -211,14 +225,16 @@ def render_today(
             task_status = task.get("status", "new")
             metadata_applied = task.get("metadata_applied", False) or task_status == "applied_monitoring"
 
-            if metadata_applied:
-                status_badge_html = '<span style="background: rgba(16, 185, 129, 0.2); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">APPLIED — MONITORING</span>'
-            elif task_status == "in_progress":
-                status_badge_html = '<span style="background: rgba(59, 130, 246, 0.2); color: #60A5FA; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">IN PROGRESS</span>'
-            elif task_status == "resolved":
+            if task_status == "resolved":
                 status_badge_html = '<span style="background: rgba(100, 116, 139, 0.2); color: #94A3B8; border: 1px solid rgba(100, 116, 139, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">RESOLVED</span>'
             elif task_status == "dismissed":
                 status_badge_html = '<span style="background: rgba(100, 116, 139, 0.2); color: #64748B; border: 1px solid rgba(100, 116, 139, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">DISMISSED</span>'
+            elif task_status == "reopened":
+                status_badge_html = '<span style="background: rgba(245, 158, 11, 0.2); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">REOPENED</span>'
+            elif metadata_applied or task_status == "applied_monitoring":
+                status_badge_html = '<span style="background: rgba(16, 185, 129, 0.2); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">APPLIED — MONITORING</span>'
+            elif task_status == "in_progress":
+                status_badge_html = '<span style="background: rgba(59, 130, 246, 0.2); color: #60A5FA; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">IN PROGRESS</span>'
             else:
                 status_badge_html = '<span style="background: rgba(99, 102, 241, 0.2); color: #818CF8; border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px;">NEW OPPORTUNITY</span>'
 
@@ -246,14 +262,24 @@ def render_today(
 
                     # Distinctive status messaging when metadata update was applied
                     if metadata_applied:
-                        applied_box = """
-                        <div style="background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10B981; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
-                            <div style="font-weight: 700; color: #34D399; font-size: 0.88rem;">✓ Metadata Applied</div>
-                            <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
-                                Your YouTube title, description and tags were updated and verified.
+                        if task_status == "reopened":
+                            applied_box = """
+                            <div style="background: rgba(245, 158, 11, 0.08); border-left: 3px solid #F59E0B; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+                                <div style="font-weight: 700; color: #FBBF24; font-size: 0.88rem;">↩ Task Reopened</div>
+                                <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
+                                    Prior YouTube metadata write completed and verified. Opportunity reopened for further refinement.
+                                </div>
                             </div>
-                        </div>
-                        """
+                            """
+                        else:
+                            applied_box = """
+                            <div style="background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10B981; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;">
+                                <div style="font-weight: 700; color: #34D399; font-size: 0.88rem;">✓ Metadata Applied</div>
+                                <div style="font-size: 0.83rem; color: #CBD5E1; margin-top: 2px;">
+                                    Your YouTube title, description and tags were updated and verified.
+                                </div>
+                            </div>
+                            """
                         st.markdown(applied_box, unsafe_allow_html=True)
 
                         if diagnosis == "Retention review":
@@ -349,6 +375,10 @@ def render_today(
 
                     elif diagnosis == "Reach review":
                         if st.button("🔍 Research Demand", key=f"btn_reach_{p_idx}_{vid}", type="primary", use_container_width=True):
+                            st.session_state["ideas_active_tab"] = "research_demand"
+                            st.session_state["research_video_id"] = vid
+                            st.session_state["research_video_title"] = act.get("title")
+                            st.session_state["research_video_evidence"] = act.get("evidence")
                             st.session_state["nav_destination"] = "ideas"
                             record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
                             st.rerun()
@@ -377,15 +407,35 @@ def render_today(
 
                     else:
                         # Packaging review or baseline
-                        if is_optimizing:
-                            if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
-                                st.session_state[f"active_today_optimizer_{vid}"] = False
-                                st.rerun()
+                        is_applied_monitoring = metadata_applied or task_status == "applied_monitoring"
+                        if is_applied_monitoring:
+                            st.markdown(
+                                """
+                                <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; text-align: center;">
+                                    <span style="font-size: 0.80rem; font-weight: 700; color: #34D399;">📊 Monitoring Performance (24–48h Delay)</span>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                            if is_optimizing:
+                                if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
+                                    st.session_state[f"active_today_optimizer_{vid}"] = False
+                                    st.rerun()
+                            else:
+                                if st.button("✏️ Edit Metadata Again", key=f"btn_act_{p_idx}_{vid}", use_container_width=True, help="Update title, description, or tags again"):
+                                    st.session_state[f"active_today_optimizer_{vid}"] = True
+                                    record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                                    st.rerun()
                         else:
-                            if st.button("⚡ Optimize & Publish Here", key=f"btn_act_{p_idx}_{vid}", type="primary", use_container_width=True):
-                                st.session_state[f"active_today_optimizer_{vid}"] = True
-                                record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
-                                st.rerun()
+                            if is_optimizing:
+                                if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
+                                    st.session_state[f"active_today_optimizer_{vid}"] = False
+                                    st.rerun()
+                            else:
+                                if st.button("⚡ Optimize & Publish Here", key=f"btn_act_{p_idx}_{vid}", type="primary", use_container_width=True):
+                                    st.session_state[f"active_today_optimizer_{vid}"] = True
+                                    record_growth_task_state(vid, "in_progress", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=is_demo)
+                                    st.rerun()
 
                         if st.button("Open in Workspace Tab ↗", key=f"btn_open_ws_{p_idx}_{vid}", use_container_width=True):
                             st.session_state["pending_optimizer_video_id"] = vid
@@ -412,14 +462,15 @@ def render_today(
                                 )
                                 st.toast("Saved to Ideas & Production pipeline!")
                         with col_t2:
-                            if task_status == "resolved":
-                                if st.button("↩ Reopen", key=f"btn_reopen_{p_idx}_{vid}", use_container_width=True):
-                                    record_growth_task_state(vid, "new", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=False)
-                                    st.rerun()
-                            else:
-                                if st.button("✓ Resolve", key=f"btn_resolve_{p_idx}_{vid}", use_container_width=True):
-                                    record_growth_task_state(vid, "resolved", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=False)
-                                    st.rerun()
+                            if st.button("✓ Resolve", key=f"btn_resolve_{p_idx}_{vid}", use_container_width=True):
+                                record_growth_task_state(vid, "resolved", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=False)
+                                st.toast("Opportunity marked resolved")
+                                st.rerun()
+
+                        if st.button("✕ Dismiss Opportunity", key=f"btn_dismiss_{p_idx}_{vid}", use_container_width=True):
+                            record_growth_task_state(vid, "dismissed", diagnosis=diagnosis, action_type=action_type, owner_id=subject, is_demo=False)
+                            st.toast("Opportunity dismissed")
+                            st.rerun()
 
                 # Inline Execution Studio (everything happens right on Today with no page switching)
                 if is_optimizing:
@@ -446,6 +497,52 @@ def render_today(
                             key_prefix=f"today_opt_{vid}",
                             inline_mode=True,
                         )
+
+        if handled_actions:
+            st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+            with st.expander(f"📁 Handled Actions ({len(handled_actions)}) — Resolved & Dismissed", expanded=False):
+                for h_idx, h_act in enumerate(handled_actions):
+                    h_vid = h_act.get("video_id")
+                    h_task = all_growth_tasks.get(h_vid, {})
+                    h_status = h_task.get("status", "resolved")
+                    h_badge = "RESOLVED" if h_status == "resolved" else "DISMISSED"
+                    h_badge_color = "#94A3B8" if h_status == "resolved" else "#64748B"
+                    h_title = html.escape(h_act.get("title", "Untitled Video"))
+                    h_why = html.escape(h_act.get("why_today", ""))
+                    with st.container(border=True):
+                        col_h1, col_h2 = st.columns([3, 1])
+                        with col_h1:
+                            st.markdown(
+                                f"""
+                                <div style="margin-bottom: 4px;">
+                                    <span style="background: rgba(100, 116, 139, 0.2); color: {h_badge_color}; border: 1px solid rgba(100, 116, 139, 0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;">
+                                        {h_badge}
+                                    </span>
+                                    <strong style="color: #FFFFFF; font-size: 1rem; margin-left: 8px;">{h_title}</strong>
+                                </div>
+                                <p style="color: #94A3B8; font-size: 0.85rem; margin: 4px 0 0 0;">
+                                    {h_why}
+                                </p>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                            if h_task.get("metadata_applied"):
+                                st.caption("✓ Prior YouTube metadata write completed and verified.")
+                        with col_h2:
+                            if not is_demo:
+                                if st.button("↩ Reopen Task", key=f"btn_h_reopen_{h_idx}_{h_vid}", use_container_width=True):
+                                    record_growth_task_state(
+                                        h_vid,
+                                        "reopened",
+                                        diagnosis=h_act.get("diagnosis", ""),
+                                        action_type=h_act.get("action_type", ""),
+                                        owner_id=subject,
+                                        is_demo=False,
+                                    )
+                                    st.toast(f"Reopened task for {h_act.get('title')}")
+                                    st.rerun()
+                            else:
+                                st.caption("Task controls disabled in Demo Mode")
 
     # Secondary Section: AI Research Radar
     radar_items = briefing.get("research_radar", [])

@@ -86,6 +86,36 @@ AUTHORITATIVE_AI_RADAR_SOURCES = [
 ]
 
 
+def _decorate_stale_or_cached_briefing(
+    briefing: Dict[str, Any],
+    channel_id: str,
+    owner_id: Optional[str],
+    today_str: str,
+    is_lock_conflict: bool = False,
+) -> Dict[str, Any]:
+    """Ensure persistent refresh-failure warnings and staleness notices are decorated on every cached/saved return path."""
+    decorated = dict(briefing)
+    failure = get_briefing_refresh_failure(channel_id, owner_id=owner_id, is_demo=False)
+    if failure:
+        decorated["status"] = "stale"
+        decorated["refresh_error"] = failure.get("error", "Unknown refresh error")
+        decorated["refresh_failed_at"] = failure.get("failed_at_utc")
+        decorated["notice"] = (
+            f"Refresh failed: {failure.get('error')}. Displaying prior successful briefing from {decorated.get('run_date')}."
+        )
+    elif is_lock_conflict:
+        decorated["status"] = "stale"
+        decorated["notice"] = (
+            f"A briefing refresh is currently in progress by another session or process. Displaying prior briefing from {decorated.get('run_date')}."
+        )
+    elif decorated.get("run_date") and decorated.get("run_date") != today_str:
+        decorated["status"] = "stale"
+        decorated["notice"] = (
+            f"Displaying prior briefing from {decorated.get('run_date')}. Click 'Refresh Analysis' for latest metrics."
+        )
+    return decorated
+
+
 def get_or_create_daily_briefing(
     youtube=None,
     analytics=None,
@@ -127,33 +157,23 @@ def get_or_create_daily_briefing(
     if not force_refresh:
         cached = get_latest_daily_briefing(channel_id, run_date=today_str, owner_id=owner_id, is_demo=False)
         if cached:
-            # Retain refresh-failure warning visible across reruns until a successful refresh occurs
-            failure = get_briefing_refresh_failure(channel_id, owner_id=owner_id, is_demo=False)
-            if failure:
-                cached = dict(cached)
-                cached["status"] = "stale"
-                cached["refresh_error"] = failure.get("error", "Unknown refresh error")
-                cached["refresh_failed_at"] = failure.get("failed_at_utc")
-                cached["notice"] = (
-                    f"Refresh failed: {failure.get('error')}. Displaying prior successful briefing from {cached.get('run_date')}."
-                )
-            return cached
+            return _decorate_stale_or_cached_briefing(cached, channel_id, owner_id, today_str)
 
     # 2. Acquire run lock to prevent duplicate scans from Streamlit reruns or multi-tabs
     lock_token = str(uuid.uuid4())
     lock_key = build_briefing_lock_key(channel_id=channel_id, run_date=today_str, owner_id=owner_id, is_demo=False)
     acquired = acquire_briefing_lock(lock_key=lock_key, ttl_seconds=90, owner_token=lock_token, owner_id=owner_id)
     if not acquired:
-        # Another tab or thread is currently computing; return latest saved briefing if available
+        # Another tab or thread is currently computing; return latest saved briefing with staleness/failure decoration
         last_saved = get_latest_daily_briefing(channel_id, owner_id=owner_id, is_demo=False)
         if last_saved:
-            return last_saved
+            return _decorate_stale_or_cached_briefing(last_saved, channel_id, owner_id, today_str, is_lock_conflict=True)
         import time
         time.sleep(2)
-        return (
-            get_latest_daily_briefing(channel_id, owner_id=owner_id, is_demo=False)
-            or _build_fallback_briefing(today_str, channel_id, "Scan in progress...", status="pending")
-        )
+        retry_saved = get_latest_daily_briefing(channel_id, owner_id=owner_id, is_demo=False)
+        if retry_saved:
+            return _decorate_stale_or_cached_briefing(retry_saved, channel_id, owner_id, today_str, is_lock_conflict=True)
+        return _build_fallback_briefing(today_str, channel_id, "Scan in progress...", status="pending")
 
     try:
         # 3. Deterministic Data Gathering & LLM Interpretation
@@ -185,7 +205,7 @@ def get_or_create_daily_briefing(
         record_briefing_refresh_failure(channel_id, str(e), owner_id=owner_id, is_demo=False)
         last_successful = get_latest_daily_briefing(channel_id, owner_id=owner_id, is_demo=False)
         if last_successful:
-            stale_copy = dict(last_successful)
+            stale_copy = _decorate_stale_or_cached_briefing(last_successful, channel_id, owner_id, today_str)
             stale_copy["status"] = "stale"
             stale_copy["notice"] = (
                 f"Refresh failed: {str(e)}. Displaying prior successful briefing from {last_successful.get('run_date')}."

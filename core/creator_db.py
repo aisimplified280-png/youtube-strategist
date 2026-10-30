@@ -33,6 +33,7 @@ GROWTH_TASK_STATUS_IN_PROGRESS = "in_progress"
 GROWTH_TASK_STATUS_APPLIED_MONITORING = "applied_monitoring"
 GROWTH_TASK_STATUS_RESOLVED = "resolved"
 GROWTH_TASK_STATUS_DISMISSED = "dismissed"
+GROWTH_TASK_STATUS_REOPENED = "reopened"
 
 # Demo Mode In-Memory Task Isolation
 _DEMO_GROWTH_TASKS: Dict[str, Dict[str, Any]] = {}
@@ -1058,6 +1059,13 @@ def record_growth_task_state(
     - An applied metadata update never marks a retention issue resolved.
     """
     now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if status == "resolved":
+        resolved_at = now_utc
+    elif status in ("reopened", "new", "in_progress", "applied_monitoring", "dismissed"):
+        resolved_at = None
+    else:
+        resolved_at = None
+
     if is_demo:
         existing = _DEMO_GROWTH_TASKS.get(video_id, {})
         m_applied = existing.get("metadata_applied", False) if metadata_applied is None else bool(metadata_applied)
@@ -1070,7 +1078,7 @@ def record_growth_task_state(
             "status": status,
             "metadata_applied": m_applied,
             "metadata_applied_at_utc": existing.get("metadata_applied_at_utc"),
-            "resolved_at_utc": now_utc if status == "resolved" else existing.get("resolved_at_utc"),
+            "resolved_at_utc": resolved_at,
             "notes": notes or existing.get("notes", ""),
             "updated_at_utc": now_utc,
         }
@@ -1087,7 +1095,6 @@ def record_growth_task_state(
                 (oid, video_id)
             )
             row = cur.fetchone()
-            resolved_at = now_utc if status == "resolved" else None
             if row:
                 t_id = row[0]
                 m_applied = row[1] if metadata_applied is None else (1 if metadata_applied else 0)
@@ -1101,7 +1108,7 @@ def record_growth_task_state(
                         action_type = ?,
                         diagnosis = ?,
                         metadata_applied = ?,
-                        resolved_at_utc = COALESCE(?, resolved_at_utc),
+                        resolved_at_utc = ?,
                         notes = COALESCE(NULLIF(?, ''), notes),
                         updated_at_utc = ?
                     WHERE task_id = ?
@@ -1227,6 +1234,7 @@ def mark_growth_task_applied(
                         diagnosis = ?,
                         metadata_applied = 1,
                         metadata_applied_at_utc = ?,
+                        resolved_at_utc = NULL,
                         notes = COALESCE(NULLIF(?, ''), notes),
                         updated_at_utc = ?
                     WHERE task_id = ?
