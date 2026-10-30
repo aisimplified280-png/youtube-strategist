@@ -527,9 +527,9 @@ Rules:
 - Return a complete title, description, and separate tags, but conservatism is more important than filling space.
 - When the LATEST USER INSTRUCTION explicitly requires the current title to remain unchanged, return the exact TARGET VIDEO title in the 'title' field and an empty title_angles array. Do not recommend alternative titles in this focused edit.
 - Otherwise, return title_angles as exactly three structured objects, in this order:
-  {"angle":"curiosity","title":"..."},
-  {"angle":"direct_value","title":"..."},
-  {"angle":"search","title":"..."}.
+  {{"angle":"curiosity","title":"..."}},
+  {{"angle":"direct_value","title":"..."}},
+  {{"angle":"search","title":"..."}}.
 - Each returned title must be a distinct, publishable title supported by the target title, description, and transcript. Keep each at or below 100 characters. Never fill missing options with generic templates or unsupported claims.
 - When three angles are required, the 'title' field must exactly match one of the three title_angles titles: choose the strongest supported option and explain the choice in assistant_message.
 - The target title, existing target description, target tags, and TARGET TRANSCRIPT are the only evidence for claims about the video's content. Use STUDIO PERFORMANCE EVIDENCE only for numeric performance claims.
