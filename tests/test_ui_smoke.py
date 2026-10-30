@@ -39,6 +39,8 @@ class UISmokeTests(unittest.TestCase):
         self.assertIn("word-break: break-word", css)
         self.assertIn("overflow-wrap: anywhere", css)
         self.assertIn("max-width: 100%", css)
+        self.assertIn("padding-top: 4.5rem", css)
+        self.assertIn("padding-top: 4.25rem", css)
         self.assertIn("@media (max-width: 768px)", css)
 
     def test_app_demo_mode_ui_lifecycle(self):
@@ -64,6 +66,11 @@ class UISmokeTests(unittest.TestCase):
 
         # Check file uploader is present
         self.assertGreater(len(at.file_uploader), 0, "File uploader must be present")
+
+        # The empty landing state must expose actionable optimization suggestions.
+        button_labels = [button.label for button in at.button]
+        for expected in ("🎯 Title angles", "📱 Description hook", "🔎 Search tags", "✨ Full review"):
+            self.assertIn(expected, button_labels, f"Missing starter suggestion: {expected}")
 
     def test_proposal_card_demo_simulation_vs_real_publish(self):
         """Verify Demo Mode renders simulation approval button and never real publishing button."""
