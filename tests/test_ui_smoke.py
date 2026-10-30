@@ -7,7 +7,7 @@ Tests full component lifecycle:
 - Chat composer
 - Metadata proposal
 - Current-versus-proposed comparison
-- Approval controls (Demo simulation vs Real Publish)
+- Approval controls (verified owner publish only)
 - Mobile responsiveness verification (no horizontal scroll, word-wrap)
 """
 
@@ -43,85 +43,73 @@ class UISmokeTests(unittest.TestCase):
         self.assertIn("padding-top: 4.25rem", css)
         self.assertIn("@media (max-width: 768px)", css)
 
-    def test_app_demo_mode_ui_lifecycle(self):
-        """Simulate UI flow in Demo Mode with AppTest."""
+    def test_owner_ui_lifecycle_and_starter_suggestions(self):
+        """Owner sees the single-chat UI; stale demo flags cannot expose a bypass."""
         at = AppTest.from_file(APP_PATH, default_timeout=15)
-        # Set demo mode in session state
         at.session_state["demo_mode"] = True
 
-        at.run()
+        with patch("core.auth.verify_owner_access", return_value=(True, "owner123", None)):
+            at.run()
+
         self.assertFalse(at.exception, f"App threw unexpected exception: {at.exception}")
-
-        # Check title / brand is present in markdown
         markdown_texts = [m.value for m in at.markdown]
-        has_brand = any("AI Simplified Lab" in text for text in markdown_texts)
-        self.assertTrue(has_brand, "Header brand must be present")
-
-        # Check demo mode indicator is rendered
-        has_demo_indicator = any("Demo Mode Active" in text for text in markdown_texts)
-        self.assertTrue(has_demo_indicator, "Demo mode indicator banner must be rendered")
-
-        # Check chat input is present
+        self.assertTrue(any("AI Simplified Lab" in value for value in markdown_texts))
         self.assertGreater(len(at.chat_input), 0, "Chat input must be present")
-
-        # Check file uploader is present
         self.assertGreater(len(at.file_uploader), 0, "File uploader must be present")
+        self.assertNotIn("demo_mode", at.session_state)
+        self.assertFalse(any("Demo Mode" in value for value in markdown_texts))
 
-        # The empty landing state must expose actionable optimization suggestions.
         button_labels = [button.label for button in at.button]
-        for expected in ("🎯 Title angles", "📱 Description hook", "🔎 Search tags", "✨ Full review"):
+        for expected in (
+            "🎯 Title angles", "📱 Description hook", "🔎 Search tags",
+            "✨ Full review", "📊 Find videos to optimize",
+        ):
             self.assertIn(expected, button_labels, f"Missing starter suggestion: {expected}")
 
-    def test_proposal_card_demo_simulation_vs_real_publish(self):
-        """Verify Demo Mode renders simulation approval button and never real publishing button."""
+    def test_unverified_proposal_has_no_simulated_or_real_publish_action(self):
+        """Unverified ownership exposes neither a demo simulation nor a real write action."""
         context = {
-            "target_id": "demo-vid-101",
-            "title": "LLM Prompt Caching Explained",
+            "target_id": "public1234567",
+            "title": "Public External Video",
             "target_snippet": {
-                "title": "LLM Prompt Caching Explained",
-                "description": "Old desc",
-                "tags": ["python"],
+                "title": "Public External Video",
+                "description": "Current description",
+                "tags": ["external"],
                 "categoryId": "28",
             },
             "duration_formatted": "10:40",
             "format_info": {"format": "Standard Video", "badge": "Video (>3m)"},
             "is_owner": False,
-            "ownership_status": "Demo Mode (Simulation)",
+            "ownership_status": "Public External Video (Read-Only)",
         }
         proposal = {
-            "target_id": "demo-vid-101",
+            "target_id": "public1234567",
             "before": context["target_snippet"],
             "proposed": {
-                "title": "LLM Prompt Caching: 10x Faster AI APIs",
-                "description": "New optimized description with clear hook.",
-                "tags": ["prompt caching", "llm optimization"],
+                "title": "Proposed title",
+                "description": "Proposed description",
+                "tags": ["python", "ai"],
                 "categoryId": "28",
             },
             "title_angles": [
-                {"label": "💡 Curiosity", "title": "Angle 1"},
-                {"label": "🎯 Direct Value", "title": "Angle 2"},
-                {"label": "🔍 Search / SEO", "title": "Angle 3"},
+                {"label": "💡 Curiosity", "title": "A distinct curiosity title"},
+                {"label": "🎯 Direct Value", "title": "A distinct value title"},
+                {"label": "🔍 Search / SEO", "title": "A distinct SEO title"},
             ],
-            "rationale": ["Higher CTR hook"],
+            "rationale": ["Based on current metadata"],
         }
-
         at = AppTest.from_file(APP_PATH, default_timeout=15)
-        at.session_state["demo_mode"] = True
         at.session_state["strategist_target_reference"] = context
         at.session_state["strategist_chat_proposal"] = proposal
 
-        at.run()
+        with patch("core.auth.verify_owner_access", return_value=(True, "owner123", None)):
+            at.run()
+
         self.assertFalse(at.exception, f"App threw exception: {at.exception}")
+        button_labels = [button.label for button in at.button]
+        self.assertFalse(any("Simulate Approval" in label for label in button_labels))
+        self.assertFalse(any("Approve & Publish to YouTube" in label for label in button_labels))
 
-        button_labels = [b.label for b in at.button]
-
-        # Must have simulated approval button
-        has_sim_button = any("Simulate Approval" in label for label in button_labels)
-        self.assertTrue(has_sim_button, f"Expected Simulate Approval button, got: {button_labels}")
-
-        # Must NOT have real publish button
-        has_real_publish = any("Approve & Publish to YouTube" in label for label in button_labels)
-        self.assertFalse(has_real_publish, f"Real publish button must NOT appear in Demo Mode: {button_labels}")
 
     def test_unverified_owner_blocks_publishing(self):
         """Unverified external video in live mode blocks approval and shows read-only warning."""
@@ -153,7 +141,6 @@ class UISmokeTests(unittest.TestCase):
         }
 
         at = AppTest.from_file(APP_PATH, default_timeout=15)
-        at.session_state["demo_mode"] = False
         at.session_state["strategist_target_reference"] = context
         at.session_state["strategist_chat_proposal"] = proposal
 
@@ -165,6 +152,7 @@ class UISmokeTests(unittest.TestCase):
         button_labels = [b.label for b in at.button]
         has_real_publish = any("Approve & Publish to YouTube" in label for label in button_labels)
         self.assertFalse(has_real_publish, "Unverified video must NOT display publish button")
+        self.assertFalse(any("Simulate Approval" in label for label in button_labels))
 
         warnings = [w.value for w in at.warning]
         has_blocked_warning = any("writes are strictly blocked" in w for w in warnings)
