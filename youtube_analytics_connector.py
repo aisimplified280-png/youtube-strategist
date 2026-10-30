@@ -601,9 +601,10 @@ def _validate_metadata(snippet):
         raise MetadataValidationError("Title must be no longer than 100 characters.")
     if not isinstance(description, str):
         raise MetadataValidationError("Description must be text.")
-    if len(description) > 5000:
+    desc_bytes = len(description.encode("utf-8"))
+    if len(description) > 5000 or desc_bytes > 5000:
         raise MetadataValidationError(
-            "Description must be no longer than 5000 characters."
+            f"Description must be no longer than 5000 characters and 5000 UTF-8 bytes (currently {len(description)} chars, {desc_bytes} bytes)."
         )
     if not isinstance(tags, list) or any(
         not isinstance(tag, str) or not tag.strip() for tag in tags
@@ -773,20 +774,47 @@ def _write_audit_entry(
     return entry
 
 
-def _writable_snippet(snippet):
-    writable_fields = (
-        "title",
-        "description",
-        "tags",
-        "categoryId",
-        "defaultLanguage",
-        "defaultAudioLanguage",
-    )
-    return {
-        field: deepcopy(snippet[field])
-        for field in writable_fields
-        if field in snippet
+def _writable_snippet(snippet, current_snippet=None):
+    current = current_snippet or {}
+
+    category_id = snippet.get("categoryId") or current.get("categoryId")
+    if not category_id or not str(category_id).strip():
+        raise MetadataValidationError(
+            "Video categoryId is missing; YouTube Data API videos.update requires categoryId to update snippet."
+        )
+
+    title = snippet.get("title") or current.get("title")
+    if not title or not isinstance(title, str) or not title.strip():
+        raise MetadataValidationError(
+            "Video title is missing or empty; YouTube Data API videos.update requires title to update snippet."
+        )
+
+    description = snippet.get("description")
+    if description is None:
+        description = current.get("description", "")
+    if not isinstance(description, str):
+        raise MetadataValidationError("Video description must be a string.")
+
+    tags = snippet.get("tags")
+    if tags is None:
+        tags = deepcopy(current.get("tags", []))
+    if not isinstance(tags, list):
+        raise MetadataValidationError("Video tags must be a list of strings.")
+
+    body = {
+        "title": title.strip(),
+        "description": description,
+        "tags": list(tags),
+        "categoryId": str(category_id).strip(),
     }
+
+    for lang_field in ("defaultLanguage", "defaultAudioLanguage"):
+        val = snippet.get(lang_field) or current.get(lang_field)
+        if val:
+            body[lang_field] = val
+
+    _validate_metadata(body)
+    return body
 
 
 def _metadata_matches(actual, expected):
@@ -820,7 +848,7 @@ def _apply_metadata_update(
             part="snippet",
             body={
                 "id": video_id,
-                "snippet": _writable_snippet(plan["proposed_snippet"]),
+                "snippet": _writable_snippet(plan["proposed_snippet"], plan.get("current_snippet")),
             },
         ).execute()
     except HttpError as error:
@@ -960,6 +988,29 @@ def apply_approved_dashboard_proposal(
         )
 
     mutable_fields = {"title", "description", "tags"}
+    # Preserve categoryId from before_snippet if omitted in proposed_snippet
+    if "categoryId" not in proposed_snippet and "categoryId" in before_snippet:
+        proposed_snippet["categoryId"] = before_snippet["categoryId"]
+
+    if not proposed_snippet.get("categoryId") or not str(proposed_snippet.get("categoryId")).strip():
+        raise MetadataValidationError(
+            "Video categoryId is missing; YouTube Data API videos.update requires categoryId to update snippet."
+        )
+
+    # Preserve title if omitted from a description-only or tags-only proposal
+    if "title" not in proposed_snippet and "title" in before_snippet:
+        proposed_snippet["title"] = before_snippet["title"]
+
+    # Preserve description and tags if omitted from a single-field focused proposal
+    if "description" not in proposed_snippet and "description" in before_snippet:
+        proposed_snippet["description"] = before_snippet["description"]
+    if "tags" not in proposed_snippet and "tags" in before_snippet:
+        proposed_snippet["tags"] = deepcopy(before_snippet["tags"])
+
+    for lang_field in ("defaultLanguage", "defaultAudioLanguage"):
+        if lang_field not in proposed_snippet and lang_field in before_snippet:
+            proposed_snippet[lang_field] = before_snippet[lang_field]
+
     for field in before_snippet:
         if field not in mutable_fields and (
             before_snippet[field] != proposed_snippet.get(field)

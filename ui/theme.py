@@ -357,27 +357,41 @@ def inject_theme():
         /* Mobile Adjustments (360px - 768px) */
         @media (max-width: 768px) {
             .block-container {
-                padding-top: 1rem !important;
+                padding-top: 0.75rem !important;
                 padding-left: 0.75rem !important;
                 padding-right: 0.75rem !important;
+                padding-bottom: 7rem !important;
+            }
+            .copilot-video-card {
+                padding: 12px 14px;
+            }
+            .copilot-video-title {
+                font-size: 1rem;
+            }
+            .copilot-metrics-strip {
+                gap: 8px;
+                padding: 8px 10px;
+                font-size: 0.78rem;
+            }
+            [data-testid="stChatInput"] {
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+            }
+            [data-testid="stChatInput"] textarea {
+                font-size: 0.92rem !important;
+            }
+            [data-testid="stFileUploader"] {
+                width: 100%;
+            }
+            [data-testid="stButton"] button {
+                min-height: 2.85rem;
+                width: 100%;
             }
             .hero-action-card {
                 padding: 16px 18px;
             }
             .hero-title {
                 font-size: 1.2rem;
-            }
-            .stepper-container {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 8px;
-            }
-            .step-arrow {
-                display: none;
-            }
-            [data-testid="stButton"] button {
-                min-height: 2.85rem;
-                width: 100%;
             }
         }
         </style>

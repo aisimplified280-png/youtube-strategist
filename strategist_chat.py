@@ -99,30 +99,69 @@ def _parse_iso_duration(duration_str: str) -> Tuple[Optional[int], str]:
     return total_sec, formatted
 
 
-def _classify_video_format(duration_seconds: Optional[int], is_short_url: bool = False) -> Dict[str, str]:
-    """Classify video vs short only using reliable available evidence."""
+def _classify_video_format(
+    duration_seconds: Optional[int],
+    is_short_url: bool = False,
+    studio_format: Optional[str] = None,
+    upload_date: Optional[str] = None,
+) -> Dict[str, str]:
+    """Classify video vs short only using reliable available evidence.
+
+    Under YouTube's updated policy (effective October 15, 2024), videos up to 3 minutes
+    that are square or vertical qualify as Shorts. Older uploads (before Oct 15, 2024)
+    were capped at 60 seconds. Because YouTube Data API v3 does not expose video aspect
+    ratio or orientation, duration alone cannot determine whether a video is a Short.
+    """
     if is_short_url:
         return {
             "format": "YouTube Short",
             "badge": "Short",
             "note": "Confirmed by YouTube Shorts URL path.",
         }
-    if duration_seconds is None:
+
+    norm_studio = str(studio_format or "").strip().lower()
+    if norm_studio in {"short", "shorts", "youtube short", "youtube shorts"}:
         return {
-            "format": "Format Undetermined",
-            "badge": "Undetermined",
-            "note": "Duration not reported by API; format cannot be verified.",
+            "format": "YouTube Short",
+            "badge": "Short",
+            "note": "Confirmed by YouTube Studio export format evidence.",
         }
-    if duration_seconds <= 60:
+    if norm_studio in {"video", "videos", "standard video", "long-form", "long form"}:
         return {
-            "format": "Short Candidate",
-            "badge": "Short (≤60s)",
-            "note": "Short candidate by duration (≤60s); YouTube Data API does not expose orientation or Shorts designation.",
+            "format": "Standard Video",
+            "badge": "Video",
+            "note": "Confirmed by YouTube Studio export format evidence.",
         }
+
+    # Videos over 180 seconds (3 minutes) cannot be YouTube Shorts
+    if duration_seconds is not None and duration_seconds > 180:
+        return {
+            "format": "Standard Video",
+            "badge": "Video (>3m)",
+            "note": "Standard long-form video (>180s exceeds YouTube Shorts limit).",
+        }
+
+    # Videos uploaded before October 15, 2024 over 60s cannot be Shorts
+    if duration_seconds is not None and duration_seconds > 60 and upload_date:
+        try:
+            if str(upload_date)[:10] < "2024-10-15":
+                return {
+                    "format": "Standard Video",
+                    "badge": "Video (>60s Pre-Oct 2024)",
+                    "note": "Standard long-form video (>60s uploaded before October 15, 2024 Shorts extension).",
+                }
+        except Exception:
+            pass
+
+    # When format cannot be established from reliable evidence:
     return {
-        "format": "Standard Video",
-        "badge": "Video (>60s)",
-        "note": "Standard long-form video (>60 seconds).",
+        "format": "Format unconfirmed",
+        "badge": "Format unconfirmed",
+        "note": (
+            "YouTube Data API does not expose video aspect ratio or orientation. "
+            "Videos up to 3 minutes may be Shorts (if vertical/square) or standard videos (if horizontal). "
+            "Access via /shorts/ URL or attach Studio data to confirm."
+        ),
     }
 
 
@@ -278,7 +317,26 @@ def fetch_full_video_details(
             snippet = {"title": "Untitled Video", "description": "", "tags": []}
 
         duration_sec, duration_fmt = _parse_iso_duration(content_details.get("duration", ""))
-        format_info = _classify_video_format(duration_sec, is_short_url=is_short_url)
+        published_at_str = snippet.get("publishedAt", "")[:10] if isinstance(snippet.get("publishedAt"), str) else ""
+
+        evidence = studio_export_analyzer.find_video_evidence(
+            st.session_state.get("studio_export_evidence_index", {}),
+            video_id,
+            snippet.get("title"),
+        )
+        studio_format = None
+        for ev in evidence:
+            cand = ev.get("content_type") or ev.get("video_type") or ev.get("format")
+            if cand:
+                studio_format = str(cand).strip()
+                break
+
+        format_info = _classify_video_format(
+            duration_sec,
+            is_short_url=is_short_url,
+            studio_format=studio_format,
+            upload_date=published_at_str,
+        )
         is_owner, ownership_status = _check_ownership(snippet, owner_channel_id)
 
         # Real numbers or None (never invent metrics or pretend missing is zero)
@@ -287,12 +345,6 @@ def fetch_full_video_details(
         comments = int(stats["commentCount"]) if "commentCount" in stats and stats["commentCount"] is not None else None
 
         transcript_text, transcript_status = _transcript_text(video_id)
-
-        evidence = studio_export_analyzer.find_video_evidence(
-            st.session_state.get("studio_export_evidence_index", {}),
-            video_id,
-            snippet.get("title"),
-        )
 
         return {
             "target_id": video_id,
@@ -918,8 +970,9 @@ def render_copilot_chat(
             # Proposed Description with Counter & Mobile Hook
             prop_desc = proposal["proposed"].get("description", "")
             desc_len = len(prop_desc)
-            desc_color = "#34D399" if desc_len <= 5000 else "#EF4444"
-            st.markdown(f"**Proposed Description + Hashtags** • <span style='color: {desc_color}; font-size: 0.85rem; font-weight: 700;'>{desc_len}/5000 chars</span>", unsafe_allow_html=True)
+            desc_bytes = len(prop_desc.encode("utf-8"))
+            desc_color = "#34D399" if desc_bytes <= 5000 else "#EF4444"
+            st.markdown(f"**Proposed Description + Hashtags** • <span style='color: {desc_color}; font-size: 0.85rem; font-weight: 700;'>{desc_bytes}/5000 UTF-8 bytes ({desc_len} chars)</span>", unsafe_allow_html=True)
             first_150 = prop_desc[:150].strip()
             if first_150:
                 st.markdown(

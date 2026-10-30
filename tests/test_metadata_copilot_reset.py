@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, Mock, patch
 import strategist_chat
 import studio_export_analyzer
 import youtube_analytics_connector as connector
+from core.linter import lint_description
 from core.creator_db import record_proposal_decision, get_recent_proposal_history
 
 
@@ -72,23 +73,52 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
 
     # Criterion 3: Shorts URL parsing and classification
     def test_03_shorts_url_parsing_and_classification(self):
-        """Correctly parses /shorts/ URLs and classifies format as YouTube Short."""
+        """Correctly parses /shorts/ URLs and classifies format using reliable evidence."""
         short_url = "https://www.youtube.com/shorts/MjIHEGngvF8"
         video_id = strategist_chat.parse_video_id(short_url)
         self.assertEqual(video_id, "MjIHEGngvF8")
 
-        # Classification by URL
+        # Classification by URL path -> YouTube Short
         format_info_url = strategist_chat._classify_video_format(None, is_short_url=True)
         self.assertEqual(format_info_url["format"], "YouTube Short")
+        self.assertEqual(format_info_url["badge"], "Short")
         self.assertIn("Confirmed by YouTube Shorts URL", format_info_url["note"])
 
-        # Classification by duration <= 60s
-        format_info_sec = strategist_chat._classify_video_format(45, is_short_url=False)
-        self.assertEqual(format_info_sec["format"], "Short Candidate")
+        # Classification by Studio format evidence -> YouTube Short
+        format_info_studio = strategist_chat._classify_video_format(
+            duration_seconds=45, is_short_url=False, studio_format="Shorts"
+        )
+        self.assertEqual(format_info_studio["format"], "YouTube Short")
+        self.assertEqual(format_info_studio["badge"], "Short")
 
-        # Standard video > 60s
+        # Classification by Studio format evidence -> Standard Video
+        format_info_studio_video = strategist_chat._classify_video_format(
+            duration_seconds=50, is_short_url=False, studio_format="Videos"
+        )
+        self.assertEqual(format_info_studio_video["format"], "Standard Video")
+        self.assertEqual(format_info_studio_video["badge"], "Video")
+
+        # Standard video > 180s (cannot be Short under any rule)
         format_info_long = strategist_chat._classify_video_format(620, is_short_url=False)
         self.assertEqual(format_info_long["format"], "Standard Video")
+        self.assertEqual(format_info_long["badge"], "Video (>3m)")
+
+        # Uploaded before Oct 15, 2024 and > 60s
+        format_info_old = strategist_chat._classify_video_format(
+            duration_seconds=75, is_short_url=False, upload_date="2024-09-01T12:00:00Z"
+        )
+        self.assertEqual(format_info_old["format"], "Standard Video")
+        self.assertEqual(format_info_old["badge"], "Video (>60s Pre-Oct 2024)")
+
+        # Duration <= 180s without URL or Studio confirmation -> Format unconfirmed
+        format_info_unconfirmed = strategist_chat._classify_video_format(45, is_short_url=False)
+        self.assertEqual(format_info_unconfirmed["format"], "Format unconfirmed")
+        self.assertEqual(format_info_unconfirmed["badge"], "Format unconfirmed")
+        self.assertIn("YouTube Data API does not expose video aspect ratio", format_info_unconfirmed["note"])
+
+        # Duration None without URL or Studio confirmation -> Format unconfirmed
+        format_info_none = strategist_chat._classify_video_format(None, is_short_url=False)
+        self.assertEqual(format_info_none["format"], "Format unconfirmed")
 
     # Criterion 4: Video details retrieval
     def test_04_video_details_retrieval(self):
@@ -502,6 +532,212 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIn("max-width: 880px", theme_code, "Layout must center at max-width 880px")
         self.assertIn("min-height: 44px", theme_code, "Interactive controls must maintain >=44px touch targets")
         self.assertIn("copilot-video-card", theme_code, "Must define copilot container styles")
+
+
+    # Write Protection & Payload Audit: Title-only update preserves description, tags, categoryId
+    def test_21_update_title_only_preserves_description_tags_and_category_id(self):
+        """Applying a title-only update preserves categoryId, description, and tags."""
+        before_snippet = {
+            "categoryId": "28",
+            "title": "Original Title",
+            "description": "Original Description with key context",
+            "tags": ["python", "machine learning"],
+        }
+        proposed_snippet = {"title": "Updated Title Only"}
+
+        # Direct writable snippet test
+        body = connector._writable_snippet(proposed_snippet, before_snippet)
+        self.assertEqual(body["title"], "Updated Title Only")
+        self.assertEqual(body["description"], "Original Description with key context")
+        self.assertEqual(body["tags"], ["python", "machine learning"])
+        self.assertEqual(body["categoryId"], "28")
+
+        # End-to-end apply test
+        mock_youtube = MagicMock()
+        mock_youtube.videos().list().execute.return_value = {
+            "items": [{"id": "vid123", "snippet": {**before_snippet, "title": "Updated Title Only"}}]
+        }
+        mock_youtube.videos().update().execute.return_value = {
+            "id": "vid123",
+            "snippet": {**before_snippet, "title": "Updated Title Only"},
+        }
+        expected_verified_21 = {**before_snippet, "title": "Updated Title Only"}
+        with patch.object(connector, "fetch_video_snippet", side_effect=[before_snippet, expected_verified_21]):
+            digest = connector.metadata_proposal_digest("vid123", before_snippet, proposed_snippet)
+            res = connector.apply_approved_dashboard_proposal(
+                mock_youtube, "vid123", before_snippet, proposed_snippet, digest, audit_callback=MagicMock()
+            )
+            self.assertEqual(res["title"], "Updated Title Only")
+            # Verify payload sent to YouTube API
+            update_call = mock_youtube.videos().update.call_args[1]
+            sent_snippet = update_call["body"]["snippet"]
+            self.assertEqual(sent_snippet["title"], "Updated Title Only")
+            self.assertEqual(sent_snippet["description"], before_snippet["description"])
+            self.assertEqual(sent_snippet["tags"], before_snippet["tags"])
+            self.assertEqual(sent_snippet["categoryId"], "28")
+
+    # Write Protection & Payload Audit: Description-only update preserves title, tags, categoryId
+    def test_22_update_description_only_preserves_title_tags_and_category_id(self):
+        """Applying a description-only update preserves categoryId, title, and tags."""
+        before_snippet = {
+            "categoryId": "28",
+            "title": "Unchanged Title",
+            "description": "Old Description",
+            "tags": ["ai", "copilot"],
+        }
+        proposed_snippet = {"description": "Brand new description text"}
+
+        body = connector._writable_snippet(proposed_snippet, before_snippet)
+        self.assertEqual(body["title"], "Unchanged Title")
+        self.assertEqual(body["description"], "Brand new description text")
+        self.assertEqual(body["tags"], ["ai", "copilot"])
+        self.assertEqual(body["categoryId"], "28")
+
+        mock_youtube = MagicMock()
+        mock_youtube.videos().list().execute.return_value = {
+            "items": [{"id": "vid123", "snippet": {**before_snippet, "description": "Brand new description text"}}]
+        }
+        mock_youtube.videos().update().execute.return_value = {
+            "id": "vid123",
+            "snippet": {**before_snippet, "description": "Brand new description text"},
+        }
+        expected_verified_22 = {**before_snippet, "description": "Brand new description text"}
+        with patch.object(connector, "fetch_video_snippet", side_effect=[before_snippet, expected_verified_22]):
+            digest = connector.metadata_proposal_digest("vid123", before_snippet, proposed_snippet)
+            connector.apply_approved_dashboard_proposal(
+                mock_youtube, "vid123", before_snippet, proposed_snippet, digest, audit_callback=MagicMock()
+            )
+            sent_snippet = mock_youtube.videos().update.call_args[1]["body"]["snippet"]
+            self.assertEqual(sent_snippet["title"], "Unchanged Title")
+            self.assertEqual(sent_snippet["description"], "Brand new description text")
+            self.assertEqual(sent_snippet["tags"], ["ai", "copilot"])
+            self.assertEqual(sent_snippet["categoryId"], "28")
+
+    # Write Protection & Payload Audit: Tags-only update preserves title, description, categoryId
+    def test_23_update_tags_only_preserves_title_description_and_category_id(self):
+        """Applying a tags-only update preserves categoryId, title, and description."""
+        before_snippet = {
+            "categoryId": "28",
+            "title": "Keep This Title",
+            "description": "Keep This Description",
+            "tags": ["oldtag"],
+        }
+        proposed_snippet = {"tags": ["newtag1", "newtag2"]}
+
+        body = connector._writable_snippet(proposed_snippet, before_snippet)
+        self.assertEqual(body["title"], "Keep This Title")
+        self.assertEqual(body["description"], "Keep This Description")
+        self.assertEqual(body["tags"], ["newtag1", "newtag2"])
+        self.assertEqual(body["categoryId"], "28")
+
+        mock_youtube = MagicMock()
+        mock_youtube.videos().list().execute.return_value = {
+            "items": [{"id": "vid123", "snippet": {**before_snippet, "tags": ["newtag1", "newtag2"]}}]
+        }
+        mock_youtube.videos().update().execute.return_value = {
+            "id": "vid123",
+            "snippet": {**before_snippet, "tags": ["newtag1", "newtag2"]},
+        }
+        expected_verified_23 = {**before_snippet, "tags": ["newtag1", "newtag2"]}
+        with patch.object(connector, "fetch_video_snippet", side_effect=[before_snippet, expected_verified_23]):
+            digest = connector.metadata_proposal_digest("vid123", before_snippet, proposed_snippet)
+            connector.apply_approved_dashboard_proposal(
+                mock_youtube, "vid123", before_snippet, proposed_snippet, digest, audit_callback=MagicMock()
+            )
+            sent_snippet = mock_youtube.videos().update.call_args[1]["body"]["snippet"]
+            self.assertEqual(sent_snippet["title"], "Keep This Title")
+            self.assertEqual(sent_snippet["description"], "Keep This Description")
+            self.assertEqual(sent_snippet["tags"], ["newtag1", "newtag2"])
+            self.assertEqual(sent_snippet["categoryId"], "28")
+
+    # Write Protection & Payload Audit: All 3 fields updated preserves categoryId and language
+    def test_24_update_all_three_fields_preserves_category_id_and_language(self):
+        """Updating title, description, and tags together preserves categoryId and defaultLanguage."""
+        before_snippet = {
+            "categoryId": "28",
+            "title": "Old Title",
+            "description": "Old Desc",
+            "tags": ["tag1"],
+            "defaultLanguage": "en",
+            "defaultAudioLanguage": "en-US",
+        }
+        proposed_snippet = {
+            "title": "Complete New Title",
+            "description": "Complete New Description",
+            "tags": ["tagA", "tagB"],
+        }
+
+        body = connector._writable_snippet(proposed_snippet, before_snippet)
+        self.assertEqual(body["title"], "Complete New Title")
+        self.assertEqual(body["description"], "Complete New Description")
+        self.assertEqual(body["tags"], ["tagA", "tagB"])
+        self.assertEqual(body["categoryId"], "28")
+        self.assertEqual(body["defaultLanguage"], "en")
+        self.assertEqual(body["defaultAudioLanguage"], "en-US")
+
+        mock_youtube = MagicMock()
+        mock_youtube.videos().list().execute.return_value = {
+            "items": [{"id": "vid123", "snippet": {**before_snippet, **proposed_snippet}}]
+        }
+        mock_youtube.videos().update().execute.return_value = {
+            "id": "vid123",
+            "snippet": {**before_snippet, **proposed_snippet},
+        }
+        expected_verified_24 = {**before_snippet, **proposed_snippet}
+        with patch.object(connector, "fetch_video_snippet", side_effect=[before_snippet, expected_verified_24]):
+            digest = connector.metadata_proposal_digest("vid123", before_snippet, proposed_snippet)
+            connector.apply_approved_dashboard_proposal(
+                mock_youtube, "vid123", before_snippet, proposed_snippet, digest, audit_callback=MagicMock()
+            )
+            sent_snippet = mock_youtube.videos().update.call_args[1]["body"]["snippet"]
+            self.assertEqual(sent_snippet["title"], "Complete New Title")
+            self.assertEqual(sent_snippet["description"], "Complete New Description")
+            self.assertEqual(sent_snippet["tags"], ["tagA", "tagB"])
+            self.assertEqual(sent_snippet["categoryId"], "28")
+            self.assertEqual(sent_snippet["defaultLanguage"], "en")
+
+    # Write Protection & Payload Audit: Enforce description UTF-8 byte limit
+    def test_25_description_utf8_byte_limit_enforced(self):
+        """Description exceeding 5000 UTF-8 bytes fails validation even if under 5000 characters."""
+        emoji_desc = "🚀" * 1300
+        self.assertLess(len(emoji_desc), 5000)
+        self.assertGreater(len(emoji_desc.encode("utf-8")), 5000)
+
+        with self.assertRaises(connector.MetadataValidationError) as cm:
+            connector._validate_metadata({
+                "title": "Valid Title",
+                "description": emoji_desc,
+                "tags": ["test"],
+            })
+        self.assertIn("5000 UTF-8 bytes", str(cm.exception))
+
+        lint_res = lint_description(emoji_desc)
+        self.assertTrue(any("5,000 UTF-8 byte limit" in w for w in lint_res["warnings"]))
+
+    # Write Protection & Payload Audit: Missing categoryId fails closed
+    def test_26_missing_category_id_fails_closed(self):
+        """Snippet missing categoryId fails closed before sending any request to YouTube."""
+        before_snippet = {
+            "title": "Title Without Category",
+            "description": "Desc Without Category",
+            "tags": ["tag"],
+        }
+        proposed_snippet = {
+            "title": "New Title",
+        }
+
+        with self.assertRaises(connector.MetadataValidationError) as cm:
+            connector._writable_snippet(proposed_snippet, before_snippet)
+        self.assertIn("categoryId is missing", str(cm.exception))
+
+        mock_youtube = MagicMock()
+        digest = connector.metadata_proposal_digest("vid123", before_snippet, proposed_snippet)
+        with self.assertRaises(connector.MetadataValidationError) as cm2:
+            connector.apply_approved_dashboard_proposal(
+                mock_youtube, "vid123", before_snippet, proposed_snippet, digest, audit_callback=MagicMock()
+            )
+        self.assertIn("categoryId is missing", str(cm2.exception))
+        mock_youtube.videos().update.assert_not_called()
 
 
 if __name__ == "__main__":
