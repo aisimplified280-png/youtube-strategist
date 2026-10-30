@@ -499,8 +499,8 @@ def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
 def _instruction_preserves_title(instruction: str) -> bool:
     """Detect focused edits that explicitly require the current title to stay unchanged."""
     return bool(re.search(
-        r"\b(?:keep|preserve|leave)\s+(?:the\s+)?(?:current|existing)\s+title\s+"
-        r"(?:unchanged|as[- ]is|intact)\b",
+        r"\b(?:keep|preserve|leave)\s+(?:the\s+)?(?:current|existing)\s+title\b"
+        r"[\\s\\S]{0,100}?\\b(?:unchanged|as[- ]is|intact)\\b",
         instruction or "",
         flags=re.IGNORECASE,
     ))
