@@ -704,8 +704,10 @@ def _is_channel_opportunity_request(message: str) -> bool:
         r"\b(least performing|lowest performing|underperform(?:ing)?|"
         r"worst performing|bad performing|low views|lowest views|bad ctr|"
         r"lowest ctr|least views|fix bottleneck|channel health|channel pulse|"
-        r"which videos|what videos|videos to optimize|find videos|"
-        r"recommend videos|optimization opportunit(?:y|ies)|scan my channel)\b",
+        r"which videos?|which of my videos|what videos|find (?:the )?videos?|"
+        r"videos to optimize|videos?(?: that)? need optimiz(?:ation|ing)|"
+        r"most need optimization|recommend videos|optimization opportunit(?:y|ies)|"
+        r"scan my channel|optimize my channel|channel optimization|video optimization)\b",
         text,
     ))
     return has_video_scope and has_opportunity_intent
