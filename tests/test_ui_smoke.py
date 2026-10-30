@@ -57,7 +57,8 @@ class UISmokeTests(unittest.TestCase):
         self.assertGreater(len(at.chat_input), 0, "Chat input must be present")
         self.assertGreater(len(at.file_uploader), 0, "File uploader must be present")
         self.assertNotIn("demo_mode", at.session_state)
-        self.assertFalse(any("Demo Mode" in value for value in markdown_texts))
+        button_labels = [button.label for button in at.button]
+        self.assertFalse(any("Demo" in label for label in button_labels))
 
         button_labels = [button.label for button in at.button]
         for expected in (
