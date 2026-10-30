@@ -12,12 +12,11 @@ from ui.theme import inject_theme
 import oauth_token_store
 import dashboard_security
 
-# Page implementations
-from pages.home import render_home
-from pages.studio_analysis import render_studio_analysis
-from pages.strategist import render_strategist
-from pages.channel_dashboard import render_channel_dashboard
-from pages.memory_experiments import render_memory_experiments
+# Page implementations for the 5 Creator Growth Agent destinations
+from pages.today import render_today
+from pages.workspace import render_workspace
+from pages.ideas_production import render_ideas_production
+from pages.memory import render_memory
 from pages.settings import render_settings
 
 
@@ -186,84 +185,76 @@ def main():
         except Exception as e:
             st.sidebar.warning(f"YouTube client notice: {str(e)}")
 
-    # Multipage Navigation Setup using st.navigation & st.Page with named functions and explicit url_paths
-    def show_home():
-        render_home(youtube=youtube, secrets=secrets, subject=subject, token_store=token_store)
+    # Multipage Navigation Setup: 5 Core Creator Growth Destinations
+    def show_today():
+        render_today(youtube=youtube, analytics=analytics, reporting=reporting, secrets=secrets)
 
-    def show_analyze():
-        render_studio_analysis(youtube=youtube)
+    def show_workspace():
+        render_workspace(youtube=youtube, secrets=secrets)
 
-    def show_strategist():
-        render_strategist(youtube=youtube, secrets=secrets)
-
-    def show_dashboard():
-        render_channel_dashboard(youtube=youtube, analytics=analytics, reporting=reporting, credentials=yt_creds)
+    def show_ideas():
+        render_ideas_production(youtube=youtube, secrets=secrets)
 
     def show_memory():
-        render_memory_experiments(memory_credentials=memory_creds)
+        render_memory(memory_credentials=memory_creds)
 
-    def show_settings():
+    def show_connections():
         render_settings(secrets=secrets, subject=subject, youtube_creds=yt_creds, memory_creds=memory_creds, token_store=token_store)
 
-    page_home = st.Page(
-        show_home,
-        title="Home",
+    page_today = st.Page(
+        show_today,
+        title="Today",
         icon="⚡",
-        url_path="home",
+        url_path="today",
         default=True,
     )
-    page_analyze = st.Page(
-        show_analyze,
-        title="Find Videos & Analyze",
-        icon="🎯",
-        url_path="analyze",
+    page_workspace = st.Page(
+        show_workspace,
+        title="Agent Workspace",
+        icon="🛠️",
+        url_path="workspace",
     )
-    page_strategist = st.Page(
-        show_strategist,
-        title="Strategist Co-Pilot",
-        icon="💬",
-        url_path="strategist",
-    )
-    page_dashboard = st.Page(
-        show_dashboard,
-        title="Channel Dashboard",
-        icon="📊",
-        url_path="dashboard",
+    page_ideas = st.Page(
+        show_ideas,
+        title="Ideas & Production",
+        icon="💡",
+        url_path="ideas",
     )
     page_memory = st.Page(
         show_memory,
-        title="Memory & Experiments",
+        title="Memory",
         icon="🧠",
         url_path="memory",
     )
-    page_settings = st.Page(
-        show_settings,
-        title="Settings & Connections",
+    page_connections = st.Page(
+        show_connections,
+        title="Connections",
         icon="⚙️",
-        url_path="settings",
+        url_path="connections",
     )
 
     pg = st.navigation({
-        "Co-Pilot": [page_home, page_analyze, page_strategist],
-        "Telemetry": [page_dashboard, page_memory],
-        "System": [page_settings],
+        "Operating Assistant": [page_today, page_workspace, page_ideas],
+        "Intelligence & Settings": [page_memory, page_connections],
     })
 
     # Programmatic destination routing support
     nav_dest = st.session_state.pop("nav_destination", None)
     if nav_dest:
         dest_map = {
-            "home": page_home,
-            "analyze": page_analyze,
-            "pages/studio_analysis.py": page_analyze,
-            "strategist": page_strategist,
-            "pages/strategist.py": page_strategist,
-            "dashboard": page_dashboard,
-            "pages/channel_dashboard.py": page_dashboard,
+            "today": page_today,
+            "home": page_today,
+            "workspace": page_workspace,
+            "agent_workspace": page_workspace,
+            "strategist": page_workspace,
+            "pages/strategist.py": page_workspace,
+            "ideas": page_ideas,
+            "production": page_ideas,
             "memory": page_memory,
             "pages/memory_experiments.py": page_memory,
-            "settings": page_settings,
-            "pages/settings.py": page_settings,
+            "connections": page_connections,
+            "settings": page_connections,
+            "pages/settings.py": page_connections,
         }
         target_page = dest_map.get(nav_dest)
         if target_page:
