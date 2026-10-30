@@ -5,9 +5,9 @@ import streamlit as st
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from core.auth import verify_owner_access, is_demo_mode
+from core.auth import verify_owner_access, is_demo_mode, set_demo_mode
 from core.vault import VaultManager
-from core.oauth import test_or_refresh_credentials, create_purpose_state, build_flow, YOUTUBE_SCOPES, MEMORY_SCOPES
+from core.oauth import test_or_refresh_credentials, create_purpose_state, build_flow, YOUTUBE_SCOPES, MEMORY_SCOPES, get_auth_url
 from ui.theme import inject_theme
 import oauth_token_store
 import dashboard_security
@@ -187,10 +187,10 @@ def main():
 
     # Multipage Navigation Setup: 5 Core Creator Growth Destinations
     def show_today():
-        render_today(youtube=youtube, analytics=analytics, reporting=reporting, secrets=secrets)
+        render_today(youtube=youtube, analytics=analytics, reporting=reporting, secrets=secrets, subject=subject, memory_creds=memory_creds)
 
     def show_workspace():
-        render_workspace(youtube=youtube, secrets=secrets)
+        render_workspace(youtube=youtube, secrets=secrets, subject=subject, memory_creds=memory_creds)
 
     def show_ideas():
         render_ideas_production(youtube=youtube, secrets=secrets)
@@ -267,7 +267,7 @@ def main():
     with st.sidebar:
         st.markdown(
             """
-            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
                 <div style="background: #FF1E44; color: white; width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px;">▶</div>
                 <div style="font-weight: 800; font-size: 1.05rem; letter-spacing: -0.02em;">YouTube Strategist</div>
             </div>
@@ -275,14 +275,61 @@ def main():
             unsafe_allow_html=True,
         )
 
-        if is_demo:
-            st.markdown('<span class="status-pill status-connected">● Demo Mode</span>', unsafe_allow_html=True)
-        elif yt_creds:
-            st.markdown('<span class="status-pill status-connected">● YouTube Connected</span>', unsafe_allow_html=True)
-        elif st.session_state.get("youtube_needs_reconnect"):
-            st.markdown('<span class="status-pill status-reconnect">● Reconnect Needed</span>', unsafe_allow_html=True)
-        else:
-            st.markdown('<span class="status-pill status-disconnected">● YouTube Disconnected</span>', unsafe_allow_html=True)
+        # Connection Controls Card in Sidebar
+        with st.container(border=True):
+            st.markdown("<div style='font-size:0.8rem; font-weight:700; color:#94A3B8; text-transform:uppercase; margin-bottom:8px;'>Integrations & Access</div>", unsafe_allow_html=True)
+            
+            # YouTube Status & Connect Button
+            if yt_creds:
+                st.markdown('<span class="status-pill status-connected">● YouTube Connected</span>', unsafe_allow_html=True)
+                if st.button("Disconnect YouTube", key="sb_disconnect_yt", use_container_width=True):
+                    if token_store and subject:
+                        token_store.delete_credentials(subject, "youtube")
+                    st.session_state.pop("youtube_credentials_json", None)
+                    st.rerun()
+            else:
+                if is_demo:
+                    st.markdown('<span class="status-pill status-connected">● Demo Mode</span>', unsafe_allow_html=True)
+                elif st.session_state.get("youtube_needs_reconnect"):
+                    st.markdown('<span class="status-pill status-reconnect">● Reconnect Needed</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<span class="status-pill status-disconnected">● YouTube Disconnected</span>', unsafe_allow_html=True)
+                
+                # Direct Connect Button
+                yt_auth_url, yt_err = get_auth_url("youtube", subject or "demo-owner-subject-12345", secrets)
+                if yt_auth_url:
+                    btn_text = "🔄 Reconnect YouTube" if st.session_state.get("youtube_needs_reconnect") else "▶ Connect YouTube"
+                    st.link_button(btn_text, yt_auth_url, type="primary", use_container_width=True)
+                elif yt_err and not is_demo:
+                    st.caption(f"OAuth notice: {yt_err}")
+
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+            # Memory (Google Sheets / Drive) Status & Connect Button
+            if memory_creds:
+                st.markdown('<span class="status-pill status-connected">● Sheets Memory Connected</span>', unsafe_allow_html=True)
+                if st.button("Disconnect Sheets", key="sb_disconnect_mem", use_container_width=True):
+                    if token_store and subject:
+                        token_store.delete_credentials(subject, "memory")
+                    st.session_state.pop("memory_credentials_json", None)
+                    st.rerun()
+            else:
+                if is_demo:
+                    st.markdown('<span class="status-pill status-connected">● Demo Memory Active</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<span class="status-pill status-disconnected">● Sheets Memory Disconnected</span>', unsafe_allow_html=True)
+                
+                mem_auth_url, _ = get_auth_url("memory", subject or "demo-owner-subject-12345", secrets)
+                if mem_auth_url:
+                    st.link_button("📊 Connect Sheets", mem_auth_url, use_container_width=True)
+
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+            # Quick Demo Mode Toggle
+            demo_toggled = st.toggle("🎮 Demo Mode", value=is_demo, key="sb_demo_toggle", help="Toggle realistic simulated channel data without live API calls")
+            if demo_toggled != is_demo:
+                set_demo_mode(demo_toggled)
+                st.rerun()
 
     pg.run()
 

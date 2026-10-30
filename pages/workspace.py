@@ -21,15 +21,18 @@ from core.linter import lint_proposal, score_hook_text
 from core.prompts import build_strategist_prompt
 from core.metadata_apply import compute_proposal_digest, apply_proposal
 from core.creator_db import record_proposal_decision, get_creator_preferences
-from ui.components import demo_banner, diff_viewer, char_counter, status_pill, error_state
+from ui.components import demo_banner, diff_viewer, char_counter, status_pill, error_state, connection_status_banner
 import strategist_chat
 
 
-def render_workspace(youtube=None, secrets=None):
+def render_workspace(youtube=None, secrets=None, subject=None, memory_creds=None):
     """Render the Agent Workspace."""
     demo_banner()
     is_demo = is_demo_mode()
     secrets = secrets or {}
+
+    # Actionable outside connection banner when disconnected
+    connection_status_banner(secrets, subject=subject, yt_creds=youtube, memory_creds=memory_creds, is_demo=is_demo)
 
     st.markdown(
         """
@@ -66,6 +69,47 @@ def render_workspace(youtube=None, secrets=None):
 
     # Selection bar
     with st.expander("Target Video Selector", expanded=not bool(target_video_id)):
+        # Recent opportunities / uploads options
+        recent_options = []
+        daily_b = st.session_state.get("daily_briefing") or {}
+        briefing_actions = daily_b.get("prioritized_actions", [])
+        for act in briefing_actions:
+            if act.get("video_id") and act.get("title"):
+                recent_options.append((act["video_id"], f"Priority #{act.get('priority', '')}: {act['title']}"))
+
+        # From dashboard video rows if available
+        d_rows = st.session_state.get("dashboard_data", {}).get("video_rows", [])
+        for r in d_rows[:10]:
+            rid = r.get("video_id")
+            rtitle = r.get("title")
+            if rid and rtitle and not any(opt[0] == rid for opt in recent_options):
+                recent_options.append((rid, f"Upload: {rtitle}"))
+
+        if not recent_options and is_demo:
+            recent_options = [
+                ("demo-vid-101", "Demo: Agentic Coding with Gemini 1.5 Pro: Architecture Guide"),
+                ("demo-vid-102", "Demo: Evaluating Multi-Agent Systems in Python: Benchmarks"),
+                ("demo-vid-103", "Demo: 3 Secrets to Agent Reliability (Short)"),
+            ]
+
+        if recent_options:
+            selected_tuple = st.selectbox(
+                "Select from recommended opportunities or recent uploads:",
+                options=recent_options,
+                format_func=lambda x: x[1],
+                key="ws_recent_select",
+            )
+            if selected_tuple and selected_tuple[0] != target_video_id:
+                if st.button(f"Load '{selected_tuple[1][:45]}...'", key="btn_load_recent", use_container_width=True):
+                    st.session_state["pending_optimizer_video_id"] = selected_tuple[0]
+                    st.session_state.pop("pending_optimizer_video_title", None)
+                    st.session_state.pop("workspace_target_context", None)
+                    st.session_state.pop("workspace_proposal", None)
+                    st.session_state.pop("workspace_approved_digest", None)
+                    st.rerun()
+
+            st.markdown("<div style='text-align:center; color:#64748B; font-size:0.8rem; margin:6px 0;'>— OR ENTER DIRECT URL / ID —</div>", unsafe_allow_html=True)
+
         col_s1, col_s2 = st.columns([3, 1])
         with col_s1:
             video_input = st.text_input(
@@ -89,7 +133,7 @@ def render_workspace(youtube=None, secrets=None):
                     st.error(str(err))
 
     if not target_video_id:
-        st.info("Select an action card from Today or enter a video URL above to begin optimization.")
+        st.info("Select an action card from Today, choose from the dropdown, or enter a video URL above to begin optimization.")
         return
 
     # 2. Context Extraction & Caching
@@ -172,12 +216,14 @@ def render_workspace(youtube=None, secrets=None):
         # Editable fields
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
         edit_title = st.text_input("Proposed Title", value=proposal.get("title", ""), key="prop_title_in")
-        char_counter(len(edit_title), 100, "Title Character Budget (YouTube max: 100, Mobile cutoff: 40)")
+        st.markdown(char_counter(len(edit_title), 100, warn_len=60), unsafe_allow_html=True)
         
         edit_desc = st.text_area("Proposed Description", value=proposal.get("description", ""), height=180, key="prop_desc_in")
+        st.markdown(char_counter(len(edit_desc), 5000, warn_len=4500), unsafe_allow_html=True)
         
         tags_raw = ", ".join(proposal.get("tags", [])) if isinstance(proposal.get("tags"), list) else str(proposal.get("tags", ""))
         edit_tags_str = st.text_input("Proposed Tags (comma-separated)", value=tags_raw, key="prop_tags_in")
+        st.markdown(char_counter(len(edit_tags_str), 500, warn_len=400), unsafe_allow_html=True)
         edit_tags = [t.strip() for t in edit_tags_str.split(",") if t.strip()]
 
         # Update proposal state if user typed edits
@@ -286,16 +332,39 @@ def render_workspace(youtube=None, secrets=None):
                 
                 if st.button("🚀 Push to YouTube Now", type="primary", use_container_width=True):
                     with st.spinner("Verifying snippet and updating YouTube..."):
+                        before_snip = current_snippet.copy()
+                        proposed_snip = before_snip.copy()
+                        proposed_snip["title"] = proposal.get("title", "")
+                        proposed_snip["description"] = proposal.get("description", "")
+                        proposed_snip["tags"] = proposal.get("tags", [])
+
+                        is_demo_target = is_demo or str(target_video_id).startswith("demo-")
                         res = apply_proposal(
                             youtube=youtube,
                             video_id=target_video_id,
+                            before_snippet=before_snip,
+                            proposed_snippet=proposed_snip,
                             approved_digest=current_digest,
-                            proposal=proposal,
-                            is_demo=is_demo,
+                            is_demo=is_demo_target,
                         )
                         if res.get("status") == "success":
                             st.success(f"🎉 Update Applied and Verified! {res.get('message')}")
                             st.balloons()
+                            if memory_creds:
+                                try:
+                                    from content_memory import GoogleSheetsMemoryStore
+                                    mem_store = GoogleSheetsMemoryStore.from_credentials(memory_creds)
+                                    mem_store.append_experiment(
+                                        video_id=target_video_id,
+                                        video_url=f"https://www.youtube.com/watch?v={target_video_id}",
+                                        title=proposed_snip.get("title", ""),
+                                        experiment_type="metadata_packaging",
+                                        baseline_metrics=ctx.get("metrics", {}),
+                                        notes=proposal.get("rationale", "Applied via Agent Workspace"),
+                                    )
+                                    st.toast("Experiment logged to Google Sheets memory!")
+                                except Exception:
+                                    pass
                             # Refresh context
                             st.session_state.pop("workspace_target_context", None)
                             st.session_state.pop("workspace_approved_digest", None)
@@ -305,7 +374,9 @@ def render_workspace(youtube=None, secrets=None):
 
 def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False) -> Dict[str, Any]:
     """Fetch video context, duration, and metrics."""
-    if is_demo or youtube is None:
+    # Check if this is a demo video reference or demo mode is active
+    is_demo_id = str(video_id or "").startswith("demo-")
+    if is_demo or youtube is None or is_demo_id:
         return {
             "snippet": {
                 "title": DEMO_HERO_ACTION["title"],

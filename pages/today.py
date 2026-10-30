@@ -12,14 +12,17 @@ import streamlit as st
 
 from core.auth import is_demo_mode
 from core.daily_briefing import get_or_create_daily_briefing
-from ui.components import demo_banner, metric_tile, evidence_chip, status_pill
+from ui.components import demo_banner, metric_tile, evidence_chip, status_pill, connection_status_banner
 
 
-def render_today(youtube=None, analytics=None, reporting=None, secrets=None):
+def render_today(youtube=None, analytics=None, reporting=None, secrets=None, subject=None, memory_creds=None):
     """Render the Today daily briefing destination."""
     demo_banner()
     is_demo = is_demo_mode()
     secrets = secrets or {}
+
+    # Actionable outside connection banner when disconnected
+    connection_status_banner(secrets, subject=subject, yt_creds=youtube, memory_creds=memory_creds, is_demo=is_demo)
 
     # Header with date and status
     today_str = date.today().strftime("%A, %B %d, %Y")
