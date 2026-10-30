@@ -10,6 +10,7 @@ import dashboard_security
 import youtube_analytics_connector as connector
 
 YOUTUBE_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
