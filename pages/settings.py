@@ -157,7 +157,6 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
             f"""
             - **Python Version:** `{sys.version.split()[0]}`
             - **Streamlit Version:** `{st.__version__}`
-            - **Demo Mode:** `{is_demo}`
             - **Active Session Keys:** `{len(st.session_state)}`
             - **Vault Path:** `~/.ai-simplified-lab-strategist-oauth.sqlite3`
             """
