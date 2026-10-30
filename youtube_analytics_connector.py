@@ -293,7 +293,7 @@ def _resolve_video(youtube, reference):
 
 
 def _query_analytics(analytics, start_date, end_date, metrics, *, video_id=None,
-                     dimensions=None, max_results=200):
+                     video_ids=None, dimensions=None, max_results=200):
     params = {
         "ids": "channel==MINE",
         "startDate": start_date,
@@ -301,8 +301,18 @@ def _query_analytics(analytics, start_date, end_date, metrics, *, video_id=None,
         "metrics": metrics,
         "maxResults": max_results,
     }
+    if video_id and video_ids:
+        raise ValueError("Use either video_id or video_ids, not both.")
     if video_id:
         params["filters"] = f"video=={video_id}"
+    elif video_ids:
+        clean_ids = list(dict.fromkeys(
+            value for value in video_ids
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", value)
+        ))
+        if not clean_ids or len(clean_ids) > 500:
+            raise ValueError("video_ids must contain between 1 and 500 valid YouTube video IDs.")
+        params["filters"] = f"video=={','.join(clean_ids)}"
     if dimensions:
         params["dimensions"] = dimensions
     response = analytics.reports().query(**params).execute()
@@ -336,6 +346,245 @@ def _analytics_window(video):
     published_at = video.get("snippet", {}).get("publishedAt")
     published_on = date.fromisoformat(published_at[:10]) if published_at else yesterday
     return max(yesterday - timedelta(days=89), published_on), yesterday
+
+def rank_channel_video_opportunities(video_rows, *, limit=10):
+    """Rank only evidence-backed weaknesses relative to the channel's own format cohort."""
+    numeric = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool)
+    groups = {}
+    for row in video_rows:
+        groups.setdefault(row.get("format_group") or "Format unconfirmed", []).append(row)
+
+    benchmarks = {}
+    for group_name, rows in groups.items():
+        views = [row["views"] for row in rows if numeric(row.get("views")) and row["views"] > 0]
+        retention = [
+            row["average_view_percentage"] for row in rows
+            if numeric(row.get("average_view_percentage"))
+        ]
+        ctr = [
+            row["ctr_percent"] for row in rows
+            if numeric(row.get("ctr_percent"))
+            and numeric(row.get("impressions"))
+            and row["impressions"] >= 50
+        ]
+        benchmarks[group_name] = {
+            "sample_size": len(rows),
+            "views_median": median(views) if len(views) >= 4 else None,
+            "retention_median": median(retention) if len(retention) >= 4 else None,
+            "ctr_median": median(ctr) if len(ctr) >= 3 else None,
+            "ctr_sample_size": len(ctr),
+        }
+
+    ranked = []
+    for row in video_rows:
+        benchmark = benchmarks[row.get("format_group") or "Format unconfirmed"]
+        reasons = []
+        score = 0
+
+        ctr_median = benchmark["ctr_median"]
+        if (
+            ctr_median is not None
+            and numeric(row.get("ctr_percent"))
+            and numeric(row.get("impressions"))
+            and row["impressions"] >= 50
+            and row["ctr_percent"] < ctr_median * 0.75
+        ):
+            score += 4
+            source = row.get("ctr_source") or "YouTube Studio export"
+            period = row.get("ctr_period")
+            suffix = f"; report period {period}" if period else ""
+            reasons.append(
+                f"Thumbnail CTR is {row['ctr_percent']:.2f}% versus a "
+                f"{ctr_median:.2f}% channel median ({benchmark['ctr_sample_size']} comparable videos; "
+                f"{row['impressions']:,.0f} impressions; {source}{suffix})."
+            )
+
+        views_median = benchmark["views_median"]
+        if (
+            views_median is not None
+            and numeric(row.get("views"))
+            and row["views"] < views_median * 0.65
+        ):
+            score += 2
+            reasons.append(
+                f"{row['views']:,.0f} views in the scan period versus a "
+                f"{views_median:,.0f} median for {row.get('format_group')} uploads."
+            )
+
+        retention_median = benchmark["retention_median"]
+        if (
+            retention_median is not None
+            and numeric(row.get("average_view_percentage"))
+            and row["average_view_percentage"] < retention_median * 0.75
+        ):
+            score += 2
+            reasons.append(
+                f"Average percentage viewed is {row['average_view_percentage']:.1f}% "
+                f"versus a {retention_median:.1f}% format-group median."
+            )
+
+        if reasons:
+            item = dict(row)
+            item["reasons"] = reasons
+            item["priority"] = "High" if score >= 4 else "Review"
+            item["opportunity_score"] = score
+            item["benchmark"] = benchmark
+            ranked.append(item)
+
+    ranked.sort(key=lambda item: (
+        -item["opportunity_score"],
+        item.get("views") if numeric(item.get("views")) else float("inf"),
+        item.get("title") or "",
+    ))
+    return ranked[:max(1, min(int(limit), 25))]
+
+
+def discover_video_opportunities(youtube, analytics, studio_evidence_index=None, *, days=28, limit=10):
+    """Scan recent owned uploads and rank below-benchmark performance using real channel data."""
+    if youtube is None:
+        raise ConnectionError("YouTube is not connected. Connect your channel before scanning opportunities.")
+    if analytics is None:
+        raise ConnectionError("YouTube Analytics is not connected. Reconnect YouTube to grant analytics access.")
+
+    days = max(7, min(int(days), 90))
+    end_date = date.today() - timedelta(days=1)
+    start_date = end_date - timedelta(days=days - 1)
+    upload_ids = _list_recent_upload_ids(youtube, 200)
+    if not upload_ids:
+        raise VideoNotFoundError("No recent uploads were returned for the connected channel.")
+
+    # Restrict the Analytics query to the exact recent-upload catalogue. The API supports
+    # up to 500 comma-separated video IDs in a video filter, with video as a dimension.
+    metric_rows = _query_analytics(
+        analytics,
+        start_date.isoformat(),
+        end_date.isoformat(),
+        "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,likes,comments,shares,subscribersGained",
+        video_ids=upload_ids,
+        dimensions="video",
+        max_results=200,
+    )
+    details = _fetch_video_details(youtube, upload_ids)
+    metric_by_id = {
+        str(row.get("video")): row
+        for row in metric_rows
+        if isinstance(row.get("video"), str) and row.get("video")
+    }
+
+    try:
+        import studio_export_analyzer as studio_analyzer
+    except Exception:
+        studio_analyzer = None
+
+    evidence_index = studio_evidence_index or {}
+    enriched = []
+    for video_id in upload_ids:
+        video = details.get(video_id)
+        metrics = metric_by_id.get(video_id)
+        if not video or not metrics:
+            continue
+        snippet = video.get("snippet", {})
+        title = snippet.get("title") or "Untitled video"
+
+        evidence = []
+        if studio_analyzer:
+            try:
+                evidence = studio_analyzer.find_video_evidence(evidence_index, video_id, title)
+            except Exception:
+                evidence = []
+
+        def latest_value(field):
+            records = [
+                item for item in evidence
+                if isinstance(item.get(field), (int, float)) and not isinstance(item.get(field), bool)
+            ]
+            if not records:
+                return None, None
+            selected = max(records, key=lambda item: (
+                str(item.get("date_end") or ""),
+                str(item.get("date_start") or ""),
+                str(item.get("source_file") or ""),
+            ))
+            period = None
+            if selected.get("date_start") or selected.get("date_end"):
+                period = f"{selected.get('date_start') or '?'} to {selected.get('date_end') or '?'}"
+            return selected.get(field), {
+                "source_file": selected.get("source_file"),
+                "period": period,
+            }
+
+        duration_seconds = None
+        try:
+            duration_seconds = _parse_duration_seconds(video.get("contentDetails", {}).get("duration", ""))
+        except (TypeError, ValueError):
+            pass
+
+        content_type = next(
+            (str(item.get("content_type")).strip() for item in evidence if item.get("content_type")),
+            "",
+        )
+        if "short" in content_type.casefold():
+            format_group = "Shorts (Studio classified)"
+        elif "video" in content_type.casefold():
+            format_group = "Standard videos (Studio classified)"
+        elif duration_seconds is not None and duration_seconds > YOUTUBE_MAX_SHORT_DURATION_SECONDS:
+            format_group = "Standard videos"
+        else:
+            format_group = "Under-3-minute uploads (format unconfirmed)"
+
+        impressions, impressions_source = latest_value("impressions")
+        ctr_percent, ctr_source = latest_value("ctr_percent")
+        average_view_percentage = metrics.get("averageViewPercentage")
+        if not isinstance(average_view_percentage, (int, float)):
+            average_view_percentage, _ = latest_value("average_view_percentage")
+        views = metrics.get("views")
+
+        if not isinstance(views, (int, float)):
+            continue
+
+        enriched.append({
+            "video_id": video_id,
+            "title": title,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "published_at": snippet.get("publishedAt", ""),
+            "duration_seconds": duration_seconds,
+            "format_group": format_group,
+            "views": views,
+            "watch_time_minutes": metrics.get("estimatedMinutesWatched"),
+            "average_view_duration_seconds": metrics.get("averageViewDuration"),
+            "average_view_percentage": average_view_percentage,
+            "likes": metrics.get("likes"),
+            "comments": metrics.get("comments"),
+            "shares": metrics.get("shares"),
+            "subscribers_gained": metrics.get("subscribersGained"),
+            "impressions": impressions,
+            "ctr_percent": ctr_percent,
+            "ctr_source": impressions_source.get("source_file") if impressions_source else None,
+            "ctr_period": ctr_source.get("period") if ctr_source else None,
+        })
+
+    recommendations = rank_channel_video_opportunities(enriched, limit=limit)
+    return {
+        "channel_id": CHANNEL_ID,
+        "period": {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "days": days,
+        },
+        "scanned_uploads": len(upload_ids),
+        "videos_with_analytics": len(enriched),
+        "recommendations": recommendations,
+        "studio_ctr_available": any(
+            isinstance(row.get("ctr_percent"), (int, float))
+            and isinstance(row.get("impressions"), (int, float))
+            for row in enriched
+        ),
+        "format_classification_note": (
+            "The Data API does not expose the Shorts designation or orientation. "
+            "Only Studio Content Type evidence is labelled as Shorts; other uploads up to 180 seconds remain unconfirmed."
+        ),
+    }
+
 
 
 def _cached_video_ids():
