@@ -418,7 +418,7 @@ def rank_channel_video_opportunities(video_rows, *, limit=10):
             suffix = f"; report period {period}" if period else ""
             reasons.append(
                 f"Thumbnail CTR is {row['ctr_percent']:.2f}% versus a "
-                f"{ctr_median:.2f}% same-period peer median ({ctr_benchmark['ctr_sample_size']} peer videos; "
+                f"{ctr_median:.2f}% same-period peer median ({ctr_benchmark['ctr_sample_size']} same-period peer videos; "
                 f"{row['impressions']:,.0f} impressions; {source}{suffix})."
             )
 
