@@ -988,18 +988,32 @@ def render_copilot_chat(
             unsafe_allow_html=True,
         )
 
-        col_st1, col_st2 = st.columns(2)
-        with col_st1:
-            if st.button("📋 Paste a video link", key="starter_paste_link", use_container_width=True):
-                st.session_state["show_video_url_helper"] = True
-                st.rerun()
-        with col_st2:
-            if st.button("📎 Attach Studio export", key="starter_attach_export", use_container_width=True):
-                st.session_state["show_studio_uploader"] = True
-                st.rerun()
+        st.markdown("**Choose a starting point**")
+        starter_actions = (
+            ("title", "🎯 Title angles"),
+            ("description", "📱 Description hook"),
+            ("tags", "🔎 Search tags"),
+            ("review", "✨ Full review"),
+        )
+        starter_cols = st.columns(4)
+        for starter_col, (action_key, action_label) in zip(starter_cols, starter_actions):
+            with starter_col:
+                if st.button(action_label, key=f"starter_focus_{action_key}", use_container_width=True):
+                    st.session_state["copilot_initial_optimization"] = action_key
+                    st.rerun()
 
-        if st.session_state.get("show_video_url_helper"):
-            st.info("💡 Paste any `youtube.com/watch`, `youtu.be`, `youtube.com/shorts` link or 11-character video ID in the chat box below to begin.")
+        selected_action = st.session_state.get("copilot_initial_optimization")
+        if selected_action in QUICK_ACTIONS:
+            selected_label = dict(starter_actions)[selected_action]
+            st.info(
+                f"{selected_label} selected. Paste your YouTube video or Short link in the chat box below; "
+                "I'll use this as the focus for the first analysis."
+            )
+        else:
+            st.caption(
+                "Paste a YouTube video or Short link in the chat box below. Choose a focus above, "
+                "or let me review all metadata."
+            )
 
     # 3. Studio Export Uploader Drawer (accessible before and after video loading)
     with st.expander("📎 Studio Export Attachments (CSV, TSV, TXT, XLSX)", expanded=st.session_state.get("show_studio_uploader", False)):
@@ -1300,6 +1314,16 @@ def render_copilot_chat(
         clean_instruction = re.sub(
             r"\b(my video|target video|reference video|this video|the video|reference|target)\s*[:=-]?\s*", " ", clean_instruction, flags=re.I
         ).strip(" \t\r\n,;:-")
+
+        # Carry the optional landing-page focus into the first analysis after a video is supplied.
+        selected_initial_action = st.session_state.pop("copilot_initial_optimization", None)
+        if selected_initial_action in QUICK_ACTIONS:
+            starter_instruction = QUICK_ACTIONS[selected_initial_action]
+            clean_instruction = (
+                f"{starter_instruction}\n\nAdditional request: {clean_instruction}"
+                if clean_instruction
+                else starter_instruction
+            )
 
         # Invalidate previous proposal on every new turn or revision
         existing_proposal = st.session_state.get("strategist_chat_proposal")
