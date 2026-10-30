@@ -376,6 +376,20 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertEqual(invalid, [])
         self.assertEqual(strategist_chat._extract_title_angles([]), [])
 
+    def test_focused_description_and_tag_edits_preserve_title(self):
+        self.assertTrue(strategist_chat._instruction_preserves_title(
+            strategist_chat.QUICK_ACTIONS["description"]
+        ))
+        self.assertTrue(strategist_chat._instruction_preserves_title(
+            strategist_chat.QUICK_ACTIONS["tags"]
+        ))
+        self.assertFalse(strategist_chat._instruction_preserves_title(
+            strategist_chat.QUICK_ACTIONS["title"]
+        ))
+        self.assertFalse(strategist_chat._instruction_preserves_title(
+            strategist_chat.QUICK_ACTIONS["review"]
+        ))
+
     # Criterion 13: Conversational revision flow
     def test_13_conversational_revision_flow(self):
         """Chat history turn appends and prompts retain conversational instructions."""
