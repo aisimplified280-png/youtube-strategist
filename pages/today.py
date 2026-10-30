@@ -13,6 +13,7 @@ import streamlit as st
 from core.auth import is_demo_mode
 from core.daily_briefing import get_or_create_daily_briefing
 from ui.components import demo_banner, metric_tile, evidence_chip, status_pill, connection_status_banner
+from pages.workspace import render_video_optimizer
 
 
 def render_today(
@@ -31,6 +32,14 @@ def render_today(
 
     # Actionable outside connection banner when disconnected
     connection_status_banner(secrets, subject=subject, yt_creds=youtube, memory_creds=memory_creds, is_demo=is_demo)
+
+    # Display any applied update notice from inline studio executions
+    for k in list(st.session_state.keys()):
+        if k.startswith("_applied_inline_notice_"):
+            notice = st.session_state.pop(k, None)
+            if notice:
+                st.success(notice)
+                st.balloons()
 
     # Header with date and status
     today_str = date.today().strftime("%A, %B %d, %Y")
@@ -201,14 +210,19 @@ def render_today(
                         unsafe_allow_html=True,
                     )
 
+                is_optimizing = st.session_state.get(f"active_today_optimizer_{vid}", False)
+
                 with col_c2:
                     st.write("")
                     st.write("")
-                    if st.button("🚀 Execute in Workspace", key=f"btn_act_{p_idx}_{vid}", type="primary", use_container_width=True):
-                        st.session_state["pending_optimizer_video_id"] = vid
-                        st.session_state["pending_optimizer_video_title"] = act.get("title")
-                        st.session_state["nav_destination"] = "agent_workspace"
-                        st.rerun()
+                    if is_optimizing:
+                        if st.button("✕ Close Studio", key=f"btn_close_opt_{p_idx}_{vid}", use_container_width=True):
+                            st.session_state[f"active_today_optimizer_{vid}"] = False
+                            st.rerun()
+                    else:
+                        if st.button("⚡ Optimize & Publish Here", key=f"btn_act_{p_idx}_{vid}", type="primary", use_container_width=True):
+                            st.session_state[f"active_today_optimizer_{vid}"] = True
+                            st.rerun()
 
                     if is_demo:
                         st.caption("Pipeline saves disabled in Demo Mode")
@@ -225,6 +239,38 @@ def render_today(
                                 is_demo=False,
                             )
                             st.toast("Saved to Ideas & Production pipeline!")
+
+                    if st.button("Open in Workspace Tab ↗", key=f"btn_open_ws_{p_idx}_{vid}", use_container_width=True):
+                        st.session_state["pending_optimizer_video_id"] = vid
+                        st.session_state["pending_optimizer_video_title"] = act.get("title")
+                        st.session_state["nav_destination"] = "agent_workspace"
+                        st.rerun()
+
+                # Inline Execution Studio (everything happens right on Today with no page switching)
+                if is_optimizing:
+                    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+                    with st.container(border=True):
+                        st.markdown(
+                            f"""
+                            <div style="background: rgba(99, 102, 241, 0.1); border-left: 3px solid #6366F1; border-radius: 4px; padding: 6px 12px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-size: 0.82rem; font-weight: 700; color: #818CF8; text-transform: uppercase;">
+                                    ⚡ Inline Execution Studio • Video ID: <code>{html.escape(vid)}</code>
+                                </span>
+                                <span style="font-size: 0.78rem; color: #94A3B8;">Formulate, review, approve, and publish directly on Today without page switching</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        render_video_optimizer(
+                            video_id=vid,
+                            youtube=youtube,
+                            secrets=secrets,
+                            subject=subject,
+                            memory_creds=memory_creds,
+                            is_demo=is_demo,
+                            key_prefix=f"today_opt_{vid}",
+                            inline_mode=True,
+                        )
 
     # Secondary Section: AI Research Radar
     radar_items = briefing.get("research_radar", [])

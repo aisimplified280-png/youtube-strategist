@@ -843,6 +843,62 @@ class TestCriticalRegressions(unittest.TestCase):
         zero_candidates = rank_optimization_candidates(all_zero_rows)
         self.assertEqual(zero_candidates, [])
 
+    # --- Scenario 22: Workspace context fetching, connector import, and inline studio contract ---
+    def test_workspace_context_fetching_and_inline_studio(self):
+        """Workspace fetches video context without NameError, handles errors fail-closed, and supports inline execution."""
+        from pages.workspace import _fetch_workspace_context, render_video_optimizer
+        import streamlit as st
+
+        mock_yt = MagicMock()
+        mock_snippet = {
+            "title": "An 11-Word Prompt Broke Claude",
+            "description": "Real description from YouTube.",
+            "tags": ["claude", "ai", "prompting"],
+            "categoryId": "28",
+            "channelId": connector.CHANNEL_ID,
+        }
+
+        # 1. Successful context fetch with mock connector (verifies connector import works cleanly)
+        with patch("youtube_analytics_connector.fetch_video_snippet", return_value=mock_snippet):
+            mock_yt.videos().list().execute.return_value = {
+                "items": [{
+                    "statistics": {"viewCount": "42"},
+                    "contentDetails": {"duration": "PT14M22S"},
+                }]
+            }
+            ctx = _fetch_workspace_context("MjIHEGngvF8", youtube=mock_yt, is_demo=False)
+            self.assertIsNotNone(ctx.get("snippet"))
+            self.assertEqual(ctx["snippet"]["title"], "An 11-Word Prompt Broke Claude")
+            self.assertEqual(ctx["duration_str"], "14m22s")
+            self.assertEqual(ctx["metrics"]["views"], 42)
+            self.assertIsNone(ctx.get("error"))
+
+        # 2. Fail-closed error handling: returns error key and snippet=None (never a bogus 'Error loading video' snippet)
+        with patch("youtube_analytics_connector.fetch_video_snippet", side_effect=connector.VideoNotFoundError("Video not found")):
+            err_ctx = _fetch_workspace_context("invalid-vid-xyz", youtube=mock_yt, is_demo=False)
+            self.assertIsNone(err_ctx.get("snippet"))
+            self.assertIn("error", err_ctx)
+            self.assertIn("Video not found", err_ctx["error"])
+
+        # 3. Context retrieval from dashboard_data video_rows cache avoids redundant network calls
+        cached_row = {
+            "video_id": "v-cached-1",
+            "title": "Cached Video Title",
+            "snippet": {
+                "title": "Cached Video Title",
+                "description": "Cached Description",
+                "tags": ["cached"],
+                "categoryId": "28",
+            },
+            "views": 150,
+            "duration_seconds": 360,
+        }
+        with patch.dict(st.session_state, {"dashboard_data": {"video_rows": [cached_row]}}):
+            cached_ctx = _fetch_workspace_context("v-cached-1", youtube=mock_yt, is_demo=False)
+            self.assertEqual(cached_ctx["snippet"]["title"], "Cached Video Title")
+            self.assertEqual(cached_ctx["metrics"]["views"], 150)
+            self.assertEqual(cached_ctx["duration_str"], "6:00")
+
 
 if __name__ == "__main__":
     unittest.main()
