@@ -356,33 +356,50 @@ def rank_channel_video_opportunities(video_rows, *, limit=10):
         groups.setdefault(row.get("format_group") or "Format unconfirmed", []).append(row)
 
     benchmarks = {}
+    ctr_cohorts = {}
     for group_name, rows in groups.items():
         views = [row["views"] for row in rows if numeric(row.get("views")) and row["views"] > 0]
         retention = [
             row["average_view_percentage"] for row in rows
             if numeric(row.get("average_view_percentage"))
         ]
-        ctr = [
-            row["ctr_percent"] for row in rows
-            if numeric(row.get("ctr_percent"))
-            and numeric(row.get("impressions"))
-            and row["impressions"] >= 50
-        ]
         benchmarks[group_name] = {
             "sample_size": len(rows),
             "views_median": median(views) if len(views) >= 4 else None,
             "retention_median": median(retention) if len(retention) >= 4 else None,
-            "ctr_median": median(ctr) if len(ctr) >= 3 else None,
-            "ctr_sample_size": len(ctr),
         }
+        for row in rows:
+            if (
+                numeric(row.get("ctr_percent"))
+                and numeric(row.get("impressions"))
+                and row["impressions"] >= 50
+            ):
+                # Reach reports may cover different periods. Compare CTR only within an
+                # identical source date range; when undated, isolate by source file.
+                period_key = row.get("ctr_period") or f"undated::{row.get('ctr_source') or 'unknown'}"
+                ctr_cohorts.setdefault((group_name, period_key), []).append(row["ctr_percent"])
+
+    ctr_benchmarks = {
+        key: {
+            "ctr_median": median(values) if len(values) >= 3 else None,
+            "ctr_sample_size": len(values),
+        }
+        for key, values in ctr_cohorts.items()
+    }
 
     ranked = []
     for row in video_rows:
-        benchmark = benchmarks[row.get("format_group") or "Format unconfirmed"]
+        group_name = row.get("format_group") or "Format unconfirmed"
+        benchmark = benchmarks[group_name]
+        period_key = row.get("ctr_period") or f"undated::{row.get('ctr_source') or 'unknown'}"
+        ctr_benchmark = ctr_benchmarks.get(
+            (group_name, period_key),
+            {"ctr_median": None, "ctr_sample_size": 0},
+        )
         reasons = []
         score = 0
 
-        ctr_median = benchmark["ctr_median"]
+        ctr_median = ctr_benchmark["ctr_median"]
         if (
             ctr_median is not None
             and numeric(row.get("ctr_percent"))
@@ -396,7 +413,7 @@ def rank_channel_video_opportunities(video_rows, *, limit=10):
             suffix = f"; report period {period}" if period else ""
             reasons.append(
                 f"Thumbnail CTR is {row['ctr_percent']:.2f}% versus a "
-                f"{ctr_median:.2f}% channel median ({benchmark['ctr_sample_size']} comparable videos; "
+                f"{ctr_median:.2f}% channel median ({ctr_benchmark['ctr_sample_size']} same-period comparable videos; "
                 f"{row['impressions']:,.0f} impressions; {source}{suffix})."
             )
 
