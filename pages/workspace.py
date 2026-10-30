@@ -450,13 +450,9 @@ def render_video_optimizer(
                                     st.session_state["_applied_success_notice"] = success_msg
                                     st.session_state.pop(ctx_key, None)
                                 else:
+                                    # Defer widget reset to next rerun to avoid modifying instantiated widget keys
+                                    st.session_state[f"_deferred_inline_reset_{video_id}"] = key_prefix
                                     st.session_state[f"_applied_inline_notice_{video_id}"] = success_msg
-                                    st.session_state.pop(digest_key, None)
-                                    st.session_state.pop(ctx_key, None)
-                                    st.session_state.pop(prop_key, None)
-                                    st.session_state.pop(title_in_key, None)
-                                    st.session_state.pop(desc_in_key, None)
-                                    st.session_state.pop(tags_in_key, None)
                                 st.rerun()
                             else:
                                 st.error(f"Apply failed: {res.get('message', 'Unknown error')}")
@@ -464,9 +460,10 @@ def render_video_optimizer(
 
 def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False) -> Dict[str, Any]:
     """Fetch video context, duration, and metrics."""
-    # Check if this is a demo video reference or demo mode is active
     is_demo_id = str(video_id or "").startswith("demo-")
-    if is_demo or youtube is None or is_demo_id:
+
+    # 1. Demo Mode: Permitted only when is_demo=True or when a demo video is selected in demo mode
+    if is_demo:
         return {
             "snippet": {
                 "title": DEMO_HERO_ACTION["title"],
@@ -481,10 +478,28 @@ def _fetch_workspace_context(video_id: str, youtube=None, is_demo: bool = False)
             },
         }
 
-    # First check if the video snippet is already available in dashboard_data / briefing
+    # 2. Real Mode: Fail closed if YouTube connection is missing
+    if youtube is None:
+        return {
+            "error": "YouTube connection is unavailable. Please connect your YouTube account in Settings.",
+            "snippet": None,
+            "duration_str": "N/A",
+            "metrics": {"views": 0},
+        }
+
+    # 3. Real Mode: Reject demo video IDs when not in demo mode
+    if is_demo_id:
+        return {
+            "error": f"Demo video ID '{video_id}' cannot be loaded in production mode.",
+            "snippet": None,
+            "duration_str": "N/A",
+            "metrics": {"views": 0},
+        }
+
+    # 4. Check if the video snippet is already available in dashboard_data / briefing
     d_rows = st.session_state.get("dashboard_data", {}).get("video_rows", [])
     found_row = next((r for r in d_rows if r.get("video_id") == video_id), None)
-    if found_row and found_row.get("snippet"):
+    if found_row and found_row.get("snippet") and isinstance(found_row.get("snippet"), dict):
         snippet = found_row["snippet"]
         views = found_row.get("views", 0)
         duration_sec = found_row.get("duration_seconds", 0)

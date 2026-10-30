@@ -16,6 +16,22 @@ from ui.components import demo_banner, metric_tile, evidence_chip, status_pill, 
 from pages.workspace import render_video_optimizer
 
 
+def _process_deferred_inline_resets():
+    """Clean up state and close inline studios for videos with pending deferred resets."""
+    for k in list(st.session_state.keys()):
+        if k.startswith("_deferred_inline_reset_"):
+            vid = k[len("_deferred_inline_reset_"):]
+            kp = st.session_state.pop(k, None) or f"today_opt_{vid}"
+            st.session_state.pop(f"{kp}_proposal", None)
+            st.session_state.pop(f"{kp}_approved_digest", None)
+            st.session_state.pop(f"{kp}_title_in", None)
+            st.session_state.pop(f"{kp}_desc_in", None)
+            st.session_state.pop(f"{kp}_tags_in", None)
+            st.session_state.pop(f"{kp}_context", None)
+            st.session_state.pop("workspace_target_context", None)
+            st.session_state.pop(f"active_today_optimizer_{vid}", None)
+
+
 def render_today(
     youtube=None,
     analytics=None,
@@ -29,6 +45,9 @@ def render_today(
     demo_banner()
     is_demo = is_demo_mode()
     secrets = secrets or {}
+
+    # Process deferred cleanup for any inline studio executions BEFORE widgets render
+    _process_deferred_inline_resets()
 
     # Actionable outside connection banner when disconnected
     connection_status_banner(secrets, subject=subject, yt_creds=youtube, memory_creds=memory_creds, is_demo=is_demo)
