@@ -19,7 +19,7 @@ Verifies all 20 acceptance criteria specified in Section 11 of the reset specifi
 16. Pre-write stale check prevents overwriting modified YouTube metadata.
 17. Post-write verification retry loop.
 18. Fail-safe LLM fallback (Groq / Gemini / heuristic).
-19. Owner isolation and Demo Mode safety.
+19. Owner-isolated proposal history and owner-only access.
 20. Responsive layout (max-width 880px, min 44px touch targets).
 """
 
@@ -818,7 +818,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIn("YouTube is not connected", error_msg)
 
     # Safety: No synthetic video fixtures or simulated publish pathway remain.
-    def test_28_demo_mode_and_simulated_approval_are_removed(self):
+    def test_28_no_demo_fixtures_or_simulated_approval_path(self):
         """Disconnected requests fail; only the real verified update path remains."""
         self.assertFalse(hasattr(strategist_chat, "_get_demo_video_details"))
         import inspect
