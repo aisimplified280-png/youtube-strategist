@@ -496,6 +496,16 @@ def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
     raise RuntimeError("No configured AI provider could complete this request. " + " | ".join(failures))
 
 
+def _instruction_preserves_title(instruction: str) -> bool:
+    """Detect focused edits that explicitly require the current title to stay unchanged."""
+    return bool(re.search(
+        r"\b(?:keep|preserve|leave)\s+(?:the\s+)?(?:current|existing)\s+title\s+"
+        r"(?:unchanged|as[- ]is|intact)\b",
+        instruction or "",
+        flags=re.IGNORECASE,
+    ))
+
+
 def _build_prompt(
     target, reference, transcript, transcript_status, history, instruction,
     *, target_transcript="", target_transcript_status="Target transcript not supplied.",
@@ -515,14 +525,15 @@ rationale (array of strings), title_angles (array of exactly 3 objects with angl
 
 Rules:
 - Return a complete title, description, and separate tags, but conservatism is more important than filling space.
-- Return title_angles as exactly three structured objects, in this order:
+- When the LATEST USER INSTRUCTION explicitly requires the current title to remain unchanged, return the exact TARGET VIDEO title in the 'title' field and an empty title_angles array. Do not recommend alternative titles in this focused edit.
+- Otherwise, return title_angles as exactly three structured objects, in this order:
   {"angle":"curiosity","title":"..."},
   {"angle":"direct_value","title":"..."},
   {"angle":"search","title":"..."}.
-- Each title must be a distinct, publishable title supported by the target title, description, and transcript. Keep each at or below 100 characters. Never fill missing options with generic templates or unsupported claims.
-- The 'title' field must exactly match one of the three title_angles titles: choose the strongest supported option and explain the choice in assistant_message.
+- Each returned title must be a distinct, publishable title supported by the target title, description, and transcript. Keep each at or below 100 characters. Never fill missing options with generic templates or unsupported claims.
+- When three angles are required, the 'title' field must exactly match one of the three title_angles titles: choose the strongest supported option and explain the choice in assistant_message.
 - The target title, existing target description, target tags, and TARGET TRANSCRIPT are the only evidence for claims about the video's content. Use STUDIO PERFORMANCE EVIDENCE only for numeric performance claims.
-- Provide the three genuinely distinct title angles:
+- When title alternatives are required, provide the three genuinely distinct angles:
   1) Curiosity / Intrigue
   2) Direct Value / Outcome
   3) Search / SEO
@@ -1045,6 +1056,8 @@ def render_copilot_chat(
                             st.session_state.pop("strategist_chat_digest", None)
                             st.session_state.pop("copilot_approval_digest", None)
                             st.rerun()
+            elif proposal.get("title_preserved"):
+                st.caption("Current title preserved. This request only changes the description or tags.")
             else:
                 st.warning("Three distinct title angles were not validated. Ask me to regenerate title options before publishing.")
 
@@ -1364,9 +1377,10 @@ def render_copilot_chat(
                     if not isinstance(tags_res, list) or any(not isinstance(tag, str) for tag in tags_res):
                         raise ValueError("The AI proposal contains invalid tags.")
 
+                    preserve_title = _instruction_preserves_title(clean_instruction)
                     proposed = deepcopy(context["target_snippet"])
                     proposed.update({
-                        "title": title_res.strip(),
+                        "title": context["target_snippet"].get("title", "") if preserve_title else title_res.strip(),
                         "description": desc_res,
                         "tags": tags_res,
                     })
@@ -1380,18 +1394,19 @@ def render_copilot_chat(
                     st.markdown(asst_msg)
                     st.caption(f"{used_provider} • {used_model}")
 
-                    angles = _extract_title_angles(result.get("title_angles"))
-                    if len(angles) != 3:
-                        raise ValueError(
-                            "The AI provider did not return three distinct, valid title angles. "
-                            "Please retry the optimization; no placeholder titles were created."
-                        )
-                    angle_titles = {angle["title"] for angle in angles}
-                    if proposed["title"] not in angle_titles:
-                        raise ValueError(
-                            "The AI provider's staged title did not match one of its three validated title angles. "
-                            "Please retry the optimization."
-                        )
+                    angles = [] if preserve_title else _extract_title_angles(result.get("title_angles"))
+                    if not preserve_title:
+                        if len(angles) != 3:
+                            raise ValueError(
+                                "The AI provider did not return three distinct, valid title angles. "
+                                "Please retry the optimization; no placeholder titles were created."
+                            )
+                        angle_titles = {angle["title"] for angle in angles}
+                        if proposed["title"] not in angle_titles:
+                            raise ValueError(
+                                "The AI provider's staged title did not match one of its three validated title angles. "
+                                "Please retry the optimization."
+                            )
 
                     st.session_state["strategist_chat_proposal"] = {
                         "target_id": context["target_id"],
@@ -1400,6 +1415,7 @@ def render_copilot_chat(
                         "assistant_message": asst_msg,
                         "rationale": rationale,
                         "title_angles": angles,
+                        "title_preserved": preserve_title,
                     }
                     _append_history(history, "assistant", asst_msg)
                 except (ValueError, RuntimeError, requests.RequestException, connector.MetadataValidationError) as err:
