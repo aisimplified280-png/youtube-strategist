@@ -47,7 +47,7 @@ class ChannelOpportunityRankingTests(unittest.TestCase):
 
         self.assertEqual([row["video_id"] for row in ranked], ["aaaaaaaaaaa"])
         self.assertIn("Thumbnail CTR is 1.00%", ranked[0]["reasons"][0])
-        self.assertIn("3 same-period comparable videos", ranked[0]["reasons"][0])
+        self.assertIn("3 same-period peer videos", ranked[0]["reasons"][0])
         self.assertEqual(ranked[0]["priority"], "High")
 
     def test_ctr_is_not_compared_across_different_studio_periods(self):
