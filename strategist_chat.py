@@ -521,7 +521,7 @@ Reference material is for learning high-level structure and editorial techniques
 
 Return ONLY a JSON object with exactly these keys:
 assistant_message (string), title (string), description (string), tags (array of strings),
-rationale (array of strings), title_angles (array of exactly 3 objects with angle and title fields).
+rationale (array of strings), title_angles (array of structured angle/title objects; empty only when the title must be preserved).
 
 Rules:
 - Return a complete title, description, and separate tags, but conservatism is more important than filling space.
@@ -984,8 +984,13 @@ def render_copilot_chat(
             period = opportunity_scan.get("period", {})
             st.markdown("### 📊 Videos worth optimizing")
             st.caption(
-                f"Scanned {opportunity_scan.get('scanned_uploads', 0)} recent uploads; "
-                f"analytics period {period.get('start_date', '?')} to {period.get('end_date', '?')}."
+                f"Scanned up to 200 recent uploads; analytics returned for "
+                f"{opportunity_scan.get('videos_with_analytics', 0)} videos. "
+                f"Requested period: {period.get('start_date', '?')} to {period.get('end_date', '?')}."
+            )
+            st.caption(
+                opportunity_scan.get("format_classification_note", "")
+                + " YouTube Analytics may not yet include the most recent days."
             )
             if not opportunity_scan.get("studio_ctr_available"):
                 st.caption(
@@ -1015,6 +1020,11 @@ def render_copilot_chat(
                         st.caption(f"Average percentage viewed: {apv_value:.1f}% • {item.get('format_group', 'Format unconfirmed')}")
                     else:
                         st.caption(item.get("format_group", "Format unconfirmed"))
+                    if item.get("ctr_period"):
+                        st.caption(
+                            f"Reach metrics source: {item.get('ctr_source') or 'Studio export'} "
+                            f"({item['ctr_period']})"
+                        )
                     for reason in item.get("reasons", []):
                         st.markdown(f"- {reason}")
                     if st.button("Optimize this video", key=f"btn_optimize_opportunity_{index}", use_container_width=True):
