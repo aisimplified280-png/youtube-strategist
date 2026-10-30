@@ -20,13 +20,46 @@ def inject_theme():
             font-family: 'JetBrains Mono', monospace !important;
         }
 
-        /* Container constraints & padding */
+        /* Container constraints & padding - Claude-inspired central column (850-900px) */
         .block-container {
-            max-width: 1100px;
-            padding-top: 2rem;
-            padding-bottom: 5rem;
-            padding-left: 1.5rem;
-            padding-right: 1.5rem;
+            max-width: 880px !important;
+            padding-top: 1.25rem !important;
+            padding-bottom: 5rem !important;
+            padding-left: 1.25rem !important;
+            padding-right: 1.25rem !important;
+        }
+
+        /* Mobile touch responsiveness: min 44px targets */
+        button, [role="button"], input, select, textarea {
+            min-height: 44px;
+        }
+
+        /* Video Context Card */
+        .copilot-video-card {
+            background: #111827;
+            border: 1px solid rgba(255, 255, 255, 0.09);
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 16px;
+        }
+        .copilot-video-title {
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: #FFFFFF;
+            line-height: 1.35;
+            margin: 0 0 6px 0;
+        }
+        .copilot-metrics-strip {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 8px 12px;
+            background: #1A2234;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #CBD5E1;
+            margin-top: 10px;
+            flex-wrap: wrap;
         }
 
         /* Hero Action Card */
@@ -324,9 +357,9 @@ def inject_theme():
         /* Mobile Adjustments (360px - 768px) */
         @media (max-width: 768px) {
             .block-container {
-                padding-top: 1rem;
-                padding-left: 0.75rem;
-                padding-right: 0.75rem;
+                padding-top: 1rem !important;
+                padding-left: 0.75rem !important;
+                padding-right: 0.75rem !important;
             }
             .hero-action-card {
                 padding: 16px 18px;

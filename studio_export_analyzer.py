@@ -1221,3 +1221,39 @@ def find_video_evidence(index: dict, video_id: str | None, title: str | None) ->
                 seen.add(identity)
                 matches.append(item)
     return matches
+
+
+def analyze_uploaded_files(file_payloads: list[tuple[str, bytes]]) -> dict:
+    """Analyze uploaded files in-memory and return report structures."""
+    reports = []
+    for filename, data in file_payloads:
+        try:
+            parsed = parse_studio_export(filename, data)
+            analyzed = analyze_studio_export(parsed)
+            reports.append(analyzed)
+        except Exception:
+            pass
+    return {"reports": reports}
+
+
+def build_video_evidence_index(reports: list[dict]) -> dict:
+    """Alias for building evidence index from report structures."""
+    return build_evidence_index(reports)
+
+
+def index_uploaded_studio_files(files) -> tuple[dict, list[str]]:
+    """Parse multiple uploaded files in memory and build evidence index."""
+    reports = []
+    notices = []
+    for f in files:
+        name = getattr(f, "name", "uploaded_file")
+        data = f.getvalue() if hasattr(f, "getvalue") else f
+        try:
+            parsed = parse_studio_export(name, data)
+            analyzed = analyze_studio_export(parsed)
+            reports.append(analyzed)
+            notices.append(f"Parsed {name}")
+        except Exception as e:
+            notices.append(f"Failed {name}: {str(e)}")
+    return build_evidence_index(reports), notices
+

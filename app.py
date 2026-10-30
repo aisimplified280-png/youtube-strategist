@@ -1,4 +1,12 @@
-"""Main application shell, authentication gate, theme injector, and multipage router."""
+"""Main application shell for AI Simplified Lab — YouTube Metadata Copilot.
+
+Single chat assistant for optimizing existing YouTube videos and Shorts:
+1. Pastes YouTube link / ID -> automatically loads video details, real metrics, and transcript.
+2. Formulates metadata improvements (Title with 3 distinct angles, Description with mobile hook, Hashtags, Tags).
+3. In-memory YouTube Studio export attachments (CSV/TSV/TXT/XLSX) for empirical evidence.
+4. Conversational revisions that invalidate previous approval digests.
+5. Exact-proposal approval gate with pre-write stale check and post-write verification.
+"""
 
 import json
 import streamlit as st
@@ -7,18 +15,11 @@ from googleapiclient.discovery import build
 
 from core.auth import verify_owner_access, is_demo_mode, set_demo_mode
 from core.creator_db import claim_legacy_owner_records
-from core.vault import VaultManager
-from core.oauth import test_or_refresh_credentials, create_purpose_state, build_flow, YOUTUBE_SCOPES, MEMORY_SCOPES, get_auth_url
+from core.oauth import test_or_refresh_credentials, build_flow, YOUTUBE_SCOPES, MEMORY_SCOPES, get_auth_url
 from ui.theme import inject_theme
 import oauth_token_store
 import dashboard_security
-
-# Page implementations for the 5 Creator Growth Agent destinations
-from pages.today import render_today
-from pages.workspace import render_workspace
-from pages.ideas_production import render_ideas_production
-from pages.memory import render_memory
-from pages.settings import render_settings
+from strategist_chat import render_copilot_chat
 
 
 def _read_secrets_safe():
@@ -36,7 +37,6 @@ def _handle_oauth_callback(secrets, subject, token_store):
     if not code or not returned_state:
         return
 
-    # Check which flow was initiated
     signing_secret = secrets.get("security", {}).get("state_secret", "")
     for purpose, pending_key in (("youtube", "pending_youtube_oauth_state"), ("memory", "pending_memory_oauth_state")):
         expected = st.session_state.get(pending_key)
@@ -79,10 +79,10 @@ def _handle_oauth_callback(secrets, subject, token_store):
 
 def main():
     st.set_page_config(
-        page_title="YouTube Strategist",
+        page_title="AI Simplified Lab — YouTube Metadata Copilot",
         page_icon="▶",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
 
     # Inject visual styling
@@ -100,9 +100,11 @@ def main():
             """
             <div style="text-align: center; max-width: 650px; margin: 40px auto;">
                 <div style="display: inline-block; background: #FF1E44; color: white; width: 44px; height: 44px; border-radius: 12px; font-size: 22px; font-weight: 900; line-height: 44px; margin-bottom: 16px;">▶</div>
-                <h1 style="font-size: 2.2rem; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 8px;">YouTube Strategist</h1>
+                <h1 style="font-size: 2.2rem; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 8px;">AI Simplified Lab</h1>
+                <div style="font-size: 1.15rem; font-weight: 600; color: #E2E8F0; margin-bottom: 12px;">YouTube Metadata Copilot</div>
                 <p style="color: #94A3B8; font-size: 1.05rem; line-height: 1.6; margin-bottom: 24px;">
-                    A private, owner-only AI co-pilot for serious YouTube creators. Reads real analytics and Studio retention data, identifies the ONE most valuable packaging opportunity, and updates YouTube only after explicit approval.
+                    A conversational YouTube metadata optimization assistant for the owner's existing YouTube videos and Shorts.
+                    Paste any video or Short link to review content, formulate 3 distinct title angles, refine mobile descriptions, and apply approved metadata directly.
                 </p>
             </div>
             """,
@@ -117,7 +119,6 @@ def main():
 
             col1, col2 = st.columns([1, 1])
             with col1:
-                # Use st.login if configured with streamlit[auth]
                 try:
                     st.button("Sign in with Google", type="primary", on_click=st.login, use_container_width=True)
                 except Exception:
@@ -190,164 +191,83 @@ def main():
             youtube = build("youtube", "v3", credentials=yt_creds, cache_discovery=False)
             analytics = build("youtubeAnalytics", "v2", credentials=yt_creds, cache_discovery=False)
             reporting = build("youtubereporting", "v1", credentials=yt_creds, cache_discovery=False)
-        except Exception as e:
-            st.sidebar.warning(f"YouTube client notice: {str(e)}")
+        except Exception:
+            youtube = None
 
-    # Multipage Navigation Setup: 5 Core Creator Growth Destinations
-    def show_today():
-        render_today(
-            youtube=youtube,
-            analytics=analytics,
-            reporting=reporting,
-            credentials=yt_creds,
-            secrets=secrets,
-            subject=subject,
-            memory_creds=memory_creds,
-        )
-
-    def show_workspace():
-        render_workspace(youtube=youtube, secrets=secrets, subject=subject, memory_creds=memory_creds)
-
-    def show_ideas():
-        render_ideas_production(youtube=youtube, secrets=secrets, subject=subject)
-
-    def show_memory():
-        render_memory(memory_credentials=memory_creds, subject=subject)
-
-    def show_connections():
-        render_settings(secrets=secrets, subject=subject, youtube_creds=yt_creds, memory_creds=memory_creds, token_store=token_store)
-
-    page_today = st.Page(
-        show_today,
-        title="Today",
-        icon="⚡",
-        url_path="today",
-        default=True,
-    )
-    page_workspace = st.Page(
-        show_workspace,
-        title="Agent Workspace",
-        icon="🛠️",
-        url_path="workspace",
-    )
-    page_ideas = st.Page(
-        show_ideas,
-        title="Ideas & Production",
-        icon="💡",
-        url_path="ideas",
-    )
-    page_memory = st.Page(
-        show_memory,
-        title="Memory",
-        icon="🧠",
-        url_path="memory",
-    )
-    page_connections = st.Page(
-        show_connections,
-        title="Connections",
-        icon="⚙️",
-        url_path="connections",
-    )
-
-    pg = st.navigation({
-        "Operating Assistant": [page_today, page_workspace, page_ideas],
-        "Intelligence & Settings": [page_memory, page_connections],
-    })
-
-    # Programmatic destination routing support
-    nav_dest = st.session_state.pop("nav_destination", None)
-    if nav_dest:
-        dest_map = {
-            "today": page_today,
-            "home": page_today,
-            "workspace": page_workspace,
-            "agent_workspace": page_workspace,
-            "strategist": page_workspace,
-            "pages/strategist.py": page_workspace,
-            "ideas": page_ideas,
-            "production": page_ideas,
-            "memory": page_memory,
-            "pages/memory_experiments.py": page_memory,
-            "connections": page_connections,
-            "settings": page_connections,
-            "pages/settings.py": page_connections,
-        }
-        target_page = dest_map.get(nav_dest)
-        if target_page:
-            try:
-                st.switch_page(target_page)
-            except Exception:
-                pass
-
-    # Sidebar branding & quick status
-    with st.sidebar:
+    # Top Header Bar (Claude-inspired)
+    col_brand, col_status = st.columns([3, 2], vertical_alignment="center")
+    with col_brand:
         st.markdown(
             """
-            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
-                <div style="background: #FF1E44; color: white; width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px;">▶</div>
-                <div style="font-weight: 800; font-size: 1.05rem; letter-spacing: -0.02em;">YouTube Strategist</div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 4px 0;">
+                <div style="background: #FF1E44; color: white; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 15px;">▶</div>
+                <div>
+                    <span style="font-weight: 800; font-size: 1.1rem; letter-spacing: -0.02em; color: #FFFFFF;">AI Simplified Lab</span>
+                    <span style="color: #64748B; margin: 0 6px;">/</span>
+                    <span style="color: #94A3B8; font-size: 0.95rem; font-weight: 500;">Metadata Copilot</span>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # Connection Controls Card in Sidebar
-        with st.container(border=True):
-            st.markdown("<div style='font-size:0.8rem; font-weight:700; color:#94A3B8; text-transform:uppercase; margin-bottom:8px;'>Integrations & Access</div>", unsafe_allow_html=True)
-            
-            # YouTube Status & Connect Button
+    with col_status:
+        sub_c1, sub_c2 = st.columns([1, 1], vertical_alignment="center")
+        with sub_c1:
             if yt_creds:
-                st.markdown('<span class="status-pill status-connected">● YouTube Connected</span>', unsafe_allow_html=True)
-                if st.button("Disconnect YouTube", key="sb_disconnect_yt", use_container_width=True):
-                    if token_store and subject:
-                        token_store.delete_credentials(subject, "youtube")
-                    st.session_state.pop("youtube_credentials_json", None)
-                    st.rerun()
+                st.markdown('<span class="status-pill status-connected">● Connected</span>', unsafe_allow_html=True)
+            elif is_demo:
+                st.markdown('<span class="status-pill status-connected">● Demo Mode</span>', unsafe_allow_html=True)
+            elif st.session_state.get("youtube_needs_reconnect"):
+                st.markdown('<span class="status-pill status-reconnect">● Reconnect Needed</span>', unsafe_allow_html=True)
             else:
-                if is_demo:
-                    st.markdown('<span class="status-pill status-connected">● Demo Mode</span>', unsafe_allow_html=True)
-                elif st.session_state.get("youtube_needs_reconnect"):
-                    st.markdown('<span class="status-pill status-reconnect">● Reconnect Needed</span>', unsafe_allow_html=True)
+                st.markdown('<span class="status-pill status-disconnected">● Disconnected</span>', unsafe_allow_html=True)
+
+        with sub_c2:
+            with st.popover("⚙️ Settings", use_container_width=True):
+                st.markdown("#### Settings & Access")
+                st.caption(f"Authenticated Owner: `{subject or 'Demo Mode'}`")
+                st.divider()
+
+                st.markdown("**YouTube Integration**")
+                if yt_creds:
+                    st.success("YouTube Data API connected")
+                    if st.button("Disconnect YouTube", key="pop_disconnect_yt", use_container_width=True):
+                        if token_store and subject:
+                            token_store.delete_credentials(subject, "youtube")
+                        st.session_state.pop("youtube_credentials_json", None)
+                        st.rerun()
                 else:
-                    st.markdown('<span class="status-pill status-disconnected">● YouTube Disconnected</span>', unsafe_allow_html=True)
-                
-                # Direct Connect Button
-                yt_auth_url, yt_err = get_auth_url("youtube", subject or "demo-owner-subject-12345", secrets)
-                if yt_auth_url:
-                    btn_text = "🔄 Reconnect YouTube" if st.session_state.get("youtube_needs_reconnect") else "▶ Connect YouTube"
-                    st.link_button(btn_text, yt_auth_url, type="primary", use_container_width=True)
-                elif yt_err and not is_demo:
-                    st.caption(f"OAuth notice: {yt_err}")
+                    yt_auth_url, yt_err = get_auth_url("youtube", subject or "demo-owner-subject-12345", secrets)
+                    if yt_auth_url:
+                        btn_text = "🔄 Reconnect YouTube" if st.session_state.get("youtube_needs_reconnect") else "▶ Connect YouTube"
+                        st.link_button(btn_text, yt_auth_url, type="primary", use_container_width=True)
+                    elif yt_err and not is_demo:
+                        st.caption(f"OAuth notice: {yt_err}")
 
-            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-
-            # Memory (Google Sheets / Drive) Status & Connect Button
-            if memory_creds:
-                st.markdown('<span class="status-pill status-connected">● Sheets Memory Connected</span>', unsafe_allow_html=True)
-                if st.button("Disconnect Sheets", key="sb_disconnect_mem", use_container_width=True):
-                    if token_store and subject:
-                        token_store.delete_credentials(subject, "memory")
-                    st.session_state.pop("memory_credentials_json", None)
+                st.divider()
+                st.markdown("**Simulated / Demo State**")
+                demo_toggled = st.toggle(
+                    "🎮 Demo Mode",
+                    value=is_demo,
+                    key="pop_demo_toggle",
+                    help="Toggle realistic simulated channel data without live API calls",
+                )
+                if demo_toggled != is_demo:
+                    set_demo_mode(demo_toggled)
                     st.rerun()
-            else:
-                if is_demo:
-                    st.markdown('<span class="status-pill status-connected">● Demo Memory Active</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-pill status-disconnected">● Sheets Memory Disconnected</span>', unsafe_allow_html=True)
-                
-                mem_auth_url, _ = get_auth_url("memory", subject or "demo-owner-subject-12345", secrets)
-                if mem_auth_url:
-                    st.link_button("📊 Connect Sheets", mem_auth_url, use_container_width=True)
 
-            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-
-            # Quick Demo Mode Toggle
-            demo_toggled = st.toggle("🎮 Demo Mode", value=is_demo, key="sb_demo_toggle", help="Toggle realistic simulated channel data without live API calls")
-            if demo_toggled != is_demo:
-                set_demo_mode(demo_toggled)
-                st.rerun()
-
-    pg.run()
+    # Canonical Single-Chat Landing
+    render_copilot_chat(
+        youtube=youtube,
+        secrets=secrets,
+        credentials=yt_creds,
+        memory_credentials=memory_creds,
+        analytics=analytics,
+        reporting=reporting,
+        subject=subject,
+        is_demo=is_demo,
+    )
 
 
 if __name__ == "__main__":
