@@ -808,10 +808,9 @@ def _writable_snippet(snippet, current_snippet=None):
         "categoryId": str(category_id).strip(),
     }
 
-    for lang_field in ("defaultLanguage", "defaultAudioLanguage"):
-        val = snippet.get(lang_field) or current.get(lang_field)
-        if val:
-            body[lang_field] = val
+    default_lang = snippet.get("defaultLanguage") or current.get("defaultLanguage")
+    if default_lang:
+        body["defaultLanguage"] = default_lang
 
     _validate_metadata(body)
     return body
@@ -974,6 +973,8 @@ def apply_approved_dashboard_proposal(
     *,
     audit_callback,
 ):
+    if youtube is None:
+        raise RuntimeError("YouTube API client is not connected.")
     if not isinstance(before_snippet, dict) or not isinstance(proposed_snippet, dict):
         raise MetadataValidationError("The approved metadata proposal is incomplete.")
     if not isinstance(approved_digest, str) or not re.fullmatch(
@@ -1007,11 +1008,12 @@ def apply_approved_dashboard_proposal(
     if "tags" not in proposed_snippet and "tags" in before_snippet:
         proposed_snippet["tags"] = deepcopy(before_snippet["tags"])
 
-    for lang_field in ("defaultLanguage", "defaultAudioLanguage"):
-        if lang_field not in proposed_snippet and lang_field in before_snippet:
-            proposed_snippet[lang_field] = before_snippet[lang_field]
+    if "defaultLanguage" not in proposed_snippet and "defaultLanguage" in before_snippet:
+        proposed_snippet["defaultLanguage"] = before_snippet["defaultLanguage"]
 
     for field in before_snippet:
+        if field in ("defaultAudioLanguage",):
+            continue
         if field not in mutable_fields and (
             before_snippet[field] != proposed_snippet.get(field)
         ):

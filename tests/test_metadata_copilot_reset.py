@@ -71,54 +71,70 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertEqual(strategist_chat.parse_video_id(url), expected_id)
 
-    # Criterion 3: Shorts URL parsing and classification
+    # Criterion 3: Shorts URL parsing and classification precedence
     def test_03_shorts_url_parsing_and_classification(self):
-        """Correctly parses /shorts/ URLs and classifies format using reliable evidence."""
+        """Correctly parses /shorts/ URLs and classifies format with strict precedence rules."""
         short_url = "https://www.youtube.com/shorts/MjIHEGngvF8"
         video_id = strategist_chat.parse_video_id(short_url)
         self.assertEqual(video_id, "MjIHEGngvF8")
 
-        # Classification by URL path -> YouTube Short
-        format_info_url = strategist_chat._classify_video_format(None, is_short_url=True)
-        self.assertEqual(format_info_url["format"], "YouTube Short")
-        self.assertEqual(format_info_url["badge"], "Short")
-        self.assertIn("Confirmed by YouTube Shorts URL", format_info_url["note"])
+        # 1. Duration > 180s takes absolute precedence over /shorts/ URL
+        fmt_240s_short_url = strategist_chat._classify_video_format(240, is_short_url=True)
+        self.assertEqual(fmt_240s_short_url["format"], "Standard Video")
+        self.assertEqual(fmt_240s_short_url["badge"], "Video (>3m)")
 
-        # Classification by Studio format evidence -> YouTube Short
-        format_info_studio = strategist_chat._classify_video_format(
-            duration_seconds=45, is_short_url=False, studio_format="Shorts"
+        # 2. Duration > 60s published before Oct 15, 2024 takes precedence over /shorts/ URL
+        fmt_90s_old_short_url = strategist_chat._classify_video_format(
+            90, is_short_url=True, upload_date="2024-05-01T10:00:00Z"
         )
-        self.assertEqual(format_info_studio["format"], "YouTube Short")
-        self.assertEqual(format_info_studio["badge"], "Short")
+        self.assertEqual(fmt_90s_old_short_url["format"], "Standard Video")
+        self.assertEqual(fmt_90s_old_short_url["badge"], "Video (>60s Pre-Oct 2024)")
 
-        # Classification by Studio format evidence -> Standard Video
-        format_info_studio_video = strategist_chat._classify_video_format(
-            duration_seconds=50, is_short_url=False, studio_format="Videos"
+        # 3. Studio Shorts evidence with impossible duration (>180s or >60s pre-Oct 2024)
+        fmt_studio_impossible_180 = strategist_chat._classify_video_format(
+            240, studio_format="Shorts"
         )
-        self.assertEqual(format_info_studio_video["format"], "Standard Video")
-        self.assertEqual(format_info_studio_video["badge"], "Video")
+        self.assertEqual(fmt_studio_impossible_180["format"], "Standard Video")
+        self.assertEqual(fmt_studio_impossible_180["badge"], "Video (>3m)")
 
-        # Standard video > 180s (cannot be Short under any rule)
-        format_info_long = strategist_chat._classify_video_format(620, is_short_url=False)
-        self.assertEqual(format_info_long["format"], "Standard Video")
-        self.assertEqual(format_info_long["badge"], "Video (>3m)")
-
-        # Uploaded before Oct 15, 2024 and > 60s
-        format_info_old = strategist_chat._classify_video_format(
-            duration_seconds=75, is_short_url=False, upload_date="2024-09-01T12:00:00Z"
+        fmt_studio_impossible_old = strategist_chat._classify_video_format(
+            90, studio_format="Shorts", upload_date="2024-04-10"
         )
-        self.assertEqual(format_info_old["format"], "Standard Video")
-        self.assertEqual(format_info_old["badge"], "Video (>60s Pre-Oct 2024)")
+        self.assertEqual(fmt_studio_impossible_old["format"], "Standard Video")
+        self.assertEqual(fmt_studio_impossible_old["badge"], "Video (>60s Pre-Oct 2024)")
 
-        # Duration <= 180s without URL or Studio confirmation -> Format unconfirmed
-        format_info_unconfirmed = strategist_chat._classify_video_format(45, is_short_url=False)
-        self.assertEqual(format_info_unconfirmed["format"], "Format unconfirmed")
-        self.assertEqual(format_info_unconfirmed["badge"], "Format unconfirmed")
-        self.assertIn("YouTube Data API does not expose video aspect ratio", format_info_unconfirmed["note"])
+        # 4. Conflicting Studio Standard Video and Shorts URL evidence
+        fmt_conflict = strategist_chat._classify_video_format(
+            50, is_short_url=True, studio_format="Videos"
+        )
+        self.assertEqual(fmt_conflict["format"], "Format unconfirmed")
+        self.assertEqual(fmt_conflict["badge"], "Format unconfirmed")
+        self.assertIn("Conflicting format evidence", fmt_conflict["note"])
 
-        # Duration None without URL or Studio confirmation -> Format unconfirmed
-        format_info_none = strategist_chat._classify_video_format(None, is_short_url=False)
-        self.assertEqual(format_info_none["format"], "Format unconfirmed")
+        # 5. Valid post-October 15, 2024 Short evidence
+        fmt_post_oct_url = strategist_chat._classify_video_format(
+            120, is_short_url=True, upload_date="2024-11-01"
+        )
+        self.assertEqual(fmt_post_oct_url["format"], "YouTube Short")
+        self.assertEqual(fmt_post_oct_url["badge"], "Short")
+
+        fmt_post_oct_studio = strategist_chat._classify_video_format(
+            120, studio_format="Shorts", upload_date="2024-11-01"
+        )
+        self.assertEqual(fmt_post_oct_studio["format"], "YouTube Short")
+        self.assertEqual(fmt_post_oct_studio["badge"], "Short")
+
+        # 6. Existing standard-video and unconfirmed cases
+        fmt_standard_long = strategist_chat._classify_video_format(620, is_short_url=False)
+        self.assertEqual(fmt_standard_long["format"], "Standard Video")
+        self.assertEqual(fmt_standard_long["badge"], "Video (>3m)")
+
+        fmt_unconfirmed_short = strategist_chat._classify_video_format(45, is_short_url=False)
+        self.assertEqual(fmt_unconfirmed_short["format"], "Format unconfirmed")
+        self.assertEqual(fmt_unconfirmed_short["badge"], "Format unconfirmed")
+
+        fmt_unconfirmed_none = strategist_chat._classify_video_format(None, is_short_url=False)
+        self.assertEqual(fmt_unconfirmed_none["format"], "Format unconfirmed")
 
     # Criterion 4: Video details retrieval
     def test_04_video_details_retrieval(self):
@@ -650,9 +666,9 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             self.assertEqual(sent_snippet["tags"], ["newtag1", "newtag2"])
             self.assertEqual(sent_snippet["categoryId"], "28")
 
-    # Write Protection & Payload Audit: All 3 fields updated preserves categoryId and language
+    # Write Protection & Payload Audit: All 3 fields updated preserves categoryId and defaultLanguage, excludes defaultAudioLanguage
     def test_24_update_all_three_fields_preserves_category_id_and_language(self):
-        """Updating title, description, and tags together preserves categoryId and defaultLanguage."""
+        """Updating title, description, and tags together preserves categoryId and defaultLanguage, but excludes defaultAudioLanguage."""
         before_snippet = {
             "categoryId": "28",
             "title": "Old Title",
@@ -673,7 +689,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertEqual(body["tags"], ["tagA", "tagB"])
         self.assertEqual(body["categoryId"], "28")
         self.assertEqual(body["defaultLanguage"], "en")
-        self.assertEqual(body["defaultAudioLanguage"], "en-US")
+        self.assertNotIn("defaultAudioLanguage", body, "defaultAudioLanguage must NOT be in writable snippet")
 
         mock_youtube = MagicMock()
         mock_youtube.videos().list().execute.return_value = {
@@ -695,6 +711,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             self.assertEqual(sent_snippet["tags"], ["tagA", "tagB"])
             self.assertEqual(sent_snippet["categoryId"], "28")
             self.assertEqual(sent_snippet["defaultLanguage"], "en")
+            self.assertNotIn("defaultAudioLanguage", sent_snippet, "defaultAudioLanguage must NOT be sent to YouTube API")
 
     # Write Protection & Payload Audit: Enforce description UTF-8 byte limit
     def test_25_description_utf8_byte_limit_enforced(self):
@@ -738,6 +755,112 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             )
         self.assertIn("categoryId is missing", str(cm2.exception))
         mock_youtube.videos().update.assert_not_called()
+
+
+    # Safety: Disconnected Live Mode raises clear ConnectionError
+    def test_27_disconnected_live_mode_raises_connection_error(self):
+        """When is_demo=False and youtube=None, raises ConnectionError without silent fallback to demo data."""
+        with self.assertRaises(ConnectionError) as cm:
+            strategist_chat.fetch_full_video_details(
+                None, "vid12345678", is_demo=False
+            )
+        self.assertIn("YouTube is not connected", str(cm.exception))
+
+        # Check that loading videos in chat returns clear connection error and None context
+        context, error_msg = strategist_chat._load_conversation_videos(
+            None, {}, "https://www.youtube.com/watch?v=vid12345678"
+        )
+        self.assertIsNone(context, "Context must be None when disconnected in live mode")
+        self.assertIn("YouTube is not connected", error_msg)
+
+    # Safety: Demo Mode blocks real publishing and writes
+    def test_28_demo_mode_blocks_real_publishing_and_writes(self):
+        """In Demo Mode, is_owner is False and no YouTube writes can occur."""
+        details = strategist_chat.fetch_full_video_details(
+            None, "demo1234567", is_demo=True
+        )
+        self.assertTrue(details["is_demo"])
+        self.assertFalse(details["is_owner"], "is_owner must be False in Demo Mode")
+        self.assertIn("Demo Mode", details["ownership_status"])
+
+        # Test connector.apply_approved_dashboard_proposal fails if youtube is None
+        with self.assertRaises(RuntimeError) as cm:
+            connector.apply_approved_dashboard_proposal(
+                None, "demo1234567", {"title": "old"}, {"title": "new"}, "a" * 64, audit_callback=MagicMock()
+            )
+        self.assertIn("YouTube API client is not connected", str(cm.exception))
+
+    # Safety: Fail-closed ownership verification
+    def test_29_fail_closed_ownership_verification(self):
+        """Ownership verification fails closed on missing expected ID, missing video ID, or external ID."""
+        # 1. Missing expected channel ID
+        with patch.object(connector, "CHANNEL_ID", None):
+            is_owner, status = strategist_chat._check_ownership(
+                {"channelId": "UC123"}, configured_channel_id=None
+            )
+            self.assertFalse(is_owner)
+            self.assertIn("Missing configured owner channel ID", status)
+
+        # 2. Missing video channel ID
+        is_owner, status = strategist_chat._check_ownership(
+            {"channelId": ""}, configured_channel_id="UC123"
+        )
+        self.assertFalse(is_owner)
+        self.assertIn("Missing video channel ID", status)
+
+        # 3. External video channel ID
+        is_owner, status = strategist_chat._check_ownership(
+            {"channelId": "UC_OTHER"}, configured_channel_id="UC123"
+        )
+        self.assertFalse(is_owner)
+        self.assertIn("External Video", status)
+
+        # 4. Positively matching channel ID
+        is_owner, status = strategist_chat._check_ownership(
+            {"channelId": "UC123"}, configured_channel_id="UC123"
+        )
+        self.assertTrue(is_owner)
+        self.assertEqual(status, "Owner Channel (Editable)")
+
+    # Studio Attachment Context: Lifecycle and Format Recalculation
+    def test_30_studio_attachments_lifecycle(self):
+        """Attaching files refreshes evidence and format; removing files clears evidence and index."""
+        # Active video loaded with standard watch URL and duration 50s (initially Format unconfirmed)
+        context = {
+            "target_id": "test_vid_123",
+            "title": "Agent Tutorial",
+            "duration_seconds": 50,
+            "duration_formatted": "0:50",
+            "published_at": "2024-11-01",
+            "is_short_url": False,
+            "format_info": {"format": "Format unconfirmed", "badge": "Format unconfirmed"},
+            "studio_performance_evidence": [],
+        }
+
+        # 1. Attach a Studio file that classifies video as Shorts
+        csv_content = (
+            "Video ID,Video Title,Content Type,Views,Watch time (hours)\n"
+            "test_vid_123,Agent Tutorial,Shorts,1500,20.5\n"
+        ).encode("utf-8")
+
+        mock_file = MagicMock()
+        mock_file.name = "totals_report.csv"
+        mock_file.getvalue.return_value = csv_content
+
+        evidence_index, notice = strategist_chat.update_studio_attachments(context, [mock_file])
+        self.assertIn("id:test_vid_123", evidence_index)
+        self.assertIn("Parsed 1 Studio report", notice)
+        self.assertEqual(len(context["studio_performance_evidence"]), 1)
+        self.assertEqual(context["format_info"]["format"], "YouTube Short")
+        self.assertEqual(context["format_info"]["badge"], "Short")
+
+        # 2. Remove all uploaded files (empty list)
+        empty_index, empty_notice = strategist_chat.update_studio_attachments(context, [])
+        self.assertEqual(empty_index, {})
+        self.assertIsNone(empty_notice)
+        self.assertEqual(len(context["studio_performance_evidence"]), 0)
+        self.assertEqual(context["format_info"]["format"], "Format unconfirmed")
+        self.assertEqual(context["format_info"]["badge"], "Format unconfirmed")
 
 
 if __name__ == "__main__":

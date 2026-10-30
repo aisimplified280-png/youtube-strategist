@@ -24,7 +24,9 @@ from strategist_chat import render_copilot_chat
 
 def _read_secrets_safe():
     try:
-        return st.secrets
+        if bool(st.secrets):
+            return st.secrets
+        return {}
     except Exception:
         return {}
 

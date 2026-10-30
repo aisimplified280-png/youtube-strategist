@@ -11,9 +11,25 @@ def inject_theme():
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
         /* Root Typography & Foundation */
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+        html, body {
+            overflow-x: hidden;
+            max-width: 100vw;
+        }
         html, body, [class*="css"] {
             font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             -webkit-font-smoothing: antialiased;
+        }
+        pre, code {
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            overflow-wrap: anywhere !important;
+        }
+        .diff-panel, .copilot-video-card, .block-container {
+            word-break: break-word;
+            overflow-wrap: anywhere;
         }
 
         code, pre, .mono {
@@ -357,10 +373,15 @@ def inject_theme():
         /* Mobile Adjustments (360px - 768px) */
         @media (max-width: 768px) {
             .block-container {
+                max-width: 100% !important;
+                overflow-x: hidden !important;
                 padding-top: 0.75rem !important;
                 padding-left: 0.75rem !important;
                 padding-right: 0.75rem !important;
                 padding-bottom: 7rem !important;
+            }
+            [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
             }
             .copilot-video-card {
                 padding: 12px 14px;

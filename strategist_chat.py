@@ -105,35 +105,16 @@ def _classify_video_format(
     studio_format: Optional[str] = None,
     upload_date: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Classify video vs short only using reliable available evidence.
+    """Classify video vs short only using reliable available evidence with strict precedence.
 
-    Under YouTube's updated policy (effective October 15, 2024), videos up to 3 minutes
-    that are square or vertical qualify as Shorts. Older uploads (before Oct 15, 2024)
-    were capped at 60 seconds. Because YouTube Data API v3 does not expose video aspect
-    ratio or orientation, duration alone cannot determine whether a video is a Short.
+    Precedence:
+    1. Duration > 180s cannot be Shorts under any rule -> Standard Video.
+    2. Duration > 60s uploaded before October 15, 2024 -> Standard Video.
+    3. Conflicting URL and Studio format evidence -> Format unconfirmed.
+    4. Explicit /shorts/ URL or Studio format evidence -> YouTube Short or Standard Video.
+    5. Duration <= 180s without reliable evidence -> Format unconfirmed.
     """
-    if is_short_url:
-        return {
-            "format": "YouTube Short",
-            "badge": "Short",
-            "note": "Confirmed by YouTube Shorts URL path.",
-        }
-
-    norm_studio = str(studio_format or "").strip().lower()
-    if norm_studio in {"short", "shorts", "youtube short", "youtube shorts"}:
-        return {
-            "format": "YouTube Short",
-            "badge": "Short",
-            "note": "Confirmed by YouTube Studio export format evidence.",
-        }
-    if norm_studio in {"video", "videos", "standard video", "long-form", "long form"}:
-        return {
-            "format": "Standard Video",
-            "badge": "Video",
-            "note": "Confirmed by YouTube Studio export format evidence.",
-        }
-
-    # Videos over 180 seconds (3 minutes) cannot be YouTube Shorts
+    # 1. Videos over 180 seconds (3 minutes) cannot be YouTube Shorts
     if duration_seconds is not None and duration_seconds > 180:
         return {
             "format": "Standard Video",
@@ -141,7 +122,7 @@ def _classify_video_format(
             "note": "Standard long-form video (>180s exceeds YouTube Shorts limit).",
         }
 
-    # Videos uploaded before October 15, 2024 over 60s cannot be Shorts
+    # 2. Videos uploaded before October 15, 2024 over 60s cannot be Shorts
     if duration_seconds is not None and duration_seconds > 60 and upload_date:
         try:
             if str(upload_date)[:10] < "2024-10-15":
@@ -153,7 +134,41 @@ def _classify_video_format(
         except Exception:
             pass
 
-    # When format cannot be established from reliable evidence:
+    norm_studio = str(studio_format or "").strip().lower()
+    studio_is_short = norm_studio in {"short", "shorts", "youtube short", "youtube shorts"}
+    studio_is_video = norm_studio in {"video", "videos", "standard video", "long-form", "long form"}
+
+    # 3. Check for conflicting evidence between URL path and Studio export classification
+    if is_short_url and studio_is_video:
+        return {
+            "format": "Format unconfirmed",
+            "badge": "Format unconfirmed",
+            "note": "Conflicting format evidence: /shorts/ URL path conflicts with YouTube Studio Standard Video classification.",
+        }
+
+    # 4. Positive indicators (only applied after duration restrictions and conflict checks)
+    if is_short_url:
+        return {
+            "format": "YouTube Short",
+            "badge": "Short",
+            "note": "Confirmed by YouTube Shorts URL path.",
+        }
+
+    if studio_is_short:
+        return {
+            "format": "YouTube Short",
+            "badge": "Short",
+            "note": "Confirmed by YouTube Studio export format evidence.",
+        }
+
+    if studio_is_video:
+        return {
+            "format": "Standard Video",
+            "badge": "Video",
+            "note": "Confirmed by YouTube Studio export format evidence.",
+        }
+
+    # 5. When format cannot be established from reliable evidence:
     return {
         "format": "Format unconfirmed",
         "badge": "Format unconfirmed",
@@ -166,14 +181,17 @@ def _classify_video_format(
 
 
 def _check_ownership(snippet: Dict[str, Any], configured_channel_id: Optional[str] = None) -> Tuple[bool, str]:
-    """Check whether target belongs to the connected owner channel."""
-    video_channel_id = snippet.get("channelId", "")
-    expected = configured_channel_id or connector.CHANNEL_ID
-    if expected and video_channel_id:
-        if video_channel_id == expected:
-            return True, "Owner Channel (Editable)"
-        return False, "Public External Video (Read-Only)"
-    return True, "Channel Verified"
+    """Check whether target belongs to the connected owner channel with strict fail-closed verification."""
+    video_channel_id = (snippet.get("channelId") or "").strip() if isinstance(snippet, dict) else ""
+    expected = (configured_channel_id or getattr(connector, "CHANNEL_ID", None) or "").strip()
+
+    if not expected:
+        return False, "Unverified Channel: Missing configured owner channel ID (Read-Only)"
+    if not video_channel_id:
+        return False, "Unverified Channel: Missing video channel ID (Read-Only)"
+    if video_channel_id == expected:
+        return True, "Owner Channel (Editable)"
+    return False, "Public External Video (Read-Only)"
 
 
 def _video_snippet(youtube, video_id: str) -> Dict[str, Any]:
@@ -217,7 +235,11 @@ def _transcript_text(video_id: str) -> Tuple[str, str]:
         return "", "No accessible transcript; analysis uses public metadata only."
 
 
-def _get_demo_video_details(video_id: str, owner_channel_id: Optional[str] = None) -> Dict[str, Any]:
+def _get_demo_video_details(
+    video_id: str,
+    owner_channel_id: Optional[str] = None,
+    is_short_url: bool = False,
+) -> Dict[str, Any]:
     """Generate realistic demo video fixtures for testing without credentials."""
     target_id = video_id if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) else "demo-vid-101"
     snippet = {
@@ -225,7 +247,7 @@ def _get_demo_video_details(video_id: str, owner_channel_id: Optional[str] = Non
         "description": "In this video we talk about prompt caching and how it works with language models.\n\nSubscribe for more AI tutorials.",
         "tags": ["llm", "ai", "python", "prompt caching", "caching"],
         "categoryId": "28",
-        "channelId": owner_channel_id or connector.CHANNEL_ID,
+        "channelId": owner_channel_id or getattr(connector, "CHANNEL_ID", "UC_DEMO_CHANNEL"),
         "channelTitle": "AI Simplified Lab",
         "publishedAt": "2026-09-18T14:00:00Z",
         "thumbnails": {
@@ -233,6 +255,13 @@ def _get_demo_video_details(video_id: str, owner_channel_id: Optional[str] = Non
             "default": {"url": f"https://i.ytimg.com/vi/{target_id}/default.jpg"},
         },
     }
+    dur_sec = 45 if is_short_url else 640
+    dur_fmt = "0:45" if is_short_url else "10:40"
+    format_info = (
+        {"format": "YouTube Short", "badge": "Short", "note": "Confirmed by YouTube Shorts URL path."}
+        if is_short_url
+        else {"format": "Standard Video", "badge": "Video (>3m)", "note": "Standard video (640s)."}
+    )
     return {
         "target_id": target_id,
         "title": snippet["title"],
@@ -240,14 +269,16 @@ def _get_demo_video_details(video_id: str, owner_channel_id: Optional[str] = Non
         "channel_title": snippet["channelTitle"],
         "channel_id": snippet["channelId"],
         "published_at": "2026-09-18",
-        "duration_seconds": 640,
-        "duration_formatted": "10:40",
-        "format_info": {"format": "Standard Video", "badge": "Video (>60s)", "note": "Standard video (640s)."},
+        "duration_seconds": dur_sec,
+        "duration_formatted": dur_fmt,
+        "format_info": format_info,
         "views": 3240,
         "likes": 182,
         "comments": 24,
-        "is_owner": True,
-        "ownership_status": "Owner Channel (Editable)",
+        "is_owner": False,
+        "ownership_status": "Demo Mode (Simulation)",
+        "is_demo": True,
+        "is_short_url": is_short_url,
         "target_transcript": (
             "[00:00] In this video we demonstrate prompt caching.\n"
             "[02:15] Benchmark: cold requests take 1200ms, cached requests take 220ms.\n"
@@ -270,8 +301,13 @@ def fetch_full_video_details(
     is_short_url: bool = False,
 ) -> Dict[str, Any]:
     """Retrieve complete video snippet, content details, statistics, and ownership state."""
-    if is_demo or youtube is None:
-        return _get_demo_video_details(video_id, owner_channel_id)
+    if is_demo:
+        return _get_demo_video_details(video_id, owner_channel_id, is_short_url=is_short_url)
+
+    if youtube is None:
+        raise ConnectionError(
+            "YouTube is not connected. Connect your YouTube account in Settings or switch to Demo Mode to explore sample videos."
+        )
 
     try:
         snippet = None
@@ -361,6 +397,8 @@ def fetch_full_video_details(
             "comments": comments,
             "is_owner": is_owner,
             "ownership_status": ownership_status,
+            "is_demo": False,
+            "is_short_url": is_short_url,
             "target_transcript": transcript_text,
             "target_transcript_status": transcript_status,
             "studio_performance_evidence": evidence,
@@ -671,13 +709,16 @@ def _load_conversation_videos(youtube, secrets, message):
         else None
     )
 
-    context = fetch_full_video_details(
-        youtube,
-        target_id,
-        owner_channel_id=owner_channel_id,
-        is_demo=is_demo,
-        is_short_url=is_short_url,
-    )
+    try:
+        context = fetch_full_video_details(
+            youtube,
+            target_id,
+            owner_channel_id=owner_channel_id,
+            is_demo=is_demo,
+            is_short_url=is_short_url,
+        )
+    except ConnectionError as err:
+        return None, str(err)
 
     if reference_id:
         try:
@@ -772,6 +813,55 @@ def _extract_title_angles(assistant_message: str, current_title: str, proposed_t
     return angles[:3]
 
 
+def update_studio_attachments(
+    context: Optional[Dict[str, Any]],
+    uploaded_files: Any,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Synchronize Studio export evidence with in-memory state and active video context."""
+    if uploaded_files:
+        file_payloads = [
+            (
+                getattr(f, "name", f[0] if isinstance(f, (list, tuple)) else "report"),
+                f.getvalue() if hasattr(f, "getvalue") else (f[1] if isinstance(f, (list, tuple)) else f),
+            )
+            for f in uploaded_files
+        ]
+        analysis = studio_export_analyzer.analyze_uploaded_files(file_payloads)
+        reports = analysis.get("reports", [])
+        evidence_index = studio_export_analyzer.build_video_evidence_index(reports)
+        st.session_state["studio_export_evidence_index"] = evidence_index
+        notice = f"Parsed {len(reports)} Studio report(s). Evidence linked by exact Video ID and title fallback."
+        if context:
+            matched_evidence = studio_export_analyzer.find_video_evidence(
+                evidence_index, context["target_id"], context.get("title")
+            )
+            context["studio_performance_evidence"] = matched_evidence
+            studio_format = None
+            for ev in matched_evidence:
+                cand = ev.get("content_type") or ev.get("video_type") or ev.get("format")
+                if cand:
+                    studio_format = str(cand).strip()
+                    break
+            context["format_info"] = _classify_video_format(
+                context.get("duration_seconds"),
+                is_short_url=context.get("is_short_url", False),
+                studio_format=studio_format,
+                upload_date=context.get("published_at", ""),
+            )
+        return evidence_index, notice
+    else:
+        st.session_state.pop("studio_export_evidence_index", None)
+        if context:
+            context["studio_performance_evidence"] = []
+            context["format_info"] = _classify_video_format(
+                context.get("duration_seconds"),
+                is_short_url=context.get("is_short_url", False),
+                studio_format=None,
+                upload_date=context.get("published_at", ""),
+            )
+        return {}, None
+
+
 def render_copilot_chat(
     youtube=None,
     secrets=None,
@@ -797,6 +887,24 @@ def render_copilot_chat(
 
     context = st.session_state.get("strategist_target_reference")
 
+    # Demo Mode Indicator Banner
+    if is_demo:
+        st.markdown(
+            """
+            <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 1.1rem;">🎮</span>
+                    <div>
+                        <strong style="color: #FCD34D;">Demo Mode Active:</strong>
+                        <span style="color: #CBD5E1; font-size: 0.88rem;">Exploring sample video data. Publishing to YouTube is disabled (simulated approvals only; no API writes).</span>
+                    </div>
+                </div>
+                <span style="background: #F59E0B; color: #1E293B; font-weight: 700; font-size: 0.72rem; padding: 2px 8px; border-radius: 4px;">DEMO</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     # 1. Active Video Context Card
     if context:
         target_id = context["target_id"]
@@ -809,7 +917,7 @@ def render_copilot_chat(
         views = context.get("views")
         likes = context.get("likes")
         comments = context.get("comments")
-        is_owner = context.get("is_owner", True)
+        is_owner = context.get("is_owner", False)
         ownership_label = context.get("ownership_status", "Owner Channel (Editable)")
         t_status = context.get("target_transcript_status", "Transcript status unconfirmed")
         evidence = context.get("studio_performance_evidence", [])
@@ -903,17 +1011,9 @@ def render_copilot_chat(
             key="studio_file_uploader_copilot",
             label_visibility="collapsed",
         )
-        if uploaded_files:
-            file_payloads = [(f.name, f.getvalue()) for f in uploaded_files]
-            analysis = studio_export_analyzer.analyze_uploaded_files(file_payloads)
-            reports = analysis.get("reports", [])
-            evidence_index = studio_export_analyzer.build_video_evidence_index(reports)
-            st.session_state["studio_export_evidence_index"] = evidence_index
-            st.success(f"Parsed {len(reports)} Studio report(s). Evidence linked by exact Video ID and title fallback.")
-            if context:
-                context["studio_performance_evidence"] = studio_export_analyzer.find_video_evidence(
-                    evidence_index, context["target_id"], context.get("title")
-                )
+        evidence_index, uploader_notice = update_studio_attachments(context, uploaded_files)
+        if uploader_notice:
+            st.success(uploader_notice)
 
     # 4. Conversation History Stream
     for turn in history:
@@ -1041,10 +1141,47 @@ def render_copilot_chat(
                 context["target_id"], proposal["before"], proposal["proposed"]
             )
             st.session_state["strategist_chat_digest"] = digest
-            is_owner = context.get("is_owner", True)
+            is_owner = context.get("is_owner", False)
 
-            if not is_owner:
-                st.warning("🔒 **External Video (Read-Only):** This video belongs to an external channel. Metadata writes are strictly blocked.")
+            if is_demo:
+                st.info("🎮 **Demo Mode Active:** Real YouTube publishing is disabled. You can simulate approval to test the workflow without writing to YouTube.")
+                col_ap1, col_ap2 = st.columns([3, 1])
+                with col_ap1:
+                    sim_clicked = st.button(
+                        f"🧪 Simulate Approval (Demo Mode - No Write)",
+                        type="secondary",
+                        use_container_width=True,
+                        key="btn_simulate_approval",
+                    )
+                with col_ap2:
+                    if st.button("✕ Dismiss Proposal", use_container_width=True, key="btn_dismiss_prop"):
+                        st.session_state.pop("strategist_chat_proposal", None)
+                        st.session_state.pop("strategist_chat_digest", None)
+                        st.rerun()
+
+                if sim_clicked:
+                    # In Demo Mode, NEVER call videos.update() or apply_approved_dashboard_proposal
+                    try:
+                        record_proposal_decision(
+                            video_id=context["target_id"],
+                            proposal_digest=digest,
+                            status="SIMULATED",
+                            proposal_dict=proposal["proposed"],
+                            feedback="Simulated approval in Demo Mode (no YouTube write occurred)",
+                            owner_id=subject,
+                            is_demo=True,
+                        )
+                    except Exception:
+                        pass
+                    st.success(f"✓ [Demo Mode Simulation] Verified mock metadata update for: {proposal['proposed'].get('title', edited_title)}")
+                    st.session_state["strategist_target_reference"]["target_snippet"] = deepcopy(proposal["proposed"])
+                    st.session_state.pop("strategist_chat_proposal", None)
+                    st.session_state.pop("strategist_chat_digest", None)
+                    st.rerun()
+
+            elif not is_owner:
+                ownership_label = context.get("ownership_status", "Public External Video (Read-Only)")
+                st.warning(f"🔒 **{ownership_label}:** Metadata writes are strictly blocked because ownership is unverified.")
             else:
                 col_ap1, col_ap2 = st.columns([3, 1])
                 with col_ap1:
@@ -1061,15 +1198,18 @@ def render_copilot_chat(
                         st.rerun()
 
                 if approve_clicked:
+                    if is_demo or not is_owner or not youtube:
+                        st.error("Publishing is blocked: verified channel ownership and connected YouTube account required.")
+                        return
+
                     try:
                         # 1. Pre-write stale metadata check against YouTube
-                        if youtube and not is_demo:
-                            live_snippet = connector.fetch_video_snippet(youtube, context["target_id"])
-                            cur_snap = connector._metadata_snapshot(live_snippet)
-                            bef_snap = connector._metadata_snapshot(proposal["before"])
-                            if cur_snap != bef_snap:
-                                st.error("Apply failed: Video metadata changed on YouTube after review. Reload the video and approve a new proposal.")
-                                return
+                        live_snippet = connector.fetch_video_snippet(youtube, context["target_id"])
+                        cur_snap = connector._metadata_snapshot(live_snippet)
+                        bef_snap = connector._metadata_snapshot(proposal["before"])
+                        if cur_snap != bef_snap:
+                            st.error("Apply failed: Video metadata changed on YouTube after review. Reload the video and approve a new proposal.")
+                            return
 
                         # 2. Apply and verify post-write
                         def audit_callback(entry):
@@ -1095,7 +1235,7 @@ def render_copilot_chat(
                                 proposal_dict=proposal["proposed"],
                                 feedback="Approved and post-write verified via Copilot chat",
                                 owner_id=subject,
-                                is_demo=is_demo,
+                                is_demo=False,
                             )
                         except Exception:
                             pass
@@ -1133,7 +1273,7 @@ def render_copilot_chat(
         if not context or is_new_video_selection:
             try:
                 context, setup_message = _load_conversation_videos(youtube, secrets, instruction)
-            except (ValueError, connector.VideoNotFoundError, connector.MetadataValidationError) as error:
+            except (ConnectionError, ValueError, connector.VideoNotFoundError, connector.MetadataValidationError) as error:
                 setup_message = str(error)
                 context = None
             except Exception:
