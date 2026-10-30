@@ -397,6 +397,9 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             strategist_chat.QUICK_ACTIONS["description"]
         ))
         self.assertTrue(strategist_chat._instruction_preserves_title(
+            "Keep the current title and separate tags unchanged."
+        ))
+        self.assertTrue(strategist_chat._instruction_preserves_title(
             strategist_chat.QUICK_ACTIONS["tags"]
         ))
         self.assertTrue(strategist_chat._instruction_preserves_title(
