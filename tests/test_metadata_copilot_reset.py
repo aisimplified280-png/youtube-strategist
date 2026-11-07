@@ -878,7 +878,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         """Attaching files refreshes evidence and format; removing files clears evidence and index."""
         # Active video loaded with standard watch URL and duration 50s (initially Format unconfirmed)
         context = {
-            "target_id": "test_vid_123",
+            "target_id": "AbCdEfGhI12",
             "title": "Agent Tutorial",
             "duration_seconds": 50,
             "duration_formatted": "0:50",
@@ -891,7 +891,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         # 1. Attach a Studio file that classifies video as Shorts
         csv_content = (
             "Video ID,Video Title,Content Type,Views,Watch time (hours)\n"
-            "test_vid_123,Agent Tutorial,Shorts,1500,20.5\n"
+            "AbCdEfGhI12,Agent Tutorial,Shorts,1500,20.5\n"
         ).encode("utf-8")
 
         mock_file = MagicMock()
@@ -899,7 +899,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         mock_file.getvalue.return_value = csv_content
 
         evidence_index, notice = strategist_chat.update_studio_attachments(context, [mock_file])
-        self.assertIn("id:test_vid_123", evidence_index)
+        self.assertIn("id:AbCdEfGhI12", evidence_index)
         self.assertIn("Parsed 1 Studio report", notice)
         self.assertEqual(len(context["studio_performance_evidence"]), 1)
         self.assertEqual(context["format_info"]["format"], "YouTube Short")
