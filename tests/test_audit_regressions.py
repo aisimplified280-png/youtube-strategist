@@ -369,5 +369,52 @@ class TestAuditRegressions(unittest.TestCase):
         self.assertAlmostEqual(item["ctr_percent"], 2.01)
         self.assertFalse(item["ctr_period_known"])
 
+
+    def test_video_publish_time_is_not_report_period(self):
+        csv_data = (
+            "Video ID,Video title,Video publish time,Views,Impressions,CTR\\n"
+            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\\n'
+        ).encode("utf-8")
+        parsed = studio_export_analyzer.parse_studio_export("Video data.csv", csv_data)
+        report = studio_export_analyzer.analyze_studio_export(parsed)
+        index = studio_export_analyzer.build_evidence_index([report])
+        evidence = studio_export_analyzer.find_video_evidence(
+            index, "Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!"
+        )
+        row = report["video_rows"][0]
+        self.assertEqual(row["published_at"], "2025-10-28")
+        self.assertIsNone(row["date_start"])
+        self.assertIsNone(row["date_end"])
+        self.assertIsNone(evidence[0]["date_start"])
+        self.assertIsNone(evidence[0]["date_end"])
+        self.assertFalse(evidence[0]["report_period_known"])
+
+    def test_date_published_alias_is_also_not_report_period(self):
+        csv_data = (
+            "Video ID,Video title,Date published,Views,Impressions,CTR\\n"
+            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\\n'
+        ).encode("utf-8")
+        parsed = studio_export_analyzer.parse_studio_export("Video data.csv", csv_data)
+        report = studio_export_analyzer.analyze_studio_export(parsed)
+        row = report["video_rows"][0]
+        self.assertEqual(row["published_at"], "2025-10-28")
+        self.assertIsNone(row["date_start"])
+        self.assertIsNone(row["date_end"])
+
+    def test_actual_date_dimension_still_builds_studio_report_period(self):
+        csv_data = (
+            "Date,Video ID,Video title,Views,Impressions,CTR\\n"
+            '2026-11-01,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2,100,2.0\\n'
+            '2026-11-02,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",3,150,4.0\\n'
+        ).encode("utf-8")
+        parsed = studio_export_analyzer.parse_studio_export("Daily video data.csv", csv_data)
+        report = studio_export_analyzer.analyze_studio_export(parsed)
+        row = report["video_rows"][0]
+        self.assertEqual(row["date_start"], "2026-11-01")
+        self.assertEqual(row["date_end"], "2026-11-02")
+        self.assertEqual(row["views"], 5)
+        self.assertEqual(row["impressions"], 250)
+        self.assertAlmostEqual(row["ctr_percent"], 3.2)
+
 if __name__ == "__main__":
     unittest.main()
