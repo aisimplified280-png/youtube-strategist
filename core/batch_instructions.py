@@ -628,11 +628,11 @@ def parse_batch_instructions(
             tags_intent, exact_tags = _merged_field_intent("tags_intent", "exact_tags")
 
             specific_instruction = str(item.get("video_specific_instructions") or "").strip()
-            shared_instruction = "\\n".join(
+            shared_instruction = "\n".join(
                 line
                 for line in combined_shared.splitlines()
                 if not re.match(
-                    r"^\\s*(?:current|existing|original|target|old)\\s+titles?\\s*[:=]",
+                    r"^\s*(?:current|existing|original|target|old)\s+titles?\s*[:=]",
                     line,
                     re.IGNORECASE,
                 )
