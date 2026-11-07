@@ -1059,356 +1059,502 @@ def _is_batch_intent(message: str, urls: List[str]) -> bool:
 
 
 def render_batch_metadata_import(youtube, subject=None, secrets=None):
-    """Render in-memory batch review and exact, sequential batch publishing for both spreadsheets and text instructions."""
-    with st.expander("📦 Batch Metadata Manager (Text & Spreadsheets)", expanded=st.session_state.get("show_batch_metadata", False)):
-        st.caption(
-            "Batch optimization for up to 25 videos at a time. Upload a spreadsheet or paste ordinary-language instructions. "
-            "All proposals are staged in session memory for your explicit review and approval before anything is published."
-        )
+    """Render a guided batch workflow: add videos, review one proposal at a time, then approve."""
+    batch = st.session_state.get("batch_metadata_review")
 
-        tab_text, tab_file = st.tabs(["📝 Paste Batch Instructions", "📁 Spreadsheet Import (CSV, TSV, Excel)"])
-
-        with tab_text:
-            st.caption("Paste instructions for one or multiple videos (paragraphs, lists, or structured notes).")
-            batch_text = st.text_area(
-                "Paste Batch Instructions",
-                value=st.session_state.get("batch_text_instructions_input", ""),
-                height=150,
-                placeholder=(
-                    "Example:\n"
-                    "Video 1: https://www.youtube.com/watch?v=cxsx2ZppQvg\n"
-                    "Change the title to 'AI Agents Can Now Design Apps'. Improve the description and use tags: ai, agents.\n\n"
-                    "Video 2: https://www.youtube.com/watch?v=LRWD6rVWH3I\n"
-                    "Improve the title and description. Preserve current tags."
-                ),
-                key="batch_text_input_area",
-            )
-            col_b1, col_b2 = st.columns([2, 1])
-            with col_b1:
-                parse_btn = st.button("Parse & Prepare Review", type="primary", key="btn_parse_batch_instructions")
-            with col_b2:
-                st.caption("Prepares proposals only; does not publish automatically.")
-
-            if parse_btn:
-                if not batch_text.strip():
-                    st.warning("Please paste batch instructions before clicking Parse & Prepare Review.")
-                elif youtube is None:
-                    st.warning("Connect YouTube with the channel-owner account before staging metadata changes.")
-                else:
-                    try:
-                        with st.spinner("Parsing instructions, checking video ownership, and staging proposals..."):
-                            staged = _stage_text_metadata_batch(batch_text, youtube, secrets=secrets)
-                        st.session_state["batch_metadata_review"] = staged
-                        st.session_state["batch_text_instructions_input"] = batch_text
-                        st.session_state["show_batch_metadata"] = True
-                        st.success(
-                            f"Identified {len(staged['rows'])} videos: {staged.get('ready_count', 0)} ready for review, "
-                            f"{staged.get('invalid_count', 0)} invalid, "
-                            f"{staged.get('no_change_count', 0)} unchanged."
-                        )
-                        st.rerun()
-                    except Exception as error:
-                        st.error(f"Could not parse or stage instructions: {error}")
-
-        with tab_file:
-            template = "video_id,title,description,tags\n"
-            st.download_button(
-                "Download spreadsheet template",
-                data=template,
-                file_name="youtube-metadata-batch-template.csv",
-                mime="text/csv",
-                key="batch_metadata_template_download",
-            )
+    # STEP 1 — Add videos. Keep this compact and out of the way once a batch is staged.
+    if not batch:
+        with st.expander(
+            "📦 Batch Metadata Manager",
+            expanded=st.session_state.get("show_batch_metadata", False),
+        ):
             st.caption(
-                "Use video_id or video_url plus any of title, description, and tags. "
-                "Separate tags with semicolons or pipes; use a JSON array when a tag itself contains a comma. "
-                "Use [] to intentionally clear all tags. Kept in session memory only."
+                "Optimize up to 25 videos in one batch. Add instructions or import a spreadsheet. "
+                "Every change remains staged until you explicitly approve it."
             )
-            uploaded_file = st.file_uploader(
-                "Upload metadata changes",
-                type=["csv", "tsv", "xlsx"],
-                accept_multiple_files=False,
-                key="batch_metadata_uploader",
-            )
-            if uploaded_file is not None:
-                payload = uploaded_file.getvalue()
-                fingerprint = hashlib.sha256(payload).hexdigest()
-                active_batch = st.session_state.get("batch_metadata_review")
-                if not active_batch or active_batch.get("fingerprint") != fingerprint:
-                    st.session_state.pop("batch_metadata_review", None)
-                    st.session_state["batch_metadata_payload"] = payload
-                    st.session_state["batch_metadata_file_name"] = uploaded_file.name
-                    if youtube is None:
-                        st.warning("Connect YouTube with the channel-owner account before staging metadata changes.")
+            tab_text, tab_file = st.tabs(["📝 Paste instructions", "📁 Spreadsheet"])
+            with tab_text:
+                st.text_area(
+                    "Batch instructions",
+                    value=st.session_state.get("batch_text_instructions_input", ""),
+                    height=170,
+                    placeholder=(
+                        "VIDEO ID: xxxxxxxxxxx\n"
+                        "New title: \"...\"\n"
+                        "Description: \"\"\"...\"\"\"\n"
+                        "Tags: [\"tag one\", \"tag two\"]"
+                    ),
+                    key="batch_text_input_area",
+                )
+                col_parse, col_hint = st.columns([2, 1])
+                with col_parse:
+                    parse_btn = st.button(
+                        "Prepare batch",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_parse_batch_instructions",
+                    )
+                with col_hint:
+                    st.caption("Review first. Nothing publishes automatically.")
+
+                if parse_btn:
+                    batch_text = st.session_state.get("batch_text_input_area", "")
+                    if not batch_text.strip():
+                        st.warning("Add video IDs or YouTube links and metadata instructions first.")
+                    elif youtube is None:
+                        st.warning("Connect YouTube with the channel-owner account before staging changes.")
                     else:
                         try:
-                            with st.spinner("Checking video ownership and loading current YouTube metadata..."):
-                                staged = _stage_uploaded_metadata_batch(uploaded_file.name, payload, youtube)
-                            staged["fingerprint"] = fingerprint
-                            staged["file_name"] = uploaded_file.name
+                            with st.spinner("Identifying videos and preparing metadata proposals..."):
+                                staged = _stage_text_metadata_batch(batch_text, youtube, secrets=secrets)
+                            staged["file_name"] = "Pasted batch instructions"
                             staged["review_revision"] = 1
+                            staged["is_text_batch"] = True
                             st.session_state["batch_metadata_review"] = staged
+                            st.session_state["batch_text_instructions_input"] = batch_text
+                            st.session_state["batch_selected_video_ids"] = []
+                            st.session_state["batch_review_index"] = 0
+                            st.session_state["batch_flow_step"] = "review"
                             st.session_state["show_batch_metadata"] = True
-                            st.success(
-                                f"Loaded {len(staged['rows'])} rows: {staged.get('ready_count', 0)} ready, "
-                                f"{staged.get('invalid_count', 0)} invalid, "
-                                f"{staged.get('no_change_count', 0)} unchanged."
-                            )
+                            st.rerun()
                         except Exception as error:
-                            st.error(f"Could not read or stage this file: {error}")
+                            st.error(f"Could not prepare the batch: {error}")
+
+            with tab_file:
+                st.download_button(
+                    "Download CSV template",
+                    data="video_id,title,description,tags\n",
+                    file_name="youtube-metadata-batch-template.csv",
+                    mime="text/csv",
+                    key="batch_metadata_template_download",
+                )
+                st.caption(
+                    "Use video_id or video_url. Separate tags with semicolons or pipes, or use a JSON array. "
+                    "Use [] only when you intend to clear all tags."
+                )
+                uploaded_file = st.file_uploader(
+                    "Upload CSV, TSV or Excel file",
+                    type=["csv", "tsv", "xlsx"],
+                    accept_multiple_files=False,
+                    key="batch_metadata_uploader",
+                )
+                if uploaded_file is not None:
+                    payload = uploaded_file.getvalue()
+                    fingerprint = hashlib.sha256(payload).hexdigest()
+                    active_batch = st.session_state.get("batch_metadata_review")
+                    if not active_batch or active_batch.get("fingerprint") != fingerprint:
+                        st.session_state["batch_metadata_payload"] = payload
+                        st.session_state["batch_metadata_file_name"] = uploaded_file.name
+                        if youtube is None:
+                            st.warning("Connect YouTube with the channel-owner account before staging changes.")
+                        else:
+                            try:
+                                with st.spinner("Checking ownership and preparing proposals..."):
+                                    staged = _stage_uploaded_metadata_batch(uploaded_file.name, payload, youtube)
+                                staged["fingerprint"] = fingerprint
+                                staged["file_name"] = uploaded_file.name
+                                staged["review_revision"] = 1
+                                st.session_state["batch_metadata_review"] = staged
+                                st.session_state["batch_selected_video_ids"] = []
+                                st.session_state["batch_review_index"] = 0
+                                st.session_state["batch_flow_step"] = "review"
+                                st.session_state["show_batch_metadata"] = True
+                                st.rerun()
+                            except Exception as error:
+                                st.error(f"Could not read or stage this file: {error}")
 
         batch = st.session_state.get("batch_metadata_review")
         if not batch:
             return
 
-        rows = batch.get("rows", [])
-        ready_count = sum(row.get("status") == "ready" for row in rows)
-        approved_count = sum(row.get("status") == "approved" for row in rows)
-        publishing_count = sum(row.get("status") == "publishing" for row in rows)
-        verified_count = sum(row.get("status") == "verified" for row in rows)
-        failed_count = sum(row.get("status") == "failed" for row in rows)
-        invalid_count = sum(row.get("status") == "invalid" for row in rows)
-        unchanged_count = sum(row.get("status") == "no_change" for row in rows)
-        unavail_count = sum(row.get("status") == "verification_unavailable" for row in rows)
+    rows = batch.get("rows", [])
+    if not rows:
+        st.warning("This batch contains no video proposals. Replace it with a valid batch.")
+        return
 
-        st.divider()
-        st.caption(f"Source: **{batch.get('file_name', 'Batch proposals')}** (in session memory only)")
-        metric_cols = st.columns(4)
-        metric_cols[0].metric("Ready", ready_count)
-        metric_cols[1].metric("Verified", verified_count)
-        metric_cols[2].metric("Failed", failed_count)
-        metric_cols[3].metric("Skipped / Invalid", invalid_count + unchanged_count + unavail_count)
+    ready_count = sum(row.get("status") == "ready" for row in rows)
+    verified_count = sum(row.get("status") == "verified" for row in rows)
+    failed_count = sum(row.get("status") == "failed" for row in rows)
+    invalid_count = sum(row.get("status") == "invalid" for row in rows)
+    unchanged_count = sum(row.get("status") == "no_change" for row in rows)
+    unavail_count = sum(row.get("status") == "verification_unavailable" for row in rows)
+    fingerprint = str(batch.get("fingerprint") or hashlib.sha256(
+        str([(r.get("video_id"), r.get("proposed", {}).get("title")) for r in rows]).encode("utf-8")
+    ).hexdigest())
+    selection = set(st.session_state.get("batch_selected_video_ids", []))
+    flow_step = st.session_state.get("batch_flow_step", "review")
+    if flow_step not in {"review", "approval", "complete"}:
+        flow_step = "review"
 
-        if ready_count == 0:
-            st.warning(
-                f"Publishing is unavailable: 0 video proposals are currently ready for publishing "
-                f"({unchanged_count} unchanged, {invalid_count} invalid). "
-                "Review the details below or refine the instructions to generate new proposals."
-            )
+    st.divider()
+    st.markdown("### 📦 Batch workflow")
+    source_label = batch.get("file_name", "Pasted batch instructions")
+    st.caption(f"{len(rows)} videos · Source: {source_label} · Stored in this session only")
 
-        if st.button(
-            "Refresh current YouTube metadata and review again",
-            key=f"batch_refresh_{batch.get('fingerprint', '')[:12]}",
-            disabled=youtube is None,
+    # Compact, persistent step indicator.
+    active_step = 3 if flow_step in {"approval", "complete"} else 2
+    step_cols = st.columns(3)
+    step_labels = ["1  Add videos", "2  Review proposals", "3  Approve & publish"]
+    for idx, col in enumerate(step_cols, start=1):
+        with col:
+            marker = "✓" if idx < active_step or (flow_step == "complete" and idx == 3) else ("●" if idx == active_step else "○")
+            st.markdown(f"**{marker} {step_labels[idx - 1]}**")
+    st.progress(1.0 if flow_step == "complete" else (0.82 if flow_step == "approval" else 0.58))
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Ready to review", ready_count)
+    metric_cols[1].metric("Verified", verified_count)
+    metric_cols[2].metric("Failed", failed_count)
+    metric_cols[3].metric("Invalid / unchanged", invalid_count + unchanged_count)
+
+    if st.button("＋ Start a new batch", key=f"batch_new_{fingerprint[:10]}"):
+        for key in (
+            "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+            "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+            "batch_selected_video_ids", "batch_review_index", "batch_flow_step",
         ):
+            st.session_state.pop(key, None)
+        st.session_state["show_batch_metadata"] = True
+        st.rerun()
+
+    if ready_count == 0 and verified_count == 0:
+        st.warning(
+            f"There are no publishable proposals in this batch "
+            f"({invalid_count} invalid, {unchanged_count} unchanged). Replace the batch or correct its instructions."
+        )
+        if batch.get("rows"):
+            st.download_button(
+                "Download batch results report",
+                data=batch_metadata.build_results_csv(batch),
+                file_name="youtube-metadata-batch-results.csv",
+                mime="text/csv",
+                key=f"batch_results_{fingerprint[:12]}",
+            )
+        return
+
+    if flow_step == "review":
+        st.markdown("#### Step 2 of 3 · Review one video at a time")
+        st.caption(
+            "Use Previous and Next to move through the batch. Choose whether each ready video belongs in this batch. "
+            "Your selections are saved as you move."
+        )
+
+        col_refresh, col_replace = st.columns([2, 1])
+        with col_refresh:
+            refresh_clicked = st.button(
+                "↻ Refresh YouTube metadata",
+                key=f"batch_refresh_{fingerprint[:12]}",
+                disabled=youtube is None,
+                use_container_width=True,
+            )
+        with col_replace:
+            st.caption("Need different videos? Start a new batch above.")
+
+        if refresh_clicked:
             try:
-                with st.spinner("Reloading current metadata and rebuilding the review..."):
+                with st.spinner("Reloading current metadata and rebuilding proposals..."):
                     if batch.get("is_text_batch") and st.session_state.get("batch_text_instructions_input"):
                         refreshed = _stage_text_metadata_batch(
-                            st.session_state["batch_text_instructions_input"],
-                            youtube,
-                            secrets=secrets,
+                            st.session_state["batch_text_instructions_input"], youtube, secrets=secrets
                         )
                     elif st.session_state.get("batch_metadata_payload"):
                         refreshed = _stage_uploaded_metadata_batch(
                             st.session_state.get("batch_metadata_file_name", "upload"),
-                            st.session_state["batch_metadata_payload"],
-                            youtube,
+                            st.session_state["batch_metadata_payload"], youtube
                         )
                     else:
                         refreshed = batch
                 refreshed["fingerprint"] = batch.get("fingerprint")
                 refreshed["file_name"] = batch.get("file_name")
                 refreshed["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                refreshed["is_text_batch"] = batch.get("is_text_batch", False)
                 st.session_state["batch_metadata_review"] = refreshed
+                st.session_state["batch_selected_video_ids"] = []
+                st.session_state["batch_review_index"] = 0
                 st.rerun()
             except Exception as error:
                 st.error(f"Could not refresh this batch: {error}")
 
-        st.caption(
-            "Review the exact before-and-after values for every video. "
-            "All rows start unselected; explicitly check each video you want to publish. "
-            "You can edit any proposed field directly before approving."
-        )
+        review_index = int(st.session_state.get("batch_review_index", 0))
+        review_index = max(0, min(review_index, len(rows) - 1))
+        row = rows[review_index]
+        vid = str(row.get("video_id") or "")
+        status = row.get("status", "unknown")
+        heading = row.get("proposed_title") or row.get("title") or row.get("current_title") or "Untitled proposal"
+        video_url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
 
-        selected_ids = []
-        for index, row in enumerate(rows, start=1):
-            heading = row.get("proposed_title") or row.get("title") or row.get("current_title") or "Untitled proposal"
-            vid = row.get("video_id") or ""
-            video_url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
-            status = row.get("status", "unknown")
+        nav_left, nav_mid, nav_right = st.columns([1, 2, 1])
+        with nav_left:
+            if st.button("← Previous", disabled=review_index == 0, key=f"batch_prev_{fingerprint[:10]}", use_container_width=True):
+                st.session_state["batch_review_index"] = review_index - 1
+                st.rerun()
+        with nav_mid:
+            st.markdown(
+                f"<div style='text-align:center; padding:7px 0; font-weight:700;'>Video {review_index + 1} of {len(rows)}</div>",
+                unsafe_allow_html=True,
+            )
+        with nav_right:
+            if st.button("Next →", disabled=review_index >= len(rows) - 1, key=f"batch_next_{fingerprint[:10]}", use_container_width=True):
+                st.session_state["batch_review_index"] = review_index + 1
+                st.rerun()
 
-            with st.container(border=True):
-                top_cols = st.columns([3, 1])
-                with top_cols[0]:
-                    if video_url:
-                        st.markdown(f"**{index}. [{html.escape(str(heading))}]({video_url})**")
+        with st.container(border=True):
+            title_line = f"[{html.escape(str(heading))}]({video_url})" if video_url else html.escape(str(heading))
+            st.markdown(f"### {review_index + 1}. {title_line}")
+            status_labels = {
+                "ready": "READY FOR REVIEW",
+                "verified": "VERIFIED ON YOUTUBE",
+                "failed": "FAILED",
+                "invalid": "INVALID",
+                "no_change": "NO CHANGES",
+                "verification_unavailable": "VERIFICATION UNAVAILABLE",
+                "approved": "APPROVED",
+                "publishing": "PUBLISHING",
+            }
+            st.caption(status_labels.get(status, status.replace("_", " ").upper()))
+            if vid:
+                st.caption(f"Target video: {video_url}")
+
+            select_key = f"batch_select_{fingerprint[:16]}_{vid}_{review_index + 1}"
+            if status == "ready" and not row.get("attempted"):
+                def _sync_batch_selection(video_id, widget_key):
+                    current = set(st.session_state.get("batch_selected_video_ids", []))
+                    if st.session_state.get(widget_key, False):
+                        current.add(video_id)
                     else:
-                        st.markdown(f"**{index}. {html.escape(str(heading))}**")
-                    if vid:
-                        st.caption(f"Video ID: `{vid}`")
-                with top_cols[1]:
-                    badge_color = {
-                        "ready": "#34D399",
-                        "approved": "#60A5FA",
-                        "publishing": "#FBBF24",
-                        "verified": "#10B981",
-                        "failed": "#EF4444",
-                        "invalid": "#F59E0B",
-                        "no_change": "#94A3B8",
-                        "verification_unavailable": "#A855F7",
-                    }.get(status, "#64748B")
-                    st.markdown(
-                        f'<div style="text-align: right;"><span style="color: {badge_color}; font-weight: 700; font-size: 0.85rem; border: 1px solid {badge_color}; border-radius: 4px; padding: 2px 8px;">{status.replace("_", " ").upper()}</span></div>',
-                        unsafe_allow_html=True,
+                        current.discard(video_id)
+                    st.session_state["batch_selected_video_ids"] = sorted(current)
+
+                st.checkbox(
+                    "Include this video in the approved batch",
+                    value=vid in selection,
+                    key=select_key,
+                    on_change=_sync_batch_selection,
+                    args=(vid, select_key),
+                )
+            elif status == "verified":
+                st.success("YouTube read-back verified this update.")
+            elif status == "failed":
+                st.error("The update failed or did not match on read-back.")
+            elif status == "verification_unavailable":
+                st.warning("The update was sent, but YouTube read-back verification was unavailable.")
+            elif status not in {"ready", "no_change"}:
+                for error in row.get("errors", []):
+                    st.warning(error)
+
+            if status in {"ready", "verified", "failed", "no_change", "verification_unavailable"}:
+                changed_fields = row.get("changed_fields", [])
+                st.caption("Changed fields: " + (", ".join(changed_fields) if changed_fields else "None"))
+
+                if row.get("title_angles") and status == "ready":
+                    angles = row.get("title_angles", [])
+                    rec_title = row.get("recommended_title") or row.get("proposed", {}).get("title", "")
+                    rec_reason = row.get("recommendation_reason") or row.get("rationale", "")
+                    st.markdown("**Title options**")
+                    if rec_reason:
+                        st.info(f"Recommended: **{rec_title}**\n\n{rec_reason}")
+                    angle_labels = []
+                    angle_map = {}
+                    for angle in angles:
+                        label = f"{angle.get('label') or angle.get('angle', 'Option').title()}: {angle.get('title', '')}"
+                        angle_labels.append(label)
+                        angle_map[label] = angle.get("title", "")
+                    current_prop_title = row.get("proposed", {}).get("title", "")
+                    default_radio_idx = next(
+                        (idx for idx, label in enumerate(angle_labels) if angle_map[label] == current_prop_title),
+                        0,
                     )
-
-                if status == "ready" and not row.get("attempted"):
-                    selected = st.checkbox(
-                        "Include in approved batch",
-                        value=False,
-                        key=f"batch_select_{batch.get('fingerprint', '')[:16]}_{vid}_{index}",
+                    chosen_angle_label = st.radio(
+                        "Choose a title angle",
+                        options=angle_labels,
+                        index=default_radio_idx,
+                        key=f"radio_ang_{vid}_{review_index}_{batch.get('review_revision', 1)}",
                     )
-                    if selected:
-                        selected_ids.append(vid)
-                elif status == "verified":
-                    st.success("YouTube read-back verified this update.")
-                elif status == "failed":
-                    st.error("Update failed or read-back did not match. Stale metadata check prevented partial write.")
-                elif status == "verification_unavailable":
-                    st.warning("Update was sent to YouTube, but read-back verification was temporarily unavailable.")
-                else:
-                    for error in row.get("errors", []):
-                        st.warning(error)
+                    chosen_title = angle_map.get(chosen_angle_label)
+                    if chosen_title and chosen_title != current_prop_title:
+                        row["proposed"]["title"] = chosen_title
+                        batch_metadata.revalidate_batch_row(row)
+                        batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                        st.session_state["batch_metadata_review"] = batch
+                        st.rerun()
 
-                if status in {"ready", "verified", "failed", "no_change", "verification_unavailable"}:
-                    changed_fields = row.get("changed_fields", [])
-                    st.caption("Changed fields: " + (", ".join(f"**{f}**" for f in changed_fields) if changed_fields else "None"))
-
-                    if row.get("title_angles") and status == "ready":
-                        angles = row.get("title_angles", [])
-                        rec_title = row.get("recommended_title") or row.get("proposed", {}).get("title", "")
-                        rec_reason = row.get("recommendation_reason") or row.get("rationale", "")
-                        st.markdown("##### 🎯 Title Angles (3 Generated)")
-                        if rec_reason:
-                            st.info(f"💡 **Recommended Angle**: {rec_title}\n\n*Rationale*: {rec_reason}")
-
-                        angle_labels = []
-                        angle_map = {}
-                        for ang in angles:
-                            lbl = f"**{ang.get('label') or ang.get('angle', 'Option').title()}**: {ang.get('title', '')}"
-                            angle_labels.append(lbl)
-                            angle_map[lbl] = ang.get("title", "")
-
-                        current_prop_title = row.get("proposed", {}).get("title", "")
-                        default_radio_idx = 0
-                        for idx, lbl in enumerate(angle_labels):
-                            if angle_map[lbl] == current_prop_title:
-                                default_radio_idx = idx
-                                break
-
-                        chosen_angle_label = st.radio(
-                            "Select title angle to apply:",
-                            options=angle_labels,
-                            index=default_radio_idx,
-                            key=f"radio_ang_{vid}_{index}_{batch.get('review_revision', 1)}",
+                title_cols = st.columns(2)
+                with title_cols[0]:
+                    st.markdown("**Current title**")
+                    st.code(row.get("before", {}).get("title", ""), language=None)
+                with title_cols[1]:
+                    st.markdown("**Proposed title**")
+                    if status == "ready" and not row.get("attempted"):
+                        new_title = st.text_input(
+                            "Edit proposed title",
+                            value=row.get("proposed", {}).get("title", ""),
+                            key=f"edit_t_{fingerprint[:8]}_{vid}_{review_index}",
+                            label_visibility="collapsed",
                         )
-                        if angle_map.get(chosen_angle_label) and angle_map[chosen_angle_label] != current_prop_title:
-                            row["proposed"]["title"] = angle_map[chosen_angle_label]
+                        if new_title != row.get("proposed", {}).get("title", ""):
+                            row["proposed"]["title"] = new_title
                             batch_metadata.revalidate_batch_row(row)
                             batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
                             st.session_state["batch_metadata_review"] = batch
                             st.rerun()
+                    else:
+                        st.code(row.get("proposed", {}).get("title", ""), language=None)
 
-                    comp_c1, comp_c2 = st.columns(2)
-                    with comp_c1:
-                        st.markdown("**Current Title**")
-                        st.code(row.get("before", {}).get("title", ""), language=None)
-                    with comp_c2:
-                        st.markdown(f"**Proposed Title** {'*(Modified)*' if 'title' in changed_fields else ''}")
-                        if status == "ready" and not row.get("attempted"):
-                            new_t = st.text_input(
-                                "Edit Proposed Title",
-                                value=row.get("proposed", {}).get("title", ""),
-                                key=f"edit_t_{batch.get('fingerprint', '')[:8]}_{vid}_{index}",
-                                label_visibility="collapsed",
-                            )
-                            if new_t != row.get("proposed", {}).get("title", ""):
-                                row["proposed"]["title"] = new_t
-                                batch_metadata.revalidate_batch_row(row)
-                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
-                                st.session_state["batch_metadata_review"] = batch
-                                st.rerun()
-                        else:
-                            st.code(row.get("proposed", {}).get("title", ""), language=None)
+                description_cols = st.columns(2)
+                with description_cols[0]:
+                    st.markdown("**Current description**")
+                    st.text_area(
+                        "Current description",
+                        value=row.get("before", {}).get("description", ""),
+                        height=150,
+                        disabled=True,
+                        key=f"cur_d_{vid}_{review_index}",
+                        label_visibility="collapsed",
+                    )
+                with description_cols[1]:
+                    st.markdown("**Proposed description**")
+                    if status == "ready" and not row.get("attempted"):
+                        new_description = st.text_area(
+                            "Edit proposed description",
+                            value=row.get("proposed", {}).get("description", ""),
+                            height=150,
+                            key=f"edit_d_{fingerprint[:8]}_{vid}_{review_index}",
+                            label_visibility="collapsed",
+                        )
+                        if new_description != row.get("proposed", {}).get("description", ""):
+                            row["proposed"]["description"] = new_description
+                            batch_metadata.revalidate_batch_row(row)
+                            batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                            st.session_state["batch_metadata_review"] = batch
+                            st.rerun()
+                    else:
+                        st.text_area(
+                            "Proposed description",
+                            value=row.get("proposed", {}).get("description", ""),
+                            height=150,
+                            disabled=True,
+                            key=f"view_prop_d_{vid}_{review_index}",
+                            label_visibility="collapsed",
+                        )
+                if "description" not in changed_fields:
+                    st.caption("Description is preserved unchanged.")
 
-                    desc_c1, desc_c2 = st.columns(2)
-                    with desc_c1:
-                        st.markdown("**Current Description**")
-                        st.text_area("Current Desc", value=row.get("before", {}).get("description", ""), height=100, disabled=True, key=f"cur_d_{vid}_{index}", label_visibility="collapsed")
-                    with desc_c2:
-                        st.markdown(f"**Proposed Description** {'*(Modified)*' if 'description' in changed_fields else '*(Preserved)*'}")
-                        if status == "ready" and not row.get("attempted"):
-                            new_d = st.text_area(
-                                "Edit Proposed Desc",
-                                value=row.get("proposed", {}).get("description", ""),
-                                height=100,
-                                key=f"edit_d_{batch.get('fingerprint', '')[:8]}_{vid}_{index}",
-                                label_visibility="collapsed",
-                            )
-                            if new_d != row.get("proposed", {}).get("description", ""):
-                                row["proposed"]["description"] = new_d
-                                batch_metadata.revalidate_batch_row(row)
-                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
-                                st.session_state["batch_metadata_review"] = batch
-                                st.rerun()
-                        else:
-                            st.text_area("Prop Desc", value=row.get("proposed", {}).get("description", ""), height=100, disabled=True, key=f"view_prop_d_{vid}_{index}", label_visibility="collapsed")
-                    if "description" not in changed_fields:
-                        st.caption("🔒 Description preserved unchanged.")
+                tags_cols = st.columns(2)
+                with tags_cols[0]:
+                    st.markdown("**Current separate tags**")
+                    st.caption(", ".join(row.get("before", {}).get("tags", [])) or "(none)")
+                with tags_cols[1]:
+                    st.markdown("**Proposed separate tags**")
+                    if status == "ready" and not row.get("attempted"):
+                        new_tags = st.text_input(
+                            "Edit proposed tags",
+                            value=", ".join(row.get("proposed", {}).get("tags", [])),
+                            key=f"edit_tags_{fingerprint[:8]}_{vid}_{review_index}",
+                            label_visibility="collapsed",
+                        )
+                        parsed_tags = [tag.strip() for tag in new_tags.split(",") if tag.strip()]
+                        if parsed_tags != row.get("proposed", {}).get("tags", []):
+                            row["proposed"]["tags"] = parsed_tags
+                            batch_metadata.revalidate_batch_row(row)
+                            batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                            st.session_state["batch_metadata_review"] = batch
+                            st.rerun()
+                    else:
+                        st.caption(", ".join(row.get("proposed", {}).get("tags", [])) or "(none)")
+                if "tags" not in changed_fields:
+                    st.caption("Tags are preserved unchanged.")
 
-                    tags_c1, tags_c2 = st.columns(2)
-                    with tags_c1:
-                        st.markdown("**Current Separate Tags**")
-                        st.caption(", ".join(row.get("before", {}).get("tags", [])) or "*(none)*")
-                    with tags_c2:
-                        st.markdown(f"**Proposed Separate Tags** {'*(Modified)*' if 'tags' in changed_fields else '*(Preserved)*'}")
-                        if status == "ready" and not row.get("attempted"):
-                            new_tags_str = st.text_input(
-                                "Edit Tags",
-                                value=", ".join(row.get("proposed", {}).get("tags", [])),
-                                key=f"edit_tags_{batch.get('fingerprint', '')[:8]}_{vid}_{index}",
-                                label_visibility="collapsed",
-                            )
-                            parsed_new_tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
-                            if parsed_new_tags != row.get("proposed", {}).get("tags", []):
-                                row["proposed"]["tags"] = parsed_new_tags
-                                batch_metadata.revalidate_batch_row(row)
-                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
-                                st.session_state["batch_metadata_review"] = batch
-                                st.rerun()
-                        else:
-                            st.caption(", ".join(row.get("proposed", {}).get("tags", [])) or "*(none)*")
-                    if "tags" not in changed_fields:
-                        st.caption("🔒 Tags preserved unchanged.")
+            if row.get("result_message"):
+                st.info(row["result_message"])
 
-                if row.get("result_message"):
-                    st.info(row["result_message"])
+        # Navigation is repeated below the card for a natural reading sequence.
+        bottom_left, bottom_note, bottom_right = st.columns([1, 2, 1])
+        with bottom_left:
+            if st.button("← Previous video", disabled=review_index == 0, key=f"batch_prev_bottom_{fingerprint[:10]}", use_container_width=True):
+                st.session_state["batch_review_index"] = review_index - 1
+                st.rerun()
+        with bottom_note:
+            st.caption(f"{len(selection)} selected · {ready_count} proposals ready")
+        with bottom_right:
+            if st.button("Next video →", disabled=review_index >= len(rows) - 1, key=f"batch_next_bottom_{fingerprint[:10]}", use_container_width=True):
+                st.session_state["batch_review_index"] = review_index + 1
+                st.rerun()
 
+        selected_ids = [
+            str(r.get("video_id"))
+            for r in rows
+            if r.get("status") == "ready"
+            and not r.get("attempted")
+            and str(r.get("video_id") or "") in set(st.session_state.get("batch_selected_video_ids", []))
+        ]
         st.divider()
-        st.markdown(f"**Selected for publishing:** {len(selected_ids)} of {ready_count} ready video proposals")
-
+        st.markdown(f"**Batch selection: {len(selected_ids)} of {ready_count} ready videos selected**")
         if selected_ids:
-            selected_rows = [r for r in rows if r.get("video_id") in selected_ids and r.get("status") == "ready"]
+            if st.button(
+                f"Continue to approval ({len(selected_ids)} videos) →",
+                type="primary",
+                use_container_width=True,
+                key=f"batch_to_approval_{fingerprint[:10]}",
+            ):
+                st.session_state["batch_flow_step"] = "approval"
+                st.rerun()
+        else:
+            st.info("Select at least one ready video. You can move through the batch with Previous and Next.")
+
+    elif flow_step == "approval":
+        selected_set = set(st.session_state.get("batch_selected_video_ids", []))
+        selected_ids = [
+            str(r.get("video_id"))
+            for r in rows
+            if r.get("status") == "ready"
+            and not r.get("attempted")
+            and str(r.get("video_id") or "") in selected_set
+        ]
+        selected_rows = [r for r in rows if str(r.get("video_id") or "") in selected_ids and r.get("status") == "ready"]
+
+        st.markdown("#### Step 3 of 3 · Final approval")
+        st.caption("Only the videos listed here will be sent to YouTube.")
+        if not selected_rows:
+            st.warning("No ready videos are selected. Return to review and select at least one video.")
+            if st.button("← Back to review", key=f"batch_back_empty_{fingerprint[:10]}"):
+                st.session_state["batch_flow_step"] = "review"
+                st.rerun()
+        else:
+            for idx, selected_row in enumerate(selected_rows, start=1):
+                proposed = selected_row.get("proposed", {})
+                before = selected_row.get("before", {})
+                with st.container(border=True):
+                    st.markdown(f"**{idx}. {html.escape(str(proposed.get('title') or before.get('title') or 'Untitled'))}**")
+                    st.caption("Changes: " + ", ".join(selected_row.get("changed_fields", [])))
+                    if before.get("title") != proposed.get("title"):
+                        st.markdown(f"**Before:** {before.get('title', '')}")
+                        st.markdown(f"**After:** {proposed.get('title', '')}")
+
             approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(
                 selected_rows,
                 review_revision=batch.get("review_revision", 1),
             )
-            approval_key = f"batch_approval_box_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}"
+            approval_key = f"batch_approval_box_{fingerprint[:8]}_{approval_fingerprint}"
             approved = st.checkbox(
-                f"I reviewed and approve the exact metadata shown for all {len(selected_ids)} selected videos.",
+                f"I reviewed each proposal and approve the exact metadata for all {len(selected_ids)} selected videos.",
                 value=False,
                 key=approval_key,
             )
-            publish_clicked = st.button(
-                f"Approve & Publish {len(selected_ids)} Selected Videos",
-                type="primary",
-                use_container_width=True,
-                disabled=not approved or youtube is None,
-                key=f"batch_publish_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}",
-            )
+            back_col, publish_col = st.columns([1, 2])
+            with back_col:
+                if st.button("← Back to review", key=f"batch_back_review_{fingerprint[:10]}", use_container_width=True):
+                    st.session_state["batch_flow_step"] = "review"
+                    st.rerun()
+            with publish_col:
+                publish_clicked = st.button(
+                    f"Approve & Publish {len(selected_ids)} Videos",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not approved or youtube is None,
+                    key=f"batch_publish_{fingerprint[:8]}_{approval_fingerprint}",
+                )
             if publish_clicked:
-                with st.spinner("Publishing selected videos sequentially and verifying every approved metadata field..."):
+                with st.spinner("Publishing selected videos one by one and verifying each update..."):
                     publish_result = batch_metadata.publish_approved_batch_rows(
                         youtube,
                         rows,
@@ -1419,17 +1565,17 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                         audit_callback=_batch_audit_callback,
                     )
 
-                selected_set = set(selected_ids)
-                for row in rows:
-                    if row.get("video_id") not in selected_set or not row.get("attempted"):
+                selected_id_set = set(selected_ids)
+                for published_row in rows:
+                    if published_row.get("video_id") not in selected_id_set or not published_row.get("attempted"):
                         continue
                     try:
                         record_proposal_decision(
-                            video_id=row["video_id"],
-                            proposal_digest=row.get("digest", ""),
-                            status="APPLIED" if row.get("status") == "verified" else "FAILED",
-                            proposal_dict=row.get("proposed", {}),
-                            feedback=row.get("result_message", "Batch metadata operation finished."),
+                            video_id=published_row["video_id"],
+                            proposal_digest=published_row.get("digest", ""),
+                            status="APPLIED" if published_row.get("status") == "verified" else "FAILED",
+                            proposal_dict=published_row.get("proposed", {}),
+                            feedback=published_row.get("result_message", "Batch metadata operation finished."),
                             owner_id=subject,
                             is_demo=False,
                         )
@@ -1438,32 +1584,44 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
 
                 batch["rows"] = rows
                 st.session_state["batch_metadata_review"] = batch
+                st.session_state["batch_flow_step"] = "complete"
                 if publish_result.get("blocked"):
                     st.error(publish_result.get("message") or "Publishing was blocked. Review the batch and approve again.")
+                    st.session_state["batch_flow_step"] = "review"
                 elif publish_result.get("failure_count"):
                     st.warning(
                         f"Batch finished: {publish_result.get('success_count', 0)} verified, "
                         f"{publish_result.get('failure_count', 0)} not verified. "
-                        "Failed rows were not retried."
+                        "Review failed rows before retrying."
                     )
                 else:
-                    st.success(
-                        f"Batch finished: all {publish_result.get('success_count', 0)} selected updates were verified."
-                    )
+                    st.success(f"Batch complete: all {publish_result.get('success_count', 0)} selected updates were verified.")
                 st.rerun()
-        else:
-            st.info("Check 'Include in approved batch' on one or more ready videos above to enable approval and publishing.")
 
-        if batch.get('rows'):
-            report = batch_metadata.build_results_csv(batch)
-            st.download_button(
-                "Download batch results report",
-                data=report,
-                file_name="youtube-metadata-batch-results.csv",
-                mime="text/csv",
-                key=f"batch_results_{batch.get('fingerprint', '')[:12]}",
-            )
+    elif flow_step == "complete":
+        st.markdown("#### Step 3 of 3 · Batch results")
+        st.success(f"{verified_count} videos verified on YouTube.")
+        if failed_count or unavail_count:
+            st.warning(f"{failed_count} failed · {unavail_count} with verification unavailable.")
+        for idx, result_row in enumerate(rows, start=1):
+            result_title = result_row.get("proposed", {}).get("title") or result_row.get("before", {}).get("title") or "Untitled"
+            with st.container(border=True):
+                st.markdown(f"**{idx}. {html.escape(str(result_title))}**")
+                st.caption(result_row.get("status", "unknown").replace("_", " ").upper())
+                if result_row.get("result_message"):
+                    st.caption(result_row["result_message"])
+        if st.button("Review this batch again", key=f"batch_review_again_{fingerprint[:10]}"):
+            st.session_state["batch_flow_step"] = "review"
+            st.rerun()
 
+    if batch.get("rows"):
+        st.download_button(
+            "Download batch results report",
+            data=batch_metadata.build_results_csv(batch),
+            file_name="youtube-metadata-batch-results.csv",
+            mime="text/csv",
+            key=f"batch_results_{fingerprint[:12]}",
+        )
 
 def render_copilot_chat(
     youtube=None,
@@ -1490,6 +1648,10 @@ def render_copilot_chat(
     context = st.session_state.get("strategist_target_reference")
 
     render_batch_metadata_import(youtube, subject, secrets=secrets)
+
+    # Batch mode is a focused workflow; hide any previously loaded single-video context/proposal.
+    if st.session_state.get("batch_metadata_review"):
+        return
 
     # 1. Active Video Context Card
     if context:
