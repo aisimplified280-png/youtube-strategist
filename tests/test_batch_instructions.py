@@ -158,13 +158,13 @@ class TestBatchTextInterpretation(unittest.TestCase):
             (VIDEO_ID_3, "Context vs Memory in LLMs"),
             ("LmNoPqRsTuV", "4 AI Terms Explained Simply"),
         ]
-        text = "\\n\\n".join(
-            f"{index}. https://www.youtube.com/watch?v={video_id}\\nCurrent title: {title}"
+        text = "\n\n".join(
+            f"{index}. https://www.youtube.com/watch?v={video_id}\nCurrent title: {title}"
             for index, (video_id, title) in enumerate(videos, start=1)
         )
         text += (
-            "\\n\\nSHARED INSTRUCTIONS:\\n"
-            "Optimize TITLE ONLY for all four videos.\\n"
+            "\n\nSHARED INSTRUCTIONS:\n"
+            "Optimize TITLE ONLY for all four videos.\n"
             "Preserve every existing description and tag exactly."
         )
         # Simulate a parser model that misreads the shared directive and mistakes
