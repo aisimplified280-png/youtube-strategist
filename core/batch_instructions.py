@@ -10,6 +10,7 @@ import copy
 import json
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Mapping
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -551,10 +552,27 @@ def parse_batch_instructions(
 
     channel_videos = channel_videos or []
     if secrets:
-        groq_key = groq_key or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
-        groq_model = groq_model or secrets.get("GROQ_MODEL") or secrets.get("groq_model")
-        gemini_key = gemini_key or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
-        gemini_model = gemini_model or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model")
+        groq_section = secrets.get("groq") or secrets.get("chatgroq") or {}
+        gemini_section = secrets.get("gemini", {})
+        groq_config = groq_section if isinstance(groq_section, Mapping) else {}
+        gemini_config = gemini_section if isinstance(gemini_section, Mapping) else {}
+        groq_key = (
+            groq_key or groq_config.get("api_key")
+            or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
+            or secrets.get("CHATGROQ_API_KEY") or secrets.get("chatgroq_api_key")
+        )
+        groq_model = (
+            groq_model or groq_config.get("model")
+            or secrets.get("GROQ_MODEL") or secrets.get("groq_model")
+        )
+        gemini_key = (
+            gemini_key or gemini_config.get("api_key")
+            or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
+        )
+        gemini_model = (
+            gemini_model or gemini_config.get("model")
+            or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model")
+        )
 
     # 1. First, extract ALL direct video references appearing in the text
     all_refs = extract_video_references_from_text(text)
