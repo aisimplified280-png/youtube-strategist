@@ -1073,6 +1073,7 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
                 "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
                 "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+                "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
             ):
                 st.session_state.pop(key, None)
             st.rerun()
@@ -1134,6 +1135,15 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 mime="text/csv",
                 key=f"batch_results_{fingerprint[:12]}",
             )
+        if st.button("← Back to chat", key=f"batch_back_to_chat_invalid_{fingerprint[:10]}", use_container_width=True):
+            for key in (
+                "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+                "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+                "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+                "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+            ):
+                st.session_state.pop(key, None)
+            st.rerun()
         return
 
     if flow_step == "review":
@@ -2069,17 +2079,23 @@ def render_copilot_chat(
             )
             st.rerun()
 
-        if not instruction and not uploaded_files:
-            st.stop()
-
         if instruction and st.session_state.get("batch_metadata_review"):
-            active_batch = st.session_state.get("batch_metadata_review")
             urls_in_batch_message = _youtube_references_from_message(instruction)
-            if not _is_batch_intent(instruction, urls_in_batch_message) and not urls_in_batch_message:
+            is_new_channel_scan = _is_channel_opportunity_request(instruction) and not urls_in_batch_message
+            if not _is_batch_intent(instruction, urls_in_batch_message) and (urls_in_batch_message or is_new_channel_scan):
+                # Starting a new single-video or channel-scan task from chat exits the current batch.
+                for key in (
+                    "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+                    "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+                    "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+                    "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+                ):
+                    st.session_state.pop(key, None)
+                context = None
+            elif not _is_batch_intent(instruction, urls_in_batch_message):
                 batch_message = (
-                    "The current batch is still in review. Use **Previous** and **Next** to move through its videos, "
-                    "then use the explicit final approval control below the proposals. "
-                    "To switch to a different task, choose **New chat** at the top. "
+                    "The current batch is still in review. Use **Previous** and **Next**, then the explicit approval control. "
+                    "To return to normal chat while keeping this conversation, click **Back to chat** below the batch. "
                     "A chat message cannot approve or publish a batch."
                 )
                 _append_history(history, "user", instruction)
@@ -2136,23 +2152,6 @@ def render_copilot_chat(
             with st.chat_message("assistant"):
                 st.markdown(summary)
             st.rerun()
-
-        # Detect target video switch or fresh target load
-        # Check if batch approval is being attempted via conversational chat while a batch is active
-        active_batch = st.session_state.get("batch_metadata_review")
-        if active_batch and not urls and not title_reference and not _is_batch_intent(instruction, urls):
-            low_inst = instruction.lower().strip()
-            if any(term in low_inst for term in ("ok go ahead", "approve", "publish", "apply changes", "publish all", "confirm", "go ahead")):
-                batch_msg = (
-                    "To publish batch proposals, use the explicit approval controls in the batch review step below. "
-                    "Select the videos you want, review the exact values, and confirm the final approval checkbox. "
-                    "A chat message cannot bypass the exact approval gate."
-                )
-                _append_history(history, "user", instruction)
-                _append_history(history, "assistant", batch_msg)
-                with st.chat_message("assistant"):
-                    st.warning(batch_msg)
-                st.rerun()
 
         # Check if user message indicates batch request
         if _is_batch_intent(instruction, urls):
