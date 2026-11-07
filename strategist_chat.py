@@ -1189,6 +1189,10 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
     flow_step = st.session_state.get("batch_flow_step", "review")
     if flow_step not in {"review", "approval", "complete"}:
         flow_step = "review"
+    # Older in-session batches may predate the wizard state; show their completed results.
+    if flow_step == "review" and ready_count == 0 and verified_count > 0:
+        flow_step = "complete"
+        st.session_state["batch_flow_step"] = "complete"
 
     st.divider()
     st.markdown("### 📦 Batch workflow")
