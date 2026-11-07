@@ -368,9 +368,6 @@ def inject_theme():
         [data-testid="stChatInput"] button {
             border-radius: 12px;
         }
-        [data-testid="stPopover"] {
-            display: none !important;
-        }
 
         /* Mobile Adjustments (360px - 768px) */
         @media (max-width: 768px) {
