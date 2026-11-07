@@ -114,6 +114,8 @@ def parse_metadata_file(file_name, payload):
     """Parse a metadata change file. Blank metadata cells mean 'keep current value'."""
     if not isinstance(payload, (bytes, bytearray)) or not payload:
         raise ValueError("The uploaded metadata file is empty.")
+    if len(payload) > 2_000_000:
+        raise ValueError("Metadata import files must be 2 MB or smaller.")
     values = _read_table(file_name, bytes(payload))
     if not values:
         raise ValueError("The metadata file has no rows.")
