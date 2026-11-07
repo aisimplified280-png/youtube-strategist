@@ -386,6 +386,13 @@ class TestAIResponseValidation(unittest.TestCase):
                 raise ValueError("Simulated model generation failure on V1")
             return {
                 "title": f"Optimized {video_id}",
+                "recommended_title": f"Optimized {video_id}",
+                "recommendation_reason": "The title is clear and directly relevant to the video.",
+                "title_angles": [
+                    {"angle": "curiosity", "title": f"Why {video_id} Matters for AI"},
+                    {"angle": "value", "title": f"Optimized {video_id}"},
+                    {"angle": "search", "title": f"{video_id} AI Optimization Guide"},
+                ],
                 "description": "Good description",
                 "tags": ["ai"],
             }
