@@ -729,7 +729,7 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         # Streamlit st.secrets nested sections are AttrDict/Mapping objects,
         # not plain dicts. UserDict reproduces that mapping contract.
         secrets = UserDict({
-            "groq": UserDict({
+            "chatgroq": UserDict({
                 "api_key": "groq-test-key",
                 "model": "openai/gpt-oss-120b",
                 "fallback_models": [],
@@ -746,6 +746,12 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         self.assertEqual(result["provider"], "Groq")
         self.assertEqual(result["title"], "How LLM Caching Saves Time")
         self.assertTrue(mock_groq.called)
+
+        # Also accept the common root-level ChatGroq environment-variable name.
+        alias_generator = strategist_chat.build_batch_metadata_generator(
+            secrets={"CHATGROQ_API_KEY": "groq-test-key"}
+        )
+        self.assertIsNotNone(alias_generator)
 
     @patch("core.batch_instructions._interpret_batch_instructions_with_ai")
     def test_batch_parser_reads_nested_streamlit_provider_secrets(self, mock_interpret):
