@@ -15,6 +15,7 @@ import re
 import time
 from copy import deepcopy
 from datetime import date, timedelta
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -881,8 +882,12 @@ def _stage_uploaded_metadata_batch(file_name, payload, youtube):
 def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, youtube=None):
     """Build a single-call AI metadata generator function with Groq primary and Gemini fallback."""
     secrets = secrets or {}
-    groq = secrets.get("groq", {}) if isinstance(secrets.get("groq"), dict) else {}
-    gemini = secrets.get("gemini", {}) if isinstance(secrets.get("gemini"), dict) else {}
+    # Streamlit returns nested TOML sections as AttrDict/Mapping objects,
+    # not necessarily plain dicts. Accept the documented st.secrets shape.
+    groq_section = secrets.get("groq", {})
+    gemini_section = secrets.get("gemini", {})
+    groq = groq_section if isinstance(groq_section, Mapping) else {}
+    gemini = gemini_section if isinstance(gemini_section, Mapping) else {}
 
     groq_key = groq.get("api_key") or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
     groq_model = groq.get("model") or secrets.get("GROQ_MODEL") or secrets.get("groq_model") or DEFAULT_GROQ_MODEL
