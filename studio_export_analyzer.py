@@ -372,28 +372,39 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
     for index, row in enumerate(matrix[:60]):
         mapped = _map_row_columns(row)
         if len(mapped) >= 2:
-            # Prefer a complete report header and break ties by reaching one later in preamble.
+            # Prefer a video-level header with useful metrics. If two rows tie,
+            # choose the first header after the preamble, matching the XLSX reader.
             important = sum(field in mapped for field in (
-                "video_title", "views", "impressions", "ctr",
-                "elapsed_time", "retention_percent", "relative_retention",
+                "video_title", "video_id", "views", "watch_time", "impressions", "ctr",
+                "average_view_percentage", "elapsed_time", "retention_percent",
+                "relative_retention", "content_type",
             ))
-            header_candidates.append((len(mapped) * 10 + important, index, mapped, row))
+            score = len(mapped) * 10 + important
+            header_candidates.append((score, index, mapped, row))
     if not header_candidates:
         raise StudioExportError(
             "I couldn't identify a YouTube Studio report header. Upload an export from "
             "Analytics → Advanced mode / See more → Export current view."
         )
-    _, header_index, columns, header_row = max(header_candidates, key=lambda item: (item[0], item[1]))
+    _, header_index, columns, header_row = max(
+        header_candidates, key=lambda item: (item[0], -item[1])
+    )
     header_labels = {field: header_row[index].strip() for field, index in columns.items()}
+    mapped_column_indices = set(columns.values())
     records = []
     for row in matrix[header_index + 1:]:
         if not any(str(cell).strip() for cell in row):
             continue
         if len(row) <= max(columns.values(), default=-1):
             row = row + [""] * (max(columns.values()) + 1 - len(row))
-        # Ignore repeated header lines and completely unmeasured table footers.
-        if any(_map_header(cell) == field and str(cell).strip()
-               for field, index in columns.items() for cell in [row[index]]):
+        # Ignore repeated header lines only when several mapped cells match their
+        # original header labels. A lone title such as "Views" must remain a data row.
+        repeated_header_cells = sum(
+            1 for index in mapped_column_indices
+            if index < len(row)
+            and _norm(str(row[index] or "")) == _norm(str(header_row[index] or ""))
+        )
+        if repeated_header_cells >= max(2, (len(mapped_column_indices) + 1) // 2):
             continue
         record = {}
         for field, index in columns.items():
@@ -408,13 +419,17 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
                     record["video_title"] = raw or None
             elif field == "video_id":
                 if raw:
-                    match = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", raw)
+                    match = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/|/live/)([A-Za-z0-9_-]{11})", raw)
                     if re.fullmatch(r"[A-Za-z0-9_-]{11}", raw):
                         record["video_id"] = raw
                     elif match:
                         record["video_id"] = match.group(1)
                     else:
-                        record["video_id"] = raw
+                        # Do not create an unmatchable id:title key from a title-like
+                        # Content cell. An explicit Video title column takes precedence.
+                        record["video_id"] = None
+                        if not record.get("video_title") and _norm(label) in {"content", "video"}:
+                            record["video_title"] = raw
                 else:
                     record["video_id"] = None
             elif field in {"date", "traffic_source", "search_term",
@@ -479,8 +494,8 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
         "header_labels": header_labels,
         "fields": sorted(fields),
         "ignored_headers": [
-            str(label).strip() for label in header_row
-            if str(label).strip() and _map_header(label) is None
+            str(label).strip() for index, label in enumerate(header_row)
+            if str(label).strip() and index not in mapped_column_indices
         ],
         "records": records,
     }
@@ -1228,16 +1243,20 @@ def find_video_evidence(index: dict, video_id: str | None, title: str | None) ->
 
 
 def analyze_uploaded_files(file_payloads: list[tuple[str, bytes]]) -> dict:
-    """Analyze uploaded files in-memory and return report structures."""
+    """Analyze uploaded files in-memory and return both reports and per-file failures."""
     reports = []
+    errors = []
     for filename, data in file_payloads:
         try:
             parsed = parse_studio_export(filename, data)
             analyzed = analyze_studio_export(parsed)
             reports.append(analyzed)
-        except Exception:
-            pass
-    return {"reports": reports}
+        except Exception as error:
+            errors.append({
+                "filename": str(filename or "uploaded file"),
+                "error": str(error) or type(error).__name__,
+            })
+    return {"reports": reports, "errors": errors}
 
 
 def build_video_evidence_index(reports: list[dict]) -> dict:
