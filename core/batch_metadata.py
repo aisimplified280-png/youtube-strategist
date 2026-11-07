@@ -100,13 +100,13 @@ def _read_table(file_name, payload):
         decoded = payload.decode("utf-8-sig")
     except UnicodeDecodeError as error:
         raise ValueError("The file must be UTF-8 encoded.") from error
-    sample = decoded[:4096]
-    delimiter = "\t" if suffix == "tsv" else ","
-    if suffix == "csv" and sample:
-        try:
-            delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t").delimiter
-        except csv.Error:
-            delimiter = ","
+    first_line = next((line for line in decoded.splitlines() if line.strip()), "")
+    if suffix == "tsv":
+        delimiter = "\t"
+    elif first_line.count(";") > first_line.count(","):
+        delimiter = ";"
+    else:
+        delimiter = ","
     return list(csv.reader(io.StringIO(decoded), delimiter=delimiter))
 
 
