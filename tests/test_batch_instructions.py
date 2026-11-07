@@ -753,6 +753,38 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         )
         self.assertIsNotNone(alias_generator)
 
+    @patch("strategist_chat._groq_generate")
+    def test_batch_generator_accepts_already_parsed_groq_response(self, mock_groq):
+        payload = {
+            "title": "How LLM Prompt Caching Cuts Repeat Processing",
+            "recommended_title": "How LLM Prompt Caching Cuts Repeat Processing",
+            "recommendation_reason": "It states the practical value in simple language.",
+            "title_angles": [
+                {"angle": "curiosity", "title": "Why Do LLMs Repeat the Same Work?"},
+                {"angle": "value", "title": "How LLM Prompt Caching Cuts Repeat Processing"},
+                {"angle": "search", "title": "LLM Prompt Caching Explained"},
+            ],
+            "description": "A clear explanation of LLM prompt caching and how it reduces repeated processing.",
+            "tags": ["LLM", "prompt caching", "AI system design"],
+            "rationale": "The package is clear, accurate and searchable.",
+        }
+        # The real provider helper returns a dict after decoding the HTTP response.
+        mock_groq.return_value = (copy.deepcopy(payload), "openai/gpt-oss-120b")
+        generator = strategist_chat.build_batch_metadata_generator(
+            secrets={"groq": {"api_key": "groq-test-key", "model": "openai/gpt-oss-120b"}}
+        )
+        result = generator(
+            VIDEO_ID_1,
+            make_snippet(VIDEO_ID_1),
+            fields=["title", "description", "tags"],
+        )
+        self.assertEqual(result["title"], payload["title"])
+        self.assertEqual(result["description"], payload["description"])
+        self.assertEqual(result["tags"], payload["tags"])
+        self.assertEqual(result["provider"], "Groq")
+        self.assertEqual(result["model"], "openai/gpt-oss-120b")
+        mock_groq.assert_called_once()
+
     @patch("core.batch_instructions._interpret_batch_instructions_with_ai")
     def test_batch_parser_reads_nested_streamlit_provider_secrets(self, mock_interpret):
         expected_plan = {

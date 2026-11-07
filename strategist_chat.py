@@ -355,10 +355,14 @@ def fetch_full_video_details(
         raise connector.VideoNotFoundError(f"Could not load video {video_id} from YouTube: {str(e)}")
 
 
-def _extract_json(text: str) -> Dict[str, Any]:
-    """Parse JSON object response from LLM."""
+def _extract_json(text: Any) -> Dict[str, Any]:
+    """Return a parsed JSON object, accepting both raw provider text and decoded objects."""
+    # Provider helpers already decode their HTTP response. Accept dict input so
+    # semantic validation never calls .strip() on an already-parsed object.
+    if isinstance(text, dict):
+        return deepcopy(text)
     if not isinstance(text, str) or not text.strip():
-        raise ValueError("The AI provider returned an empty response.")
+        raise ValueError("The AI provider returned an empty or invalid response.")
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^\`\`\`(?:json)?\s*|\s*\`\`\`$", "", cleaned, flags=re.I)
@@ -965,13 +969,9 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
             "- Tags must be an array of strings, total character count <= 500.\n"
         )
 
-        def _json_validator(raw_text: str):
+        def _json_validator(raw_response: Any):
             try:
-                clean = raw_text.strip()
-                if clean.startswith("```"):
-                    clean = re.sub(r"^```(?:json)?\s*", "", clean)
-                    clean = re.sub(r"\s*```$", "", clean)
-                data = json.loads(clean)
+                data = _extract_json(raw_response)
                 if not isinstance(data, dict):
                     return False, "Response is not a JSON object"
                 if "title" in fields:
@@ -1008,11 +1008,9 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
             validator=_json_validator,
         )
 
-        clean = raw_response.strip()
-        if clean.startswith("```"):
-            clean = re.sub(r"^```(?:json)?\s*", "", clean)
-            clean = re.sub(r"\s*```$", "", clean)
-        parsed_result = json.loads(clean)
+        # Provider helpers return decoded dictionaries. Accept raw JSON text too
+        # for compatibility with provider/test adapters, but never parse a dict again.
+        parsed_result = _extract_json(raw_response)
         parsed_result["provider"] = provider
         parsed_result["model"] = model_used
         return parsed_result
