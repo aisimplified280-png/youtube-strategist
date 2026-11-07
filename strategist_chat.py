@@ -24,6 +24,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 
 import content_memory
 import core.batch_metadata as batch_metadata
+import core.batch_instructions as batch_instructions
 from core.creator_db import record_proposal_decision, get_recent_proposal_history
 import studio_export_analyzer
 import youtube_analytics_connector as connector
@@ -473,14 +474,45 @@ def _groq_generate(api_key: str, model: str, prompt: str, fallback_models=None):
     raise RuntimeError("Groq unavailable: " + "; ".join(failures or ["no usable model configured"]))
 
 
+def _validate_proposal_payload(result, preserve_title=False):
+    """Strict schema and type validation for AI proposal payload."""
+    if not isinstance(result, dict):
+        return False, "Response is not a valid JSON dictionary."
+    title_res = result.get("title")
+    desc_res = result.get("description")
+    tags_res = result.get("tags")
+    if not isinstance(title_res, str) or not title_res.strip():
+        return False, "Proposal is missing a valid non-empty title string."
+    if not isinstance(desc_res, str):
+        return False, "Proposal is missing a valid description string."
+    if not isinstance(tags_res, list) or any(not isinstance(tag, str) for tag in tags_res):
+        return False, "Proposal tags must be a list of strings."
+    if not preserve_title:
+        angles_raw = result.get("title_angles")
+        angles = _extract_title_angles(angles_raw)
+        if len(angles) != 3:
+            return False, f"Expected exactly 3 structured title angles, but got {len(angles)}."
+        angle_titles = {a["title"] for a in angles}
+        if title_res.strip() not in angle_titles:
+            return False, "Proposed title does not match one of the 3 validated title angles."
+    return True, None
+
+
 def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
-                             gemini_key, gemini_model, gemini_fallbacks, prompt):
-    """Prefer Groq; fall back to Gemini if Groq fails."""
+                             gemini_key, gemini_model, gemini_fallbacks, prompt,
+                             validator=None):
+    """Prefer Groq; fall back to Gemini if Groq fails or fails semantic validation."""
     failures = []
     if isinstance(groq_key, str) and groq_key.strip():
         try:
             result, used_model = _groq_generate(groq_key, groq_model, prompt, groq_fallbacks)
-            return result, "Groq", used_model
+            if validator:
+                is_valid, val_err = validator(result)
+                if not is_valid:
+                    failures.append(f"Groq semantic validation failed: {val_err}")
+                    result = None
+            if result is not None:
+                return result, "Groq", used_model
         except (ValueError, RuntimeError, requests.RequestException) as error:
             failures.append(f"Groq: {error}")
     else:
@@ -489,7 +521,13 @@ def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
     if isinstance(gemini_key, str) and gemini_key.strip():
         try:
             result, used_model = _gemini_generate(gemini_key, gemini_model, prompt, gemini_fallbacks)
-            return result, "Gemini", used_model
+            if validator:
+                is_valid, val_err = validator(result)
+                if not is_valid:
+                    failures.append(f"Gemini semantic validation failed: {val_err}")
+                    result = None
+            if result is not None:
+                return result, "Gemini", used_model
         except (ValueError, RuntimeError, requests.RequestException) as error:
             failures.append(f"Gemini: {error}")
     else:
@@ -500,9 +538,15 @@ def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
 
 def _instruction_preserves_title(instruction: str) -> bool:
     """Detect focused edits that explicitly require the current title to stay unchanged."""
+    intent = batch_instructions.parse_instruction_intent_deterministic(instruction)
+    if intent["title_intent"] == "preserve":
+        return True
+    if intent["title_intent"] in {"exact", "optimize"}:
+        return False
     return bool(re.search(
-        r"\b(?:keep|preserve|leave)\s+(?:the\s+)?(?:current|existing)\s+title\b"
-        r"[\s\S]{0,100}?\b(?:unchanged|as[- ]is|intact)\b",
+        r"\b(?:keep|preserve|leave|don't change|do not change|without changing)\s+(?:the\s+)?(?:current|existing)\s+titles?\b"
+        r"[\s\S]{0,100}?\b(?:unchanged|as[- ]is|intact|remain unchanged)\b|"
+        r"\btitles?\s+(?:unchanged|as[- ]is|intact|remain unchanged)\b",
         instruction or "",
         flags=re.IGNORECASE,
     ))
@@ -834,58 +878,257 @@ def _stage_uploaded_metadata_batch(file_name, payload, youtube):
     return batch_metadata.prepare_metadata_batch(youtube, parsed)
 
 
-def render_batch_metadata_import(youtube, subject=None):
-    """Render in-memory spreadsheet review and exact, sequential batch publishing."""
-    with st.expander("📦 Batch Metadata Import (CSV, TSV, Excel)", expanded=False):
-        st.caption(
-            "Upload a file containing video IDs or YouTube URLs and the exact metadata changes. "
-            "Blank metadata cells keep the current value. Import is limited to 25 videos per file."
+def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, youtube=None):
+    """Build a single-call AI metadata generator function with Groq primary and Gemini fallback."""
+    secrets = secrets or {}
+    groq = secrets.get("groq", {}) if isinstance(secrets.get("groq"), dict) else {}
+    gemini = secrets.get("gemini", {}) if isinstance(secrets.get("gemini"), dict) else {}
+
+    groq_key = groq.get("api_key") or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
+    groq_model = groq.get("model") or secrets.get("GROQ_MODEL") or secrets.get("groq_model") or DEFAULT_GROQ_MODEL
+    groq_fallbacks = groq.get("fallback_models", [])
+    if isinstance(groq_fallbacks, str):
+        groq_fallbacks = [i.strip() for i in groq_fallbacks.split(",") if i.strip()]
+
+    gemini_key = gemini.get("api_key") or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
+    gemini_model = gemini.get("model") or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model") or DEFAULT_MODEL
+    gemini_fallbacks = gemini.get("fallback_models", [])
+    if isinstance(gemini_fallbacks, str):
+        gemini_fallbacks = [i.strip() for i in gemini_fallbacks.split(",") if i.strip()]
+
+    if not groq_key and not gemini_key:
+        return None
+
+    def _generator(
+        video_id: str,
+        before: Dict[str, Any],
+        instruction: str = "",
+        fields: Optional[List[str]] = None,
+        transcript: str = "",
+    ) -> Dict[str, Any]:
+        fields = fields or ["title", "description", "tags"]
+        cur_title = before.get("title", "")
+        cur_desc = before.get("description", "")
+        cur_tags = before.get("tags", [])
+
+        prompt = (
+            "You are the YouTube Metadata Optimization Assistant for AI Simplified Lab.\n"
+            "Generate optimized metadata for the following video based on the user's instructions.\n\n"
+            f"Video ID: {video_id}\n"
+            f"Current Title: {cur_title}\n"
+            f"Current Description:\n{cur_desc}\n"
+            f"Current Tags: {json.dumps(cur_tags)}\n"
         )
-        template = "video_id,title,description,tags\n"
-        st.download_button(
-            "Download spreadsheet template",
-            data=template,
-            file_name="youtube-metadata-batch-template.csv",
-            mime="text/csv",
-            key="batch_metadata_template_download",
-        )
-        st.caption(
-            "Use video_id or video_url plus any of title, description, and tags. "
-            "Separate tags with semicolons or pipes; use a JSON array when a tag itself contains a comma. "
-            "Use [] to intentionally clear all tags. The file is kept in session memory only."
-        )
-        uploaded_file = st.file_uploader(
-            "Upload metadata changes",
-            type=["csv", "tsv", "xlsx"],
-            accept_multiple_files=False,
-            key="batch_metadata_uploader",
+        if transcript:
+            prompt += f"\nVideo Transcript (excerpt):\n{transcript[:2500]}\n"
+        if instruction:
+            prompt += f"\nUser Instruction:\n{instruction}\n"
+
+        prompt += (
+            f"\nFields to optimize: {', '.join(fields)}.\n\n"
+            "Return a strictly valid JSON object with:\n"
+            "{\n"
+            '  "title": "<proposed primary title, <= 100 characters>",\n'
+            '  "title_angles": [\n'
+            '    {"angle": "curiosity", "label": "Curiosity Angle", "title": "<title <= 100 chars>"},\n'
+            '    {"angle": "value", "label": "Direct Value", "title": "<title <= 100 chars>"},\n'
+            '    {"angle": "search", "label": "Search/SEO", "title": "<title <= 100 chars>"}\n'
+            "  ],\n"
+            '  "description": "<proposed full description, <= 5000 characters>",\n'
+            '  "tags": ["<tag1>", "<tag2>", ...],\n'
+            '  "rationale": "<brief explanation of strategic choices>"\n'
+            "}\n"
+            "CRITICAL RULES:\n"
+            "- Return JSON only. No markdown formatting, no code fences.\n"
+            "- If title is in fields to optimize, title must be <= 100 chars, and title_angles MUST contain exactly 3 angles: curiosity, value, and search.\n"
+            "- Description must be <= 5000 characters.\n"
+            "- Tags must be an array of strings, total character count <= 500.\n"
         )
 
-        if uploaded_file is not None:
-            payload = uploaded_file.getvalue()
-            fingerprint = hashlib.sha256(payload).hexdigest()
-            active_batch = st.session_state.get("batch_metadata_review")
-            if not active_batch or active_batch.get("fingerprint") != fingerprint:
-                st.session_state.pop("batch_metadata_review", None)
-                st.session_state["batch_metadata_payload"] = payload
-                st.session_state["batch_metadata_file_name"] = uploaded_file.name
-                if youtube is None:
+        def _json_validator(raw_text: str):
+            try:
+                clean = raw_text.strip()
+                if clean.startswith("```"):
+                    clean = re.sub(r"^```(?:json)?\s*", "", clean)
+                    clean = re.sub(r"\s*```$", "", clean)
+                data = json.loads(clean)
+                if not isinstance(data, dict):
+                    return False, "Response is not a JSON object"
+                if "title" in fields:
+                    if not data.get("title") or len(str(data["title"])) > 100:
+                        return False, "Title must be between 1 and 100 characters"
+                    angles = data.get("title_angles")
+                    if not isinstance(angles, list) or len(angles) < 3:
+                        return False, "Must provide 3 title angles"
+                if "description" in fields:
+                    if len(str(data.get("description", ""))) > 5000:
+                        return False, "Description exceeds 5000 characters"
+                if "tags" in fields:
+                    tags = data.get("tags")
+                    if not isinstance(tags, list):
+                        return False, "Tags must be a list"
+                    if sum(len(str(t)) for t in tags) > 500:
+                        return False, "Tags exceed 500 characters"
+                return True, ""
+            except Exception as e:
+                return False, f"JSON parse error: {e}"
+
+        raw_response, provider, model_used = _generate_with_fallbacks(
+            groq_key=groq_key,
+            groq_model=groq_model,
+            groq_fallbacks=groq_fallbacks,
+            gemini_key=gemini_key,
+            gemini_model=gemini_model,
+            gemini_fallbacks=gemini_fallbacks,
+            prompt=prompt,
+            validator=_json_validator,
+        )
+
+        clean = raw_response.strip()
+        if clean.startswith("```"):
+            clean = re.sub(r"^```(?:json)?\s*", "", clean)
+            clean = re.sub(r"\s*```$", "", clean)
+        parsed_result = json.loads(clean)
+        parsed_result["provider"] = provider
+        parsed_result["model"] = model_used
+        return parsed_result
+
+    return _generator
+
+
+def _stage_text_metadata_batch(text, youtube, secrets=None):
+    channel_videos = []
+    if youtube:
+        try:
+            channel_videos = connector.get_owner_channel_videos(youtube, limit=200)
+        except Exception:
+            channel_videos = []
+    ai_gen = build_batch_metadata_generator(secrets, youtube=youtube)
+    parsed_plan = batch_instructions.parse_batch_instructions(
+        text,
+        channel_videos=channel_videos,
+        secrets=secrets,
+    )
+    canonical = batch_metadata.create_batch_from_text_plan(parsed_plan)
+    return batch_metadata.prepare_metadata_batch(
+        youtube,
+        canonical,
+        secrets=secrets,
+        ai_generator=ai_gen,
+    )
+
+
+def _is_batch_intent(message: str, urls: List[str]) -> bool:
+    """Determine if user chat message has batch intent rather than single target (+ optional ref)."""
+    if len(urls) > 2:
+        return True
+    if len(urls) == 2:
+        lower = message.casefold()
+        if any(term in lower for term in ("reference", "compare", "benchmark", "versus", "vs", "model after", "like this", "target and reference")):
+            return False
+        if any(term in lower for term in ("both", "each", "all", "video 1", "video 2", "1.", "2.", "batch", "these videos")):
+            return True
+    return False
+
+
+def render_batch_metadata_import(youtube, subject=None, secrets=None):
+    """Render in-memory batch review and exact, sequential batch publishing for both spreadsheets and text instructions."""
+    with st.expander("📦 Batch Metadata Manager (Text & Spreadsheets)", expanded=st.session_state.get("show_batch_metadata", False)):
+        st.caption(
+            "Batch optimization for up to 25 videos at a time. Upload a spreadsheet or paste ordinary-language instructions. "
+            "All proposals are staged in session memory for your explicit review and approval before anything is published."
+        )
+
+        tab_text, tab_file = st.tabs(["📝 Paste Batch Instructions", "📁 Spreadsheet Import (CSV, TSV, Excel)"])
+
+        with tab_text:
+            st.caption("Paste instructions for one or multiple videos (paragraphs, lists, or structured notes).")
+            batch_text = st.text_area(
+                "Paste Batch Instructions",
+                value=st.session_state.get("batch_text_instructions_input", ""),
+                height=150,
+                placeholder=(
+                    "Example:\n"
+                    "Video 1: https://www.youtube.com/watch?v=cxsx2ZppQvg\n"
+                    "Change the title to 'AI Agents Can Now Design Apps'. Improve the description and use tags: ai, agents.\n\n"
+                    "Video 2: https://www.youtube.com/watch?v=LRWD6rVWH3I\n"
+                    "Improve the title and description. Preserve current tags."
+                ),
+                key="batch_text_input_area",
+            )
+            col_b1, col_b2 = st.columns([2, 1])
+            with col_b1:
+                parse_btn = st.button("Parse & Prepare Review", type="primary", key="btn_parse_batch_instructions")
+            with col_b2:
+                st.caption("Prepares proposals only; does not publish automatically.")
+
+            if parse_btn:
+                if not batch_text.strip():
+                    st.warning("Please paste batch instructions before clicking Parse & Prepare Review.")
+                elif youtube is None:
                     st.warning("Connect YouTube with the channel-owner account before staging metadata changes.")
                 else:
                     try:
-                        with st.spinner("Checking video ownership and loading current YouTube metadata..."):
-                            staged = _stage_uploaded_metadata_batch(uploaded_file.name, payload, youtube)
-                        staged["fingerprint"] = fingerprint
-                        staged["file_name"] = uploaded_file.name
-                        staged["review_revision"] = 1
+                        with st.spinner("Parsing instructions, checking video ownership, and staging proposals..."):
+                            staged = _stage_text_metadata_batch(batch_text, youtube, secrets=secrets)
                         st.session_state["batch_metadata_review"] = staged
+                        st.session_state["batch_text_instructions_input"] = batch_text
+                        st.session_state["show_batch_metadata"] = True
                         st.success(
-                            f"Loaded {len(staged['rows'])} rows: {staged.get('ready_count', 0)} ready, "
+                            f"Identified {len(staged['rows'])} videos: {staged.get('ready_count', 0)} ready for review, "
                             f"{staged.get('invalid_count', 0)} invalid, "
                             f"{staged.get('no_change_count', 0)} unchanged."
                         )
+                        st.rerun()
                     except Exception as error:
-                        st.error(f"Could not read or stage this file: {error}")
+                        st.error(f"Could not parse or stage instructions: {error}")
+
+        with tab_file:
+            template = "video_id,title,description,tags\n"
+            st.download_button(
+                "Download spreadsheet template",
+                data=template,
+                file_name="youtube-metadata-batch-template.csv",
+                mime="text/csv",
+                key="batch_metadata_template_download",
+            )
+            st.caption(
+                "Use video_id or video_url plus any of title, description, and tags. "
+                "Separate tags with semicolons or pipes; use a JSON array when a tag itself contains a comma. "
+                "Use [] to intentionally clear all tags. Kept in session memory only."
+            )
+            uploaded_file = st.file_uploader(
+                "Upload metadata changes",
+                type=["csv", "tsv", "xlsx"],
+                accept_multiple_files=False,
+                key="batch_metadata_uploader",
+            )
+            if uploaded_file is not None:
+                payload = uploaded_file.getvalue()
+                fingerprint = hashlib.sha256(payload).hexdigest()
+                active_batch = st.session_state.get("batch_metadata_review")
+                if not active_batch or active_batch.get("fingerprint") != fingerprint:
+                    st.session_state.pop("batch_metadata_review", None)
+                    st.session_state["batch_metadata_payload"] = payload
+                    st.session_state["batch_metadata_file_name"] = uploaded_file.name
+                    if youtube is None:
+                        st.warning("Connect YouTube with the channel-owner account before staging metadata changes.")
+                    else:
+                        try:
+                            with st.spinner("Checking video ownership and loading current YouTube metadata..."):
+                                staged = _stage_uploaded_metadata_batch(uploaded_file.name, payload, youtube)
+                            staged["fingerprint"] = fingerprint
+                            staged["file_name"] = uploaded_file.name
+                            staged["review_revision"] = 1
+                            st.session_state["batch_metadata_review"] = staged
+                            st.session_state["show_batch_metadata"] = True
+                            st.success(
+                                f"Loaded {len(staged['rows'])} rows: {staged.get('ready_count', 0)} ready, "
+                                f"{staged.get('invalid_count', 0)} invalid, "
+                                f"{staged.get('no_change_count', 0)} unchanged."
+                            )
+                        except Exception as error:
+                            st.error(f"Could not read or stage this file: {error}")
 
         batch = st.session_state.get("batch_metadata_review")
         if not batch:
@@ -898,7 +1141,8 @@ def render_batch_metadata_import(youtube, subject=None):
         invalid_count = sum(row.get("status") == "invalid" for row in rows)
         unchanged_count = sum(row.get("status") == "no_change" for row in rows)
 
-        st.caption(f"File: {batch.get('file_name', 'metadata upload')}")
+        st.divider()
+        st.caption(f"Source: **{batch.get('file_name', 'Batch proposals')}** (in session memory only)")
         metric_cols = st.columns(4)
         metric_cols[0].metric("Ready", ready_count)
         metric_cols[1].metric("Verified", verified_count)
@@ -908,15 +1152,24 @@ def render_batch_metadata_import(youtube, subject=None):
         if st.button(
             "Refresh current YouTube metadata and review again",
             key=f"batch_refresh_{batch.get('fingerprint', '')[:12]}",
-            disabled=youtube is None or not st.session_state.get("batch_metadata_payload"),
+            disabled=youtube is None,
         ):
             try:
                 with st.spinner("Reloading current metadata and rebuilding the review..."):
-                    refreshed = _stage_uploaded_metadata_batch(
-                        st.session_state["batch_metadata_file_name"],
-                        st.session_state["batch_metadata_payload"],
-                        youtube,
-                    )
+                    if batch.get("is_text_batch") and st.session_state.get("batch_text_instructions_input"):
+                        refreshed = _stage_text_metadata_batch(
+                            st.session_state["batch_text_instructions_input"],
+                            youtube,
+                            secrets=secrets,
+                        )
+                    elif st.session_state.get("batch_metadata_payload"):
+                        refreshed = _stage_uploaded_metadata_batch(
+                            st.session_state.get("batch_metadata_file_name", "upload"),
+                            st.session_state["batch_metadata_payload"],
+                            youtube,
+                        )
+                    else:
+                        refreshed = batch
                 refreshed["fingerprint"] = batch.get("fingerprint")
                 refreshed["file_name"] = batch.get("file_name")
                 refreshed["review_revision"] = int(batch.get("review_revision", 1)) + 1
@@ -926,60 +1179,154 @@ def render_batch_metadata_import(youtube, subject=None):
                 st.error(f"Could not refresh this batch: {error}")
 
         st.caption(
-            "Review the exact before-and-after values for every ready row. Ready rows are selected by default; "
-            "uncheck any row you do not want to publish. Invalid and unchanged rows cannot be selected."
+            "Review the exact before-and-after values for every video. "
+            "All rows start unselected; explicitly check each video you want to publish. "
+            "You can edit any proposed field directly before approving."
         )
+
         selected_ids = []
         for index, row in enumerate(rows, start=1):
             heading = row.get("proposed_title") or row.get("title") or row.get("current_title") or "Untitled proposal"
-            with st.container(border=True):
-                top_cols = st.columns([4, 1])
-                with top_cols[0]:
-                    st.markdown(f"**{index}. {html.escape(str(heading))}**")
-                    st.caption(f"Spreadsheet row {row.get('row_number', index + 1)}")
-                with top_cols[1]:
-                    st.caption(row.get("status", "unknown").replace("_", " ").upper())
+            vid = row.get("video_id") or ""
+            video_url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
+            status = row.get("status", "unknown")
 
-                if row.get("status") == "ready" and not row.get("attempted"):
+            with st.container(border=True):
+                top_cols = st.columns([3, 1])
+                with top_cols[0]:
+                    if video_url:
+                        st.markdown(f"**{index}. [{html.escape(str(heading))}]({video_url})**")
+                    else:
+                        st.markdown(f"**{index}. {html.escape(str(heading))}**")
+                    if vid:
+                        st.caption(f"Video ID: `{vid}`")
+                with top_cols[1]:
+                    badge_color = {
+                        "ready": "#34D399",
+                        "verified": "#10B981",
+                        "failed": "#EF4444",
+                        "invalid": "#F59E0B",
+                        "no_change": "#94A3B8",
+                    }.get(status, "#64748B")
+                    st.markdown(
+                        f'<div style="text-align: right;"><span style="color: {badge_color}; font-weight: 700; font-size: 0.85rem; border: 1px solid {badge_color}; border-radius: 4px; padding: 2px 8px;">{status.replace("_", " ").upper()}</span></div>',
+                        unsafe_allow_html=True,
+                    )
+
+                if status == "ready" and not row.get("attempted"):
                     selected = st.checkbox(
                         "Include in approved batch",
-                        value=True,
-                        key=f"batch_select_{batch.get('fingerprint', '')[:16]}_{row.get('video_id')}",
+                        value=False,
+                        key=f"batch_select_{batch.get('fingerprint', '')[:16]}_{vid}_{index}",
                     )
                     if selected:
-                        selected_ids.append(row.get("video_id"))
-                elif row.get("status") == "verified":
+                        selected_ids.append(vid)
+                elif status == "verified":
                     st.success("YouTube read-back verified this update.")
-                elif row.get("status") == "failed":
-                    st.error("Not verified. Do not retry blindly; refresh the file to re-read current metadata.")
+                elif status == "failed":
+                    st.error("Update failed or read-back did not match. Stale metadata check prevented partial write.")
                 else:
                     for error in row.get("errors", []):
                         st.warning(error)
 
-                if row.get("status") in {"ready", "verified", "failed"}:
-                    with st.expander("Review exact current and proposed metadata"):
-                        st.markdown("**Current title**")
+                if status in {"ready", "verified", "failed", "no_change"}:
+                    changed_fields = row.get("changed_fields", [])
+                    st.caption("Changed fields: " + (", ".join(f"**{f}**" for f in changed_fields) if changed_fields else "None"))
+
+                    comp_c1, comp_c2 = st.columns(2)
+                    with comp_c1:
+                        st.markdown("**Current Title**")
                         st.code(row.get("before", {}).get("title", ""), language=None)
-                        st.markdown("**Proposed title**")
-                        st.code(row.get("proposed", {}).get("title", ""), language=None)
-                        st.markdown("**Current description**")
-                        st.code(row.get("before", {}).get("description", ""), language=None)
-                        st.markdown("**Proposed description**")
-                        st.code(row.get("proposed", {}).get("description", ""), language=None)
-                        st.markdown("**Current separate tags**")
-                        st.write(row.get("before", {}).get("tags", []))
-                        st.markdown("**Proposed separate tags**")
-                        st.write(row.get("proposed", {}).get("tags", []))
-                        st.caption("Changed fields: " + ", ".join(row.get("changed_fields", [])))
+                    with comp_c2:
+                        st.markdown(f"**Proposed Title** {'*(Modified)*' if 'title' in changed_fields else ''}")
+                        if status == "ready" and not row.get("attempted"):
+                            new_t = st.text_input(
+                                "Edit Proposed Title",
+                                value=row.get("proposed", {}).get("title", ""),
+                                key=f"edit_t_{batch.get('fingerprint', '')[:8]}_{vid}_{index}",
+                                label_visibility="collapsed",
+                            )
+                            if new_t != row.get("proposed", {}).get("title", ""):
+                                row["proposed"]["title"] = new_t
+                                batch_metadata.revalidate_batch_row(row)
+                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                                st.session_state["batch_metadata_review"] = batch
+                                st.rerun()
+                        else:
+                            st.code(row.get("proposed", {}).get("title", ""), language=None)
+
+                    if row.get("title_angles") and status == "ready":
+                        angles = row.get("title_angles", [])
+                        st.caption("Select an alternative validated title angle:")
+                        angle_cols = st.columns(len(angles))
+                        for a_idx, angle in enumerate(angles):
+                            with angle_cols[a_idx]:
+                                if st.button(f"{angle.get('label', angle.get('angle', 'Option'))}: {angle.get('title', '')[:35]}...", key=f"btn_ang_{vid}_{a_idx}_{index}"):
+                                    row["proposed"]["title"] = angle["title"]
+                                    batch_metadata.revalidate_batch_row(row)
+                                    batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                                    st.session_state["batch_metadata_review"] = batch
+                                    st.rerun()
+
+                    desc_c1, desc_c2 = st.columns(2)
+                    with desc_c1:
+                        st.markdown("**Current Description**")
+                        st.text_area("Current Desc", value=row.get("before", {}).get("description", ""), height=100, disabled=True, key=f"cur_d_{vid}_{index}", label_visibility="collapsed")
+                    with desc_c2:
+                        st.markdown(f"**Proposed Description** {'*(Modified)*' if 'description' in changed_fields else ''}")
+                        if status == "ready" and not row.get("attempted"):
+                            new_d = st.text_area(
+                                "Edit Proposed Desc",
+                                value=row.get("proposed", {}).get("description", ""),
+                                height=100,
+                                key=f"edit_d_{batch.get('fingerprint', '')[:8]}_{vid}_{index}",
+                                label_visibility="collapsed",
+                            )
+                            if new_d != row.get("proposed", {}).get("description", ""):
+                                row["proposed"]["description"] = new_d
+                                batch_metadata.revalidate_batch_row(row)
+                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                                st.session_state["batch_metadata_review"] = batch
+                                st.rerun()
+                        else:
+                            st.text_area("Prop Desc", value=row.get("proposed", {}).get("description", ""), height=100, disabled=True, key=f"view_prop_d_{vid}_{index}", label_visibility="collapsed")
+
+                    tags_c1, tags_c2 = st.columns(2)
+                    with tags_c1:
+                        st.markdown("**Current Separate Tags**")
+                        st.caption(", ".join(row.get("before", {}).get("tags", [])) or "*(none)*")
+                    with tags_c2:
+                        st.markdown(f"**Proposed Separate Tags** {'*(Modified)*' if 'tags' in changed_fields else ''}")
+                        if status == "ready" and not row.get("attempted"):
+                            new_tags_str = st.text_input(
+                                "Edit Tags",
+                                value=", ".join(row.get("proposed", {}).get("tags", [])),
+                                key=f"edit_tags_{batch.get('fingerprint', '')[:8]}_{vid}_{index}",
+                                label_visibility="collapsed",
+                            )
+                            parsed_new_tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
+                            if parsed_new_tags != row.get("proposed", {}).get("tags", []):
+                                row["proposed"]["tags"] = parsed_new_tags
+                                batch_metadata.revalidate_batch_row(row)
+                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                                st.session_state["batch_metadata_review"] = batch
+                                st.rerun()
+                        else:
+                            st.caption(", ".join(row.get("proposed", {}).get("tags", [])) or "*(none)*")
+
                 if row.get("result_message"):
-                    st.caption(row["result_message"])
+                    st.info(row["result_message"])
+
+        st.divider()
+        st.markdown(f"**Selected for publishing:** {len(selected_ids)} of {ready_count} ready video proposals")
 
         if selected_ids:
-            selected_key = "_".join(selected_ids)
-            approval_key = (
-                f"batch_exact_approval_{batch.get('fingerprint', '')[:12]}_"
-                f"{batch.get('review_revision', 1)}_{len(selected_ids)}_{selected_key}"
+            selected_rows = [r for r in rows if r.get("video_id") in selected_ids and r.get("status") == "ready"]
+            approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(
+                selected_rows,
+                review_revision=batch.get("review_revision", 1),
             )
+            approval_key = f"batch_approval_box_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}"
             approved = st.checkbox(
                 f"I reviewed and approve the exact metadata shown for all {len(selected_ids)} selected videos.",
                 value=False,
@@ -990,7 +1337,7 @@ def render_batch_metadata_import(youtube, subject=None):
                 type="primary",
                 use_container_width=True,
                 disabled=not approved or youtube is None,
-                key=f"batch_publish_{batch.get('fingerprint', '')[:12]}_{len(selected_ids)}_{selected_key}",
+                key=f"batch_publish_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}",
             )
             if publish_clicked:
                 success_count = 0
@@ -1001,6 +1348,17 @@ def render_batch_metadata_import(youtube, subject=None):
                         if row.get("video_id") not in selected_set or row.get("status") != "ready":
                             continue
                         row["attempted"] = True
+                        expected_digest = connector.metadata_proposal_digest(
+                            row["video_id"],
+                            row["before"],
+                            row["proposed"],
+                        )
+                        if row.get("digest") != expected_digest:
+                            row["status"] = "failed"
+                            row["result_message"] = "Publish blocked: proposal digest mismatch. Proposal was modified after approval."
+                            failure_count += 1
+                            continue
+
                         try:
                             result = connector.apply_approved_dashboard_proposal(
                                 youtube,
@@ -1041,6 +1399,8 @@ def render_batch_metadata_import(youtube, subject=None):
                 else:
                     st.success(f"Batch finished: all {success_count} selected updates were verified.")
                 st.rerun()
+        else:
+            st.info("Check 'Include in approved batch' on one or more ready videos above to enable approval and publishing.")
 
         if batch.get('rows'):
             report = batch_metadata.build_results_csv(batch)
@@ -1077,7 +1437,7 @@ def render_copilot_chat(
 
     context = st.session_state.get("strategist_target_reference")
 
-    render_batch_metadata_import(youtube, subject)
+    render_batch_metadata_import(youtube, subject, secrets=secrets)
 
     # 1. Active Video Context Card
     if context:
@@ -1526,6 +1886,22 @@ def render_copilot_chat(
             st.rerun()
 
         # Detect target video switch or fresh target load
+        # Check if user message indicates batch request
+        if _is_batch_intent(instruction, urls):
+            try:
+                staged = _stage_text_metadata_batch(instruction, youtube, secrets=secrets)
+                st.session_state["batch_metadata_review"] = staged
+                st.session_state["batch_text_instructions_input"] = instruction
+                st.session_state["show_batch_metadata"] = True
+                msg = f"Identified batch request for {len(staged['rows'])} videos. Proposals have been staged in the Batch Metadata section above for your review."
+                _append_history(history, "user", instruction)
+                _append_history(history, "assistant", msg)
+                st.rerun()
+            except Exception as batch_err:
+                _append_history(history, "user", instruction)
+                _append_history(history, "assistant", f"Could not prepare batch: {batch_err}")
+                st.rerun()
+
         is_new_video_selection = len(urls) >= 2 or (bool(urls) and not context) or bool(title_reference)
         if len(urls) == 1 and context:
             try:

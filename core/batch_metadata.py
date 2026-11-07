@@ -1,4 +1,9 @@
-"""Spreadsheet import and safe staging for approval-gated YouTube metadata batches."""
+"""Spreadsheet and text-based batch metadata staging and publishing.
+
+Shares one unified pipeline for Excel/CSV/TSV imports and natural-language text instructions.
+Enforces strict ownership checks, conditional title angles, fail-closed approval,
+sequential publishing, and post-write verification.
+"""
 
 import csv
 import hashlib
@@ -6,6 +11,7 @@ import io
 import json
 import re
 from copy import deepcopy
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from openpyxl import load_workbook
@@ -67,8 +73,7 @@ def parse_tags_cell(value):
     if value is None:
         return None
     if isinstance(value, list):
-        tags = [str(item).strip() for item in value if str(item).strip()]
-        return tags
+        return [str(item).strip() for item in value if str(item).strip()]
     text = _cell_text(value)
     if not text:
         return None
@@ -153,6 +158,9 @@ def parse_metadata_file(file_name, payload):
             "title": None,
             "description": None,
             "tags": None,
+            "title_intent": "unmentioned",
+            "description_intent": "unmentioned",
+            "tags_intent": "unmentioned",
             "status": "invalid",
             "errors": [],
             "attempted": False,
@@ -168,9 +176,20 @@ def parse_metadata_file(file_name, payload):
         tags_value = get_cell("tags")
 
         record["title"] = title or None
+        if record["title"] is not None:
+            record["title_intent"] = "exact"
+            record["exact_title"] = record["title"]
+
         record["description"] = description if description else None
+        if record["description"] is not None:
+            record["description_intent"] = "exact"
+            record["exact_description"] = record["description"]
+
         try:
             record["tags"] = parse_tags_cell(tags_value)
+            if record["tags"] is not None:
+                record["tags_intent"] = "exact"
+                record["exact_tags"] = record["tags"]
         except ValueError as error:
             record["errors"].append(str(error))
 
@@ -202,7 +221,99 @@ def parse_metadata_file(file_name, payload):
     }
 
 
-def prepare_metadata_batch(youtube, parsed_batch):
+def create_batch_from_text_plan(text_plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a parsed natural-language batch plan into canonical batch structure."""
+    rows = []
+    videos = text_plan.get("videos", [])
+
+    for idx, item in enumerate(videos, start=1):
+        record = {
+            "row_number": idx,
+            "video_id": item.get("video_id"),
+            "reference": item.get("reference", ""),
+            "title": item.get("exact_title"),
+            "description": item.get("exact_description"),
+            "tags": item.get("exact_tags"),
+            "title_intent": item.get("title_intent", "unmentioned"),
+            "exact_title": item.get("exact_title"),
+            "description_intent": item.get("description_intent", "unmentioned"),
+            "exact_description": item.get("exact_description"),
+            "tags_intent": item.get("tags_intent", "unmentioned"),
+            "exact_tags": item.get("exact_tags"),
+            "fields_requested": item.get("fields_requested", []),
+            "original_instruction": item.get("original_instruction", ""),
+            "title_angles": [],
+            "rationale": [],
+            "status": "parsed" if (item.get("video_id") and not item.get("errors")) else "invalid",
+            "errors": list(item.get("errors", [])),
+            "attempted": False,
+        }
+        rows.append(record)
+
+    raw_text = text_plan.get("raw_text", "")
+    fingerprint = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    return {
+        "file_name": "Pasted text instructions",
+        "fingerprint": fingerprint,
+        "rows": rows,
+        "is_text_batch": True,
+    }
+
+
+def revalidate_batch_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Recompute changed fields, validate against YouTube constraints, and update row digest and status."""
+    before = row.get("before") or {}
+    proposed = row.get("proposed") or {}
+    video_id = row.get("video_id") or ""
+
+    changed_fields = [
+        field for field in ("title", "description", "tags")
+        if before.get(field, [] if field == "tags" else "") != proposed.get(field, [] if field == "tags" else "")
+    ]
+    row["changed_fields"] = changed_fields
+
+    if not changed_fields:
+        row["status"] = "no_change"
+        row["errors"] = ["The proposed values are identical to the current YouTube metadata."]
+        row.pop("digest", None)
+        return row
+
+    try:
+        connector._validate_metadata(proposed)
+    except (connector.MetadataValidationError, ValueError) as error:
+        row["status"] = "invalid"
+        row["errors"] = [str(error)]
+        row.pop("digest", None)
+        return row
+
+    row["status"] = "ready"
+    row["errors"] = []  # Clear stale errors on fix
+    row["proposed_title"] = proposed.get("title", "")
+    row["digest"] = connector.metadata_proposal_digest(video_id, before, proposed)
+    return row
+
+
+def compute_batch_approval_fingerprint(
+    selected_rows: List[Dict[str, Any]],
+    review_revision: int = 1,
+) -> str:
+    """Calculate a stable cryptographic fingerprint of all currently selected proposals and revision state."""
+    hasher = hashlib.sha256()
+    hasher.update(str(review_revision).encode("utf-8"))
+    for row in sorted(selected_rows, key=lambda r: str(r.get("video_id", ""))):
+        vid = str(row.get("video_id", ""))
+        digest = str(row.get("digest", ""))
+        hasher.update(vid.encode("utf-8"))
+        hasher.update(digest.encode("utf-8"))
+    return hasher.hexdigest()[:16]
+
+
+def prepare_metadata_batch(
+    youtube,
+    parsed_batch: Dict[str, Any],
+    secrets: Optional[Dict[str, Any]] = None,
+    ai_generator: Optional[Any] = None,
+) -> Dict[str, Any]:
     """Fetch owner-verified live snippets in API batches and stage immutable row proposals."""
     if youtube is None:
         raise RuntimeError("Connect the verified YouTube owner account before reviewing metadata changes.")
@@ -254,37 +365,112 @@ def prepare_metadata_batch(youtube, parsed_batch):
             continue
 
         proposed = deepcopy(before)
-        if row.get("title") is not None:
-            proposed["title"] = row["title"]
-        if row.get("description") is not None:
-            proposed["description"] = row["description"]
-        if row.get("tags") is not None:
-            proposed["tags"] = deepcopy(row["tags"])
 
-        changed_fields = [
-            field for field in ("title", "description", "tags")
-            if before.get(field, [] if field == "tags" else "") != proposed.get(field, [] if field == "tags" else "")
-        ]
-        if not changed_fields:
-            row["status"] = "no_change"
-            row["errors"].append("The proposed values are identical to the current YouTube metadata.")
-            continue
+        # Check which fields need AI optimization
+        t_intent = row.get("title_intent")
+        d_intent = row.get("description_intent")
+        tags_intent = row.get("tags_intent")
 
-        try:
-            connector._validate_metadata(proposed)
-        except connector.MetadataValidationError as error:
+        fields_to_optimize = []
+        if t_intent == "optimize":
+            fields_to_optimize.append("title")
+        if d_intent == "optimize":
+            fields_to_optimize.append("description")
+        if tags_intent == "optimize":
+            fields_to_optimize.append("tags")
+
+        ai_result = {}
+        if fields_to_optimize:
+            if not ai_generator:
+                row["status"] = "invalid"
+                row["errors"].append("AI optimization was requested for this video, but no AI generator is available.")
+                continue
+
+            try:
+                transcript = ""
+                if youtube:
+                    try:
+                        transcript = connector.fetch_video_transcript(youtube, video_id)
+                    except Exception:
+                        transcript = ""
+
+                import inspect
+                sig = inspect.signature(ai_generator)
+                has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                gen_kwargs = {
+                    "video_id": video_id,
+                    "before": before,
+                    "instruction": row.get("original_instruction", ""),
+                }
+                if "fields" in sig.parameters or has_var_keyword:
+                    gen_kwargs["fields"] = fields_to_optimize
+                if "transcript" in sig.parameters or has_var_keyword:
+                    gen_kwargs["transcript"] = transcript
+
+                ai_result = ai_generator(**gen_kwargs)
+                if not isinstance(ai_result, dict):
+                    row["status"] = "invalid"
+                    row["errors"].append("AI generator did not return a valid metadata proposal dictionary.")
+                    continue
+            except Exception as err:
+                row["status"] = "invalid"
+                row["errors"].append(f"AI metadata optimization failed: {err}")
+                continue
+
+        # 1. Title handling
+        if t_intent == "exact" or (t_intent == "unmentioned" and row.get("title") is not None):
+            proposed["title"] = row.get("exact_title") or row.get("title") or before.get("title", "")
+            row["title_angles"] = []
+        elif t_intent == "optimize":
+            opt_title = ai_result.get("title") or ""
+            proposed["title"] = opt_title
+            angles = ai_result.get("title_angles")
+            if angles is not None:
+                if not isinstance(angles, list) or len(angles) < 3:
+                    row["status"] = "invalid"
+                    row["errors"].append("AI title optimization did not produce the required 3 title angles (curiosity, value, search).")
+                else:
+                    row["title_angles"] = angles
+            else:
+                row["title_angles"] = []
+            if ai_result.get("rationale"):
+                row["rationale"] = ai_result.get("rationale")
+        else:
+            proposed["title"] = before.get("title", "")
+            row["title_angles"] = []
+
+        # 2. Description handling
+        if d_intent == "exact" or (d_intent == "unmentioned" and row.get("description") is not None):
+            proposed["description"] = row.get("exact_description") if row.get("exact_description") is not None else row.get("description")
+        elif d_intent == "clear":
+            proposed["description"] = ""
+        elif d_intent == "optimize":
+            proposed["description"] = ai_result.get("description", before.get("description", ""))
+        else:
+            proposed["description"] = before.get("description", "")
+
+        # 3. Tags handling
+        if tags_intent == "exact" or (tags_intent == "unmentioned" and row.get("tags") is not None):
+            proposed["tags"] = deepcopy(row.get("exact_tags") if row.get("exact_tags") is not None else row.get("tags"))
+        elif tags_intent == "clear":
+            proposed["tags"] = []
+        elif tags_intent == "optimize":
+            proposed["tags"] = deepcopy(ai_result.get("tags", before.get("tags", [])))
+        else:
+            proposed["tags"] = deepcopy(before.get("tags", []))
+
+        if row.get("errors"):
             row["status"] = "invalid"
-            row["errors"].append(str(error))
             continue
 
         row["before"] = before
         row["proposed"] = proposed
-        row["changed_fields"] = changed_fields
-        row["digest"] = connector.metadata_proposal_digest(video_id, before, proposed)
         row["current_title"] = before.get("title", "")
         row["proposed_title"] = proposed.get("title", "")
-        row["status"] = "ready"
         row["attempted"] = False
+
+        # Revalidate snippet, compute changed fields, check constraints and digest
+        revalidate_batch_row(row)
 
     parsed_batch["ready_count"] = sum(row.get("status") == "ready" for row in rows)
     parsed_batch["invalid_count"] = sum(row.get("status") == "invalid" for row in rows)
@@ -292,21 +478,59 @@ def prepare_metadata_batch(youtube, parsed_batch):
     return parsed_batch
 
 
-def build_results_csv(batch):
-    """Create a safe CSV summary for the completed batch."""
+def build_results_csv(batch: Dict[str, Any]) -> str:
+    """Create an expanded, safe CSV summary report for the completed batch."""
     output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["video_id", "video_url", "title", "status", "changed_fields", "details"])
+    writer = csv.writer(output, quoting=csv.QUOTE_MINIMAL)
+    headers = [
+        "video_id",
+        "video_url",
+        "current_title",
+        "proposed_title",
+        "current_description",
+        "proposed_description",
+        "current_tags",
+        "proposed_tags",
+        "changed_fields",
+        "status",
+        "verification_result",
+        "details",
+    ]
+    writer.writerow(headers)
+
     for row in batch.get("rows", []):
         video_id = row.get("video_id") or ""
-        title = row.get("proposed_title") or row.get("title") or row.get("current_title") or ""
+        video_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else ""
+        before = row.get("before") or {}
+        proposed = row.get("proposed") or {}
+
+        cur_title = before.get("title") or row.get("current_title") or ""
+        prop_title = proposed.get("title") or row.get("proposed_title") or row.get("title") or ""
+
+        cur_desc = before.get("description", "")
+        prop_desc = proposed.get("description", "")
+
+        cur_tags = "; ".join(before.get("tags") or [])
+        prop_tags = "; ".join(proposed.get("tags") or row.get("tags") or [])
+
+        changed = ", ".join(row.get("changed_fields", []))
+        status = row.get("status", "")
+
+        verif_result = "Verified" if status == "verified" else ("Failed" if status == "failed" else "Pending")
         details = "; ".join(row.get("errors", [])) or row.get("result_message", "")
+
         writer.writerow([
             video_id,
-            f"https://www.youtube.com/watch?v={video_id}" if video_id else "",
-            title,
-            row.get("status", ""),
-            ", ".join(row.get("changed_fields", [])),
+            video_url,
+            cur_title,
+            prop_title,
+            cur_desc,
+            prop_desc,
+            cur_tags,
+            prop_tags,
+            changed,
+            status,
+            verif_result,
             details,
         ])
     return output.getvalue()
