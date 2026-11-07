@@ -248,7 +248,7 @@ def fetch_full_video_details(
     """Retrieve complete video snippet, content details, statistics, and ownership state."""
     if youtube is None:
         raise ConnectionError(
-            "YouTube is not connected. Connect your YouTube account in Settings to load channel videos."
+            "YouTube is not connected. Use the YouTube button at the top to connect your channel before loading videos."
         )
 
     try:
