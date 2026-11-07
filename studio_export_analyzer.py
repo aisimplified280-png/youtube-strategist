@@ -22,9 +22,14 @@ HEADER_ALIASES = {
     "video_id": {
         "video id", "content id", "video identifier", "videoid", "youtube video id",
     },
+    # Only a true report-date dimension may define date_start/date_end.
+    # Publication metadata belongs in its own field and must never label metric periods.
     "date": {
-        "date", "day", "report date", "date published", "video publish time",
-        "video published time", "publish date",
+        "date", "day", "report date", "reporting date", "reporting day",
+    },
+    "published_at": {
+        "date published", "published date", "publish date", "video publish time",
+        "video published time", "published at", "upload date",
     },
     "views": {"views", "engaged views", "organic views", "view count", "total views"},
     "watch_time": {
@@ -432,7 +437,7 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
                             record["video_title"] = raw
                 else:
                     record["video_id"] = None
-            elif field in {"date", "traffic_source", "search_term",
+            elif field in {"date", "published_at", "traffic_source", "search_term",
                          "geography", "age_group", "gender", "device_type", "content_type"}:
                 record[field] = raw or None
             elif field == "elapsed_time":
@@ -561,9 +566,13 @@ def _video_summaries(records):
         item["average_view_percentage"] = _weighted_average(
             rows, "average_view_percentage", "views"
         )
+        # Report period comes only from a true Date/Day dimension.
+        # Video publish time is descriptive metadata, not a measurement date.
         date_values = [row.get("date") for row in rows if row.get("date")]
         item["date_start"] = min(date_values) if date_values else None
         item["date_end"] = max(date_values) if date_values else None
+        published_values = [row.get("published_at") for row in rows if row.get("published_at")]
+        item["published_at"] = published_values[0] if published_values else None
         content_types = [row.get("content_type") for row in rows if row.get("content_type")]
         item["content_type"] = content_types[0] if content_types else None
         result.append(item)
@@ -1169,6 +1178,8 @@ def build_evidence_index(reports: list[dict]) -> dict:
                 "subscribers_lost": row.get("subscribers_lost"),
                 "date_start": row.get("date_start"),
                 "date_end": row.get("date_end"),
+                "published_at": row.get("published_at"),
+                "report_period_known": bool(row.get("date_start") or row.get("date_end")),
                 "retention_curve": matched_curve[:80],
                 "recommendations": matching_recommendations,
             }
