@@ -160,5 +160,70 @@ class UISmokeTests(unittest.TestCase):
         self.assertTrue(has_blocked_warning, f"Expected blocked writes warning, got: {warnings}")
 
 
+    def test_batch_review_uses_sequential_wizard_and_hides_single_video_workspace(self):
+        """An active batch shows one proposal at a time and suppresses the old single-video editor."""
+        first = {
+            "video_id": "AbCdEfGhI12",
+            "status": "ready",
+            "before": {
+                "title": "Current title one",
+                "description": "Current description one",
+                "tags": ["current", "one"],
+            },
+            "proposed": {
+                "title": "Proposed title one",
+                "description": "Proposed description one",
+                "tags": ["proposed", "one"],
+            },
+            "changed_fields": ["title", "description", "tags"],
+            "errors": [],
+            "attempted": False,
+        }
+        second = {
+            "video_id": "JkLmNoPqR34",
+            "status": "ready",
+            "before": {
+                "title": "Current title two",
+                "description": "Current description two",
+                "tags": ["current", "two"],
+            },
+            "proposed": {
+                "title": "Proposed title two",
+                "description": "Proposed description two",
+                "tags": ["proposed", "two"],
+            },
+            "changed_fields": ["title", "description", "tags"],
+            "errors": [],
+            "attempted": False,
+        }
+        batch = {
+            "rows": [first, second],
+            "file_name": "Pasted batch instructions",
+            "fingerprint": "ui-smoke-batch",
+            "review_revision": 1,
+            "is_text_batch": True,
+        }
+        at = AppTest.from_file(APP_PATH, default_timeout=15)
+        at.session_state["batch_metadata_review"] = batch
+        at.session_state["batch_flow_step"] = "review"
+        at.session_state["batch_selected_video_ids"] = []
+        at.session_state["batch_review_index"] = 0
+
+        with patch("core.auth.verify_owner_access", return_value=(True, "owner123", None)):
+            at.run()
+
+        self.assertFalse(at.exception, f"Batch wizard raised unexpectedly: {at.exception}")
+        markdown_texts = [item.value for item in at.markdown]
+        code_values = [item.value for item in at.code]
+        visible_text = "\\n".join(markdown_texts + code_values)
+        self.assertTrue(any("Batch workflow" in value for value in markdown_texts))
+        self.assertIn("Current title one", visible_text)
+        self.assertNotIn("Current title two", visible_text)
+        button_labels = [button.label for button in at.button]
+        self.assertIn("Next →", button_labels)
+        self.assertNotIn("Switch Video", button_labels)
+        self.assertEqual(len(at.chat_input), 0, "Single-video chat must stay out of the active batch flow")
+
+
 if __name__ == "__main__":
     unittest.main()
