@@ -150,6 +150,101 @@ class TestBatchTextInterpretation(unittest.TestCase):
         self.assertEqual(v1["exact_title"], "Overridden Title For V1")
         self.assertEqual(v2["title_intent"], "preserve")
 
+
+    def test_explicit_shared_title_only_intent_overrides_incomplete_ai_plan(self):
+        videos = [
+            (VIDEO_ID_1, "Why RAG Fails at Real-Time Travel Booking"),
+            (VIDEO_ID_2, "LLM Prompt Caching Explained: Exact-Match vs. Semantic Cache"),
+            (VIDEO_ID_3, "Context vs Memory in LLMs"),
+            ("LmNoPqRsTuV", "4 AI Terms Explained Simply"),
+        ]
+        text = "\n\n".join(
+            f"{index}. https://www.youtube.com/watch?v={video_id}\nCurrent title: {title}"
+            for index, (video_id, title) in enumerate(videos, start=1)
+        )
+        text += (
+            "\n\nSHARED INSTRUCTIONS:\n"
+            "Optimize TITLE ONLY for all four videos.\n"
+            "Preserve every existing description and tag exactly."
+        )
+        extracted_refs = batch_instructions.extract_video_references_from_text(text)
+        self.assertEqual(
+            [ref["video_id"] for ref in extracted_refs],
+            [video_id for video_id, _ in videos],
+        )
+        # Simulate a parser model that misreads the shared directive and mistakes
+        # the first current title for an exact replacement while leaving the rest blank.
+        ai_plan = {
+            "videos": [
+                {
+                    "reference": f"https://www.youtube.com/watch?v={video_id}",
+                    "video_id": video_id,
+                    "title_intent": "exact" if index == 0 else "unmentioned",
+                    "exact_title": title if index == 0 else None,
+                    "description_intent": "unmentioned",
+                    "exact_description": None,
+                    "tags_intent": "unmentioned",
+                    "exact_tags": None,
+                    "video_specific_instructions": "",
+                }
+                for index, (video_id, title) in enumerate(videos)
+            ]
+        }
+
+        with patch.object(
+            batch_instructions,
+            "_interpret_batch_instructions_with_ai",
+            return_value=ai_plan,
+        ):
+            plan = batch_instructions.parse_batch_instructions(text, groq_key="test-key")
+
+        self.assertEqual(plan["total_identified"], 4)
+        for row, (_, title) in zip(plan["videos"], videos):
+            self.assertEqual(row["title_intent"], "optimize")
+            self.assertIsNone(row["exact_title"])
+            self.assertEqual(row["description_intent"], "preserve")
+            self.assertEqual(row["tags_intent"], "preserve")
+            self.assertEqual(row["context_title"], title)
+            self.assertEqual(row["fields_requested"], ["title"])
+            self.assertIn("Optimize TITLE ONLY", row["original_instruction"])
+            self.assertNotIn("Current title:", row["original_instruction"])
+
+        snippets = {
+            video_id: make_snippet(video_id, title=title)
+            for video_id, title in videos
+        }
+        youtube = FakeYoutube(snippets)
+
+        def fake_generator(video_id, before, instruction="", fields=None, transcript=""):
+            curiosity = f"Why Developers Keep Getting {video_id} Wrong"
+            value = f"How {video_id} Makes AI Systems Work Better"
+            search = f"How {video_id} Works: A Simple AI Guide"
+            return {
+                "title": value,
+                "recommended_title": value,
+                "recommendation_reason": "It gives viewers a clear practical outcome.",
+                "title_angles": [
+                    {"angle": "curiosity", "title": curiosity},
+                    {"angle": "value", "title": value},
+                    {"angle": "search", "title": search},
+                ],
+                "description": before["description"],
+                "tags": before["tags"],
+            }
+
+        canonical = batch_metadata.create_batch_from_text_plan(plan)
+        staged = batch_metadata.prepare_metadata_batch(
+            youtube,
+            canonical,
+            ai_generator=fake_generator,
+        )
+        self.assertEqual(staged["ready_count"], 4)
+        for row in staged["rows"]:
+            self.assertEqual(row["status"], "ready")
+            self.assertEqual(row["changed_fields"], ["title"])
+            self.assertEqual(row["proposed"]["description"], row["before"]["description"])
+            self.assertEqual(row["proposed"]["tags"], row["before"]["tags"])
+
     def test_exact_title_bypasses_title_angle_generation(self):
         canonical = batch_metadata.create_batch_from_text_plan({
             "raw_text": "sample",
