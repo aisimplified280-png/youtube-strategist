@@ -19,6 +19,8 @@ from core.analytics_logic import calculate_custom_period, get_period_preset
 from core.llm import LLMRouter, LLMError, parse_proposal_json
 from core.metadata_apply import compute_proposal_digest
 from core.oauth import MEMORY_SCOPES, YOUTUBE_SCOPES, create_purpose_state
+import studio_export_analyzer
+import youtube_analytics_connector as connector
 
 
 class TestAuditRegressions(unittest.TestCase):
@@ -256,6 +258,104 @@ class TestAuditRegressions(unittest.TestCase):
         self.assertEqual(mem_cfg["redirect_uri"], "https://app.streamlit.app/sheets_callback")
         self.assertNotEqual(yt_cfg["client_id"], mem_cfg["client_id"])
 
+
+
+    def test_studio_export_keeps_lifetime_metrics_and_exact_video_id(self):
+        csv_data = (
+            "Video title,Video ID,Views,Watch time (minutes),Impressions,"
+            "Impressions click-through rate (%),Average percentage viewed (%)\\n"
+            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",'
+            "Cp0TzsGEbB0,883,36,11205,2.01,51.22\\n"
+        ).encode("utf-8")
+        parsed = studio_export_analyzer.parse_studio_export("Table data.csv", csv_data)
+        report = studio_export_analyzer.analyze_studio_export(parsed)
+        index = studio_export_analyzer.build_evidence_index([report])
+        evidence = studio_export_analyzer.find_video_evidence(
+            index,
+            "Cp0TzsGEbB0",
+            "FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",
+        )
+        self.assertEqual(report["video_count"], 1)
+        self.assertEqual(report["video_rows"][0]["video_id"], "Cp0TzsGEbB0")
+        self.assertEqual(report["video_rows"][0]["views"], 883)
+        self.assertEqual(report["video_rows"][0]["impressions"], 11205)
+        self.assertAlmostEqual(report["video_rows"][0]["ctr_percent"], 2.01)
+        self.assertEqual(evidence[0]["views"], 883)
+        self.assertIsNone(evidence[0]["date_start"])
+        self.assertIsNone(evidence[0]["date_end"])
+
+    def test_studio_content_title_is_not_misclassified_as_video_id(self):
+        csv_data = (
+            "Content,Video title,Views,Impressions,Impressions click-through rate (%)\\n"
+            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",'
+            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",883,11205,2.01\\n'
+        ).encode("utf-8")
+        parsed = studio_export_analyzer.parse_studio_export("Reach export.csv", csv_data)
+        report = studio_export_analyzer.analyze_studio_export(parsed)
+        self.assertIsNone(report["video_rows"][0]["video_id"])
+        self.assertEqual(
+            report["video_rows"][0]["video_title"],
+            "FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",
+        )
+
+    def test_studio_upload_parser_returns_per_file_errors(self):
+        result = studio_export_analyzer.analyze_uploaded_files([
+            ("good.csv", b"Video title,Views\\nExample,5\\n"),
+            ("bad.csv", b"not a report\\n"),
+        ])
+        self.assertEqual(len(result["reports"]), 1)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["filename"], "bad.csv")
+        self.assertTrue(result["errors"][0]["error"])
+
+    def test_opportunity_scan_separates_lifetime_and_period_views(self):
+        video_id = "Cp0TzsGEbB0"
+        detail = {
+            "id": video_id,
+            "snippet": {
+                "title": "FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",
+                "publishedAt": "2025-10-28T18:08:05Z",
+            },
+            "contentDetails": {"duration": "PT57S"},
+            "statistics": {"viewCount": "883"},
+        }
+        metric = {
+            "video": video_id,
+            "views": 0,
+            "estimatedMinutesWatched": 0,
+            "averageViewDuration": 0,
+            "averageViewPercentage": 0,
+            "likes": 0,
+            "comments": 0,
+            "shares": 0,
+            "subscribersGained": 0,
+        }
+        studio_index = {
+            f"id:{video_id}": [{
+                "source_file": "Reach export.csv",
+                "report_type": "video_performance",
+                "views": 883,
+                "impressions": 11205,
+                "ctr_percent": 2.01,
+                "date_start": None,
+                "date_end": None,
+            }]
+        }
+        with patch.object(connector, "_list_recent_upload_ids", return_value=[video_id]), \\
+             patch.object(connector, "_fetch_video_details", return_value={video_id: detail}), \\
+             patch.object(connector, "_query_analytics", return_value=[metric]), \\
+             patch.object(connector, "rank_channel_video_opportunities", side_effect=lambda rows, limit=10: rows):
+            scan = connector.discover_video_opportunities(
+                object(), object(), studio_index, days=28, limit=10
+            )
+        self.assertEqual(len(scan["recommendations"]), 1)
+        item = scan["recommendations"][0]
+        self.assertEqual(item["views"], 0)
+        self.assertEqual(item["lifetime_views"], 883)
+        self.assertIsNone(item["average_view_percentage"])
+        self.assertEqual(item["impressions"], 11205)
+        self.assertAlmostEqual(item["ctr_percent"], 2.01)
+        self.assertFalse(item["ctr_period_known"])
 
 if __name__ == "__main__":
     unittest.main()
