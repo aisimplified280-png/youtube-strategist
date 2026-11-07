@@ -298,6 +298,16 @@ class TestAuditRegressions(unittest.TestCase):
             "FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",
         )
 
+    def test_studio_content_column_preserves_valid_video_id(self):
+        csv_data = (
+            "Content,Video title,Views,Impressions,Impressions click-through rate (%)\n"
+            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",883,11205,2.01\n'
+        ).encode("utf-8")
+        parsed = studio_export_analyzer.parse_studio_export("Content table.csv", csv_data)
+        report = studio_export_analyzer.analyze_studio_export(parsed)
+        self.assertEqual(report["video_rows"][0]["video_id"], "Cp0TzsGEbB0")
+        self.assertEqual(report["video_rows"][0]["video_title"], "FREE ChatGPT Pro for 1 Year in India!")
+
     def test_studio_upload_parser_returns_per_file_errors(self):
         result = studio_export_analyzer.analyze_uploaded_files([
             ("good.csv", b"Video title,Views\nExample,5\n"),
