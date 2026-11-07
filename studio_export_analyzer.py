@@ -1217,6 +1217,7 @@ def build_evidence_index(reports: list[dict]) -> dict:
                 ][:5]
             evidence = {
                 "source_file": filename,
+                "source_sheet": report.get("source_sheet"),
                 "report_type": report.get("report_type"),
                 "content_type": row.get("content_type"),
                 "views": row.get("views"),
@@ -1295,7 +1296,7 @@ def find_video_evidence(index: dict, video_id: str | None, title: str | None) ->
     for key in keys:
         for item in index.get(key, []):
             identity = (
-                item.get("source_file"), item.get("date_start"),
+                item.get("source_file"), item.get("source_sheet"), item.get("date_start"),
                 item.get("date_end"), item.get("report_type"),
             )
             if identity not in seen:
@@ -1305,14 +1306,22 @@ def find_video_evidence(index: dict, video_id: str | None, title: str | None) ->
 
 
 def analyze_uploaded_files(file_payloads: list[tuple[str, bytes]]) -> dict:
-    """Analyze uploaded files in-memory and return both reports and per-file failures."""
+    """Analyze every supported report/worksheet in-memory and return explicit failures."""
     reports = []
     errors = []
     for filename, data in file_payloads:
         try:
-            parsed = parse_studio_export(filename, data)
-            analyzed = analyze_studio_export(parsed)
-            reports.append(analyzed)
+            parsed_reports, parse_errors = parse_studio_exports(filename, data)
+            errors.extend(parse_errors)
+            for parsed in parsed_reports:
+                try:
+                    reports.append(analyze_studio_export(parsed))
+                except Exception as error:
+                    errors.append({
+                        "filename": str(filename or "uploaded file"),
+                        "source_sheet": parsed.get("source_sheet"),
+                        "error": str(error) or type(error).__name__,
+                    })
         except Exception as error:
             errors.append({
                 "filename": str(filename or "uploaded file"),
@@ -1334,10 +1343,14 @@ def index_uploaded_studio_files(files) -> tuple[dict, list[str]]:
         name = getattr(f, "name", "uploaded_file")
         data = f.getvalue() if hasattr(f, "getvalue") else f
         try:
-            parsed = parse_studio_export(name, data)
-            analyzed = analyze_studio_export(parsed)
-            reports.append(analyzed)
-            notices.append(f"Parsed {name}")
+            parsed_reports, parse_errors = parse_studio_exports(name, data)
+            for parsed in parsed_reports:
+                reports.append(analyze_studio_export(parsed))
+                sheet_label = f" · {parsed.get('source_sheet')}" if parsed.get("source_sheet") else ""
+                notices.append(f"Parsed {name}{sheet_label}")
+            for error in parse_errors:
+                sheet_label = f" · {error.get('source_sheet')}" if error.get("source_sheet") else ""
+                notices.append(f"Failed {name}{sheet_label}: {error.get('error')}")
         except Exception as e:
             notices.append(f"Failed {name}: {str(e)}")
     return build_evidence_index(reports), notices
