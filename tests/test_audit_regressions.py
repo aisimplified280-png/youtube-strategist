@@ -263,9 +263,9 @@ class TestAuditRegressions(unittest.TestCase):
     def test_studio_export_keeps_lifetime_metrics_and_exact_video_id(self):
         csv_data = (
             "Video title,Video ID,Views,Watch time (minutes),Impressions,"
-            "Impressions click-through rate (%),Average percentage viewed (%)\\n"
+            "Impressions click-through rate (%),Average percentage viewed (%)\n"
             '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",'
-            "Cp0TzsGEbB0,883,36,11205,2.01,51.22\\n"
+            "Cp0TzsGEbB0,883,36,11205,2.01,51.22\n"
         ).encode("utf-8")
         parsed = studio_export_analyzer.parse_studio_export("Table data.csv", csv_data)
         report = studio_export_analyzer.analyze_studio_export(parsed)
@@ -286,9 +286,9 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_studio_content_title_is_not_misclassified_as_video_id(self):
         csv_data = (
-            "Content,Video title,Views,Impressions,Impressions click-through rate (%)\\n"
+            "Content,Video title,Views,Impressions,Impressions click-through rate (%)\n"
             '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",'
-            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",883,11205,2.01\\n'
+            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",883,11205,2.01\n'
         ).encode("utf-8")
         parsed = studio_export_analyzer.parse_studio_export("Reach export.csv", csv_data)
         report = studio_export_analyzer.analyze_studio_export(parsed)
@@ -300,8 +300,8 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_studio_upload_parser_returns_per_file_errors(self):
         result = studio_export_analyzer.analyze_uploaded_files([
-            ("good.csv", b"Video title,Views\\nExample,5\\n"),
-            ("bad.csv", b"not a report\\n"),
+            ("good.csv", b"Video title,Views\nExample,5\n"),
+            ("bad.csv", b"not a report\n"),
         ])
         self.assertEqual(len(result["reports"]), 1)
         self.assertEqual(len(result["errors"]), 1)
@@ -341,10 +341,12 @@ class TestAuditRegressions(unittest.TestCase):
                 "date_end": None,
             }]
         }
-        with patch.object(connector, "_list_recent_upload_ids", return_value=[video_id]), \\
-             patch.object(connector, "_fetch_video_details", return_value={video_id: detail}), \\
-             patch.object(connector, "_query_analytics", return_value=[metric]), \\
-             patch.object(connector, "rank_channel_video_opportunities", side_effect=lambda rows, limit=10: rows):
+        with (
+            patch.object(connector, "_list_recent_upload_ids", return_value=[video_id]),
+            patch.object(connector, "_fetch_video_details", return_value={video_id: detail}),
+            patch.object(connector, "_query_analytics", return_value=[metric]),
+            patch.object(connector, "rank_channel_video_opportunities", side_effect=lambda rows, limit=10: rows),
+        ):
             scan = connector.discover_video_opportunities(
                 object(), object(), studio_index, days=28, limit=10
             )
