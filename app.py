@@ -187,8 +187,8 @@ def render_app():
         except Exception:
             youtube = None
 
-    # Top Header Bar (Claude-inspired)
-    col_brand, col_status = st.columns([3, 2], vertical_alignment="center")
+    # Persistent chat header: New chat + one direct YouTube connection control.
+    col_brand, col_new_chat, col_youtube = st.columns([3.8, 1.2, 1.7], vertical_alignment="center")
     with col_brand:
         st.markdown(
             """
@@ -204,42 +204,33 @@ def render_app():
             unsafe_allow_html=True,
         )
 
-    with col_status:
-        sub_c1, sub_c2 = st.columns([1, 1], vertical_alignment="center")
-        with sub_c1:
-            if yt_creds:
-                st.markdown('<span class="status-pill status-connected">● Connected</span>', unsafe_allow_html=True)
-            elif st.session_state.get("youtube_needs_reconnect"):
-                st.markdown('<span class="status-pill status-reconnect">● Reconnect Needed</span>', unsafe_allow_html=True)
+    with col_new_chat:
+        if st.button("＋ New chat", key="btn_new_chat", use_container_width=True):
+            for key in (
+                "strategist_chat_history", "strategist_target_reference", "strategist_chat_proposal",
+                "strategist_chat_digest", "copilot_proposal", "copilot_approval_digest",
+                "strategist_pending_instruction", "copilot_initial_optimization",
+                "copilot_channel_opportunities", "batch_metadata_review", "batch_metadata_payload",
+                "batch_metadata_file_name", "batch_text_instructions_input", "batch_text_input_area",
+                "batch_metadata_uploader", "batch_selected_video_ids", "batch_review_index",
+                "batch_flow_step", "show_batch_metadata", "studio_export_evidence_index",
+                "show_studio_uploader", "session_audit_records",
+            ):
+                st.session_state.pop(key, None)
+            st.rerun()
+
+    with col_youtube:
+        if yt_creds:
+            st.button("✓ YouTube Connected", key="youtube_connected_button", disabled=True, use_container_width=True)
+        else:
+            yt_auth_url, yt_err = get_auth_url("youtube", subject, secrets)
+            if yt_auth_url:
+                btn_text = "↻ Reconnect YouTube" if st.session_state.get("youtube_needs_reconnect") else "▶ Connect YouTube"
+                st.link_button(btn_text, yt_auth_url, type="primary", use_container_width=True)
             else:
-                st.markdown('<span class="status-pill status-disconnected">● Disconnected</span>', unsafe_allow_html=True)
-
-        with sub_c2:
-            with st.popover("⚙️ Settings", use_container_width=True):
-                st.markdown("#### Settings & Access")
-                st.caption("Owner Access: Verified")
-                st.divider()
-
-                st.markdown("**YouTube Integration**")
-                if yt_creds:
-                    st.success("YouTube Data API connected")
-                    if st.button("Disconnect YouTube", key="pop_disconnect_yt", use_container_width=True):
-                        if token_store and subject:
-                            token_store.delete_credentials(subject, "youtube")
-                        st.session_state.pop("youtube_credentials_json", None)
-                        st.rerun()
-                else:
-                    yt_auth_url, yt_err = get_auth_url("youtube", subject, secrets)
-                    if yt_auth_url:
-                        btn_text = "🔄 Reconnect YouTube" if st.session_state.get("youtube_needs_reconnect") else "▶ Connect YouTube"
-                        st.link_button(btn_text, yt_auth_url, type="primary", use_container_width=True)
-                    elif yt_err:
-                        st.caption(f"OAuth notice: {yt_err}")
-
-                st.divider()
-                st.markdown("**Long-term Memory**")
-                st.caption("Private Google Sheets memory is planned as a future enhancement and is not required for batch metadata operations.")
-
+                st.button("Connect YouTube", key="youtube_connect_unavailable", disabled=True, use_container_width=True)
+                if yt_err:
+                    st.caption(yt_err)
 
     # Canonical Single-Chat Landing
     render_copilot_chat(
