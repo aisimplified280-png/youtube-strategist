@@ -202,6 +202,42 @@ class TestBatchTextInterpretation(unittest.TestCase):
             self.assertEqual(row["context_title"], title)
             self.assertEqual(row["fields_requested"], ["title"])
 
+        snippets = {
+            video_id: make_snippet(video_id, title=title)
+            for video_id, title in videos
+        }
+        youtube = FakeYoutube(snippets)
+
+        def fake_generator(video_id, before, instruction="", fields=None, transcript=""):
+            curiosity = f"Why Developers Keep Getting {video_id} Wrong"
+            value = f"How {video_id} Makes AI Systems Work Better"
+            search = f"How {video_id} Works: A Simple AI Guide"
+            return {
+                "title": value,
+                "recommended_title": value,
+                "recommendation_reason": "It gives viewers a clear practical outcome.",
+                "title_angles": [
+                    {"angle": "curiosity", "title": curiosity},
+                    {"angle": "value", "title": value},
+                    {"angle": "search", "title": search},
+                ],
+                "description": before["description"],
+                "tags": before["tags"],
+            }
+
+        canonical = batch_metadata.create_batch_from_text_plan(plan)
+        staged = batch_metadata.prepare_metadata_batch(
+            youtube,
+            canonical,
+            ai_generator=fake_generator,
+        )
+        self.assertEqual(staged["ready_count"], 4)
+        for row in staged["rows"]:
+            self.assertEqual(row["status"], "ready")
+            self.assertEqual(row["changed_fields"], ["title"])
+            self.assertEqual(row["proposed"]["description"], row["before"]["description"])
+            self.assertEqual(row["proposed"]["tags"], row["before"]["tags"])
+
     def test_exact_title_bypasses_title_angle_generation(self):
         canonical = batch_metadata.create_batch_from_text_plan({
             "raw_text": "sample",
