@@ -372,8 +372,8 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_video_publish_time_is_not_report_period(self):
         csv_data = (
-            "Video ID,Video title,Video publish time,Views,Impressions,CTR\\n"
-            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\\n'
+            "Video ID,Video title,Video publish time,Views,Impressions,CTR\n"
+            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\n'
         ).encode("utf-8")
         parsed = studio_export_analyzer.parse_studio_export("Video data.csv", csv_data)
         report = studio_export_analyzer.analyze_studio_export(parsed)
@@ -391,8 +391,8 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_date_published_alias_is_also_not_report_period(self):
         csv_data = (
-            "Video ID,Video title,Date published,Views,Impressions,CTR\\n"
-            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\\n'
+            "Video ID,Video title,Date published,Views,Impressions,CTR\n"
+            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\n'
         ).encode("utf-8")
         parsed = studio_export_analyzer.parse_studio_export("Video data.csv", csv_data)
         report = studio_export_analyzer.analyze_studio_export(parsed)
@@ -403,9 +403,9 @@ class TestAuditRegressions(unittest.TestCase):
 
     def test_actual_date_dimension_still_builds_studio_report_period(self):
         csv_data = (
-            "Date,Video ID,Video title,Views,Impressions,CTR\\n"
-            '2026-11-01,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2,100,2.0\\n'
-            '2026-11-02,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",3,150,4.0\\n'
+            "Date,Video ID,Video title,Views,Impressions,CTR\n"
+            '2026-11-01,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2,100,2.0\n'
+            '2026-11-02,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",3,150,4.0\n'
         ).encode("utf-8")
         parsed = studio_export_analyzer.parse_studio_export("Daily video data.csv", csv_data)
         report = studio_export_analyzer.analyze_studio_export(parsed)
