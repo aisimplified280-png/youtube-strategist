@@ -8,6 +8,7 @@ Single chat assistant for optimizing existing YouTube videos and Shorts:
 5. Exact-proposal approval gate with pre-write stale check and post-write verification.
 """
 
+import hashlib
 import html
 import json
 import re
@@ -22,6 +23,7 @@ import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
 
 import content_memory
+import core.batch_metadata as batch_metadata
 from core.creator_db import record_proposal_decision, get_recent_proposal_history
 import studio_export_analyzer
 import youtube_analytics_connector as connector
@@ -820,6 +822,237 @@ def update_studio_attachments(
         return {}, None
 
 
+
+def _batch_audit_callback(entry):
+    records = st.session_state.setdefault("session_audit_records", [])
+    records.insert(0, entry)
+    del records[50:]
+
+
+def _stage_uploaded_metadata_batch(file_name, payload, youtube):
+    parsed = batch_metadata.parse_metadata_file(file_name, payload)
+    return batch_metadata.prepare_metadata_batch(youtube, parsed)
+
+
+def render_batch_metadata_import(youtube, subject=None):
+    """Render in-memory spreadsheet review and exact, sequential batch publishing."""
+    with st.expander("📦 Batch Metadata Import (CSV, TSV, Excel)", expanded=False):
+        st.caption(
+            "Upload a file containing video IDs or YouTube URLs and the exact metadata changes. "
+            "Blank metadata cells keep the current value. Import is limited to 25 videos per file."
+        )
+        template = "video_id,title,description,tags\n"
+        st.download_button(
+            "Download spreadsheet template",
+            data=template,
+            file_name="youtube-metadata-batch-template.csv",
+            mime="text/csv",
+            key="batch_metadata_template_download",
+        )
+        st.caption(
+            "Use video_id or video_url plus any of title, description, and tags. "
+            "Separate tags with semicolons or pipes; use a JSON array when a tag itself contains a comma. "
+            "Use [] to intentionally clear all tags. The file is kept in session memory only."
+        )
+        uploaded_file = st.file_uploader(
+            "Upload metadata changes",
+            type=["csv", "tsv", "xlsx"],
+            accept_multiple_files=False,
+            key="batch_metadata_uploader",
+        )
+
+        if uploaded_file is not None:
+            payload = uploaded_file.getvalue()
+            fingerprint = hashlib.sha256(payload).hexdigest()
+            active_batch = st.session_state.get("batch_metadata_review")
+            if not active_batch or active_batch.get("fingerprint") != fingerprint:
+                st.session_state.pop("batch_metadata_review", None)
+                st.session_state["batch_metadata_payload"] = payload
+                st.session_state["batch_metadata_file_name"] = uploaded_file.name
+                if youtube is None:
+                    st.warning("Connect YouTube with the channel-owner account before staging metadata changes.")
+                else:
+                    try:
+                        with st.spinner("Checking video ownership and loading current YouTube metadata..."):
+                            staged = _stage_uploaded_metadata_batch(uploaded_file.name, payload, youtube)
+                        staged["fingerprint"] = fingerprint
+                        staged["file_name"] = uploaded_file.name
+                        staged["review_revision"] = 1
+                        st.session_state["batch_metadata_review"] = staged
+                        st.success(
+                            f"Loaded {len(staged['rows'])} rows: {staged.get('ready_count', 0)} ready, "
+                            f"{staged.get('invalid_count', 0)} invalid, "
+                            f"{staged.get('no_change_count', 0)} unchanged."
+                        )
+                    except Exception as error:
+                        st.error(f"Could not read or stage this file: {error}")
+
+        batch = st.session_state.get("batch_metadata_review")
+        if not batch:
+            return
+
+        rows = batch.get("rows", [])
+        ready_count = sum(row.get("status") == "ready" for row in rows)
+        verified_count = sum(row.get("status") == "verified" for row in rows)
+        failed_count = sum(row.get("status") == "failed" for row in rows)
+        invalid_count = sum(row.get("status") == "invalid" for row in rows)
+        unchanged_count = sum(row.get("status") == "no_change" for row in rows)
+
+        st.caption(f"File: {batch.get('file_name', 'metadata upload')}")
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Ready", ready_count)
+        metric_cols[1].metric("Verified", verified_count)
+        metric_cols[2].metric("Failed", failed_count)
+        metric_cols[3].metric("Skipped", invalid_count + unchanged_count)
+
+        if st.button(
+            "Refresh current YouTube metadata and review again",
+            key=f"batch_refresh_{batch.get('fingerprint', '')[:12]}",
+            disabled=youtube is None or not st.session_state.get("batch_metadata_payload"),
+        ):
+            try:
+                with st.spinner("Reloading current metadata and rebuilding the review..."):
+                    refreshed = _stage_uploaded_metadata_batch(
+                        st.session_state["batch_metadata_file_name"],
+                        st.session_state["batch_metadata_payload"],
+                        youtube,
+                    )
+                refreshed["fingerprint"] = batch.get("fingerprint")
+                refreshed["file_name"] = batch.get("file_name")
+                refreshed["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                st.session_state["batch_metadata_review"] = refreshed
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not refresh this batch: {error}")
+
+        st.caption(
+            "Review the exact before-and-after values for every ready row. Ready rows are selected by default; "
+            "uncheck any row you do not want to publish. Invalid and unchanged rows cannot be selected."
+        )
+        selected_ids = []
+        for index, row in enumerate(rows, start=1):
+            heading = row.get("proposed_title") or row.get("title") or row.get("current_title") or "Untitled proposal"
+            with st.container(border=True):
+                top_cols = st.columns([4, 1])
+                with top_cols[0]:
+                    st.markdown(f"**{index}. {html.escape(str(heading))}**")
+                    st.caption(f"Spreadsheet row {row.get('row_number', index + 1)}")
+                with top_cols[1]:
+                    st.caption(row.get("status", "unknown").replace("_", " ").upper())
+
+                if row.get("status") == "ready" and not row.get("attempted"):
+                    selected = st.checkbox(
+                        "Include in approved batch",
+                        value=True,
+                        key=f"batch_select_{batch.get('fingerprint', '')[:16]}_{row.get('video_id')}",
+                    )
+                    if selected:
+                        selected_ids.append(row.get("video_id"))
+                elif row.get("status") == "verified":
+                    st.success("YouTube read-back verified this update.")
+                elif row.get("status") == "failed":
+                    st.error("Not verified. Do not retry blindly; refresh the file to re-read current metadata.")
+                else:
+                    for error in row.get("errors", []):
+                        st.warning(error)
+
+                if row.get("status") in {"ready", "verified", "failed"}:
+                    with st.expander("Review exact current and proposed metadata"):
+                        st.markdown("**Current title**")
+                        st.code(row.get("before", {}).get("title", ""), language=None)
+                        st.markdown("**Proposed title**")
+                        st.code(row.get("proposed", {}).get("title", ""), language=None)
+                        st.markdown("**Current description**")
+                        st.code(row.get("before", {}).get("description", ""), language=None)
+                        st.markdown("**Proposed description**")
+                        st.code(row.get("proposed", {}).get("description", ""), language=None)
+                        st.markdown("**Current separate tags**")
+                        st.write(row.get("before", {}).get("tags", []))
+                        st.markdown("**Proposed separate tags**")
+                        st.write(row.get("proposed", {}).get("tags", []))
+                        st.caption("Changed fields: " + ", ".join(row.get("changed_fields", [])))
+                if row.get("result_message"):
+                    st.caption(row["result_message"])
+
+        if selected_ids:
+            selected_key = "_".join(selected_ids)
+            approval_key = (
+                f"batch_exact_approval_{batch.get('fingerprint', '')[:12]}_"
+                f"{batch.get('review_revision', 1)}_{len(selected_ids)}_{selected_key}"
+            )
+            approved = st.checkbox(
+                f"I reviewed and approve the exact metadata shown for all {len(selected_ids)} selected videos.",
+                value=False,
+                key=approval_key,
+            )
+            publish_clicked = st.button(
+                f"Approve & Publish {len(selected_ids)} Selected Videos",
+                type="primary",
+                use_container_width=True,
+                disabled=not approved or youtube is None,
+                key=f"batch_publish_{batch.get('fingerprint', '')[:12]}_{len(selected_ids)}_{selected_key}",
+            )
+            if publish_clicked:
+                success_count = 0
+                failure_count = 0
+                selected_set = set(selected_ids)
+                with st.spinner("Publishing selected videos sequentially and verifying each YouTube update..."):
+                    for row in rows:
+                        if row.get("video_id") not in selected_set or row.get("status") != "ready":
+                            continue
+                        row["attempted"] = True
+                        try:
+                            result = connector.apply_approved_dashboard_proposal(
+                                youtube,
+                                row["video_id"],
+                                row["before"],
+                                row["proposed"],
+                                row["digest"],
+                                audit_callback=_batch_audit_callback,
+                            )
+                            row["status"] = "verified"
+                            row["result_message"] = (
+                                f"Verified on YouTube: {result.get('title', row.get('proposed_title', 'Updated video'))}"
+                            )
+                            success_count += 1
+                            try:
+                                record_proposal_decision(
+                                    video_id=row["video_id"],
+                                    proposal_digest=row["digest"],
+                                    status="APPLIED",
+                                    proposal_dict=row["proposed"],
+                                    feedback="Batch metadata update approved and post-write verified",
+                                    owner_id=subject,
+                                    is_demo=False,
+                                )
+                            except Exception:
+                                pass
+                        except Exception as error:
+                            row["status"] = "failed"
+                            row["result_message"] = _apply_error_message(error)
+                            failure_count += 1
+                batch["rows"] = rows
+                st.session_state["batch_metadata_review"] = batch
+                if failure_count:
+                    st.warning(
+                        f"Batch finished: {success_count} verified, {failure_count} not verified. "
+                        "Failed rows were not retried."
+                    )
+                else:
+                    st.success(f"Batch finished: all {success_count} selected updates were verified.")
+                st.rerun()
+
+        if batch.get('rows'):
+            report = batch_metadata.build_results_csv(batch)
+            st.download_button(
+                "Download batch results report",
+                data=report,
+                file_name="youtube-metadata-batch-results.csv",
+                mime="text/csv",
+                key=f"batch_results_{batch.get('fingerprint', '')[:12]}",
+            )
+
+
 def render_copilot_chat(
     youtube=None,
     secrets=None,
@@ -843,6 +1076,8 @@ def render_copilot_chat(
         gemini_fallbacks = [i.strip() for i in gemini_fallbacks.split(",") if i.strip()]
 
     context = st.session_state.get("strategist_target_reference")
+
+    render_batch_metadata_import(youtube, subject)
 
     # 1. Active Video Context Card
     if context:
