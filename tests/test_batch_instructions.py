@@ -1167,6 +1167,7 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         def mock_gen(video_id, before, instruction="", fields=None, transcript=""):
             return {
                 "title": "New High CTR Title",
+                "recommended_title": "New High CTR Title",
                 "recommendation_reason": "The title communicates the intended learning outcome.",
                 "title_angles": [
                     {"angle": "curiosity", "title": "Curiosity RAG Title"},
