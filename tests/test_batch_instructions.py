@@ -150,6 +150,58 @@ class TestBatchTextInterpretation(unittest.TestCase):
         self.assertEqual(v1["exact_title"], "Overridden Title For V1")
         self.assertEqual(v2["title_intent"], "preserve")
 
+
+    def test_explicit_shared_title_only_intent_overrides_incomplete_ai_plan(self):
+        videos = [
+            (VIDEO_ID_1, "Why RAG Fails at Real-Time Travel Booking"),
+            (VIDEO_ID_2, "LLM Prompt Caching Explained: Exact-Match vs. Semantic Cache"),
+            (VIDEO_ID_3, "Context vs Memory in LLMs"),
+            ("LmNoPqRsTuV", "4 AI Terms Explained Simply"),
+        ]
+        text = "\\n\\n".join(
+            f"{index}. https://www.youtube.com/watch?v={video_id}\\nCurrent title: {title}"
+            for index, (video_id, title) in enumerate(videos, start=1)
+        )
+        text += (
+            "\\n\\nSHARED INSTRUCTIONS:\\n"
+            "Optimize TITLE ONLY for all four videos.\\n"
+            "Preserve every existing description and tag exactly."
+        )
+        # Simulate a parser model that misreads the shared directive and mistakes
+        # the first current title for an exact replacement while leaving the rest blank.
+        ai_plan = {
+            "videos": [
+                {
+                    "reference": f"https://www.youtube.com/watch?v={video_id}",
+                    "video_id": video_id,
+                    "title_intent": "exact" if index == 0 else "unmentioned",
+                    "exact_title": title if index == 0 else None,
+                    "description_intent": "unmentioned",
+                    "exact_description": None,
+                    "tags_intent": "unmentioned",
+                    "exact_tags": None,
+                    "video_specific_instructions": "",
+                }
+                for index, (video_id, title) in enumerate(videos)
+            ]
+        }
+
+        with patch.object(
+            batch_instructions,
+            "_interpret_batch_instructions_with_ai",
+            return_value=ai_plan,
+        ):
+            plan = batch_instructions.parse_batch_instructions(text, groq_key="test-key")
+
+        self.assertEqual(plan["total_identified"], 4)
+        for row, (_, title) in zip(plan["videos"], videos):
+            self.assertEqual(row["title_intent"], "optimize")
+            self.assertIsNone(row["exact_title"])
+            self.assertEqual(row["description_intent"], "preserve")
+            self.assertEqual(row["tags_intent"], "preserve")
+            self.assertEqual(row["context_title"], title)
+            self.assertEqual(row["fields_requested"], ["title"])
+
     def test_exact_title_bypasses_title_angle_generation(self):
         canonical = batch_metadata.create_batch_from_text_plan({
             "raw_text": "sample",
