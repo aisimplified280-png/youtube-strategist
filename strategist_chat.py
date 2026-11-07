@@ -884,12 +884,18 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
     secrets = secrets or {}
     # Streamlit returns nested TOML sections as AttrDict/Mapping objects,
     # not necessarily plain dicts. Accept the documented st.secrets shape.
-    groq_section = secrets.get("groq", {})
+    groq_section = secrets.get("groq") or secrets.get("chatgroq") or {}
     gemini_section = secrets.get("gemini", {})
     groq = groq_section if isinstance(groq_section, Mapping) else {}
     gemini = gemini_section if isinstance(gemini_section, Mapping) else {}
 
-    groq_key = groq.get("api_key") or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
+    groq_key = (
+        groq.get("api_key")
+        or secrets.get("GROQ_API_KEY")
+        or secrets.get("groq_api_key")
+        or secrets.get("CHATGROQ_API_KEY")
+        or secrets.get("chatgroq_api_key")
+    )
     groq_model = groq.get("model") or secrets.get("GROQ_MODEL") or secrets.get("groq_model") or DEFAULT_GROQ_MODEL
     groq_fallbacks = groq.get("fallback_models", [])
     if isinstance(groq_fallbacks, str):
