@@ -1,0 +1,192 @@
+import csv
+import io
+import unittest
+from openpyxl import Workbook
+
+import core.batch_metadata as batch_metadata
+import youtube_analytics_connector as connector
+
+
+VIDEO_ID = "AbCdEfGhIjK"
+
+
+class FakeRequest:
+    def __init__(self, callback):
+        self.callback = callback
+
+    def execute(self):
+        return self.callback()
+
+
+class FakeVideos:
+    def __init__(self, snippets):
+        self.snippets = snippets
+        self.calls = []
+
+    def list(self, *, part, id):
+        self.calls.append({"part": part, "id": id})
+
+        def response():
+            items = []
+            for video_id in id.split(","):
+                if video_id in self.snippets:
+                    items.append({"id": video_id, "snippet": dict(self.snippets[video_id])})
+            return {"items": items}
+
+        return FakeRequest(response)
+
+
+class FakeYoutube:
+    def __init__(self, snippets):
+        self._videos = FakeVideos(snippets)
+
+    def videos(self):
+        return self._videos
+
+
+def make_snippet(**overrides):
+    snippet = {
+        "title": "Current title",
+        "description": "Current description",
+        "tags": ["old tag", "keep me"],
+        "categoryId": "28",
+        "channelId": connector.CHANNEL_ID,
+        "defaultLanguage": "en",
+        "defaultAudioLanguage": "en-IN",
+    }
+    snippet.update(overrides)
+    return snippet
+
+
+class BatchMetadataTests(unittest.TestCase):
+    def test_parse_csv_with_video_url_and_semicolon_tags(self):
+        payload = (
+            "video_url,new_title,description,tags\n"
+            f"https://www.youtube.com/watch?v={VIDEO_ID},New title,,tag one;tag two\n"
+        ).encode("utf-8")
+        parsed = batch_metadata.parse_metadata_file("changes.csv", payload)
+
+        row = parsed["rows"][0]
+        self.assertEqual(row["video_id"], VIDEO_ID)
+        self.assertEqual(row["title"], "New title")
+        self.assertIsNone(row["description"])
+        self.assertEqual(row["tags"], ["tag one", "tag two"])
+        self.assertEqual(row["status"], "parsed")
+        self.assertEqual(parsed["fingerprint"], __import__("hashlib").sha256(payload).hexdigest())
+
+    def test_parse_video_id_url_variants(self):
+        self.assertEqual(batch_metadata.parse_video_reference(VIDEO_ID), VIDEO_ID)
+        self.assertEqual(
+            batch_metadata.parse_video_reference(f"https://youtu.be/{VIDEO_ID}?feature=share"),
+            VIDEO_ID,
+        )
+        self.assertEqual(
+            batch_metadata.parse_video_reference(f"https://www.youtube.com/shorts/{VIDEO_ID}"),
+            VIDEO_ID,
+        )
+
+    def test_rejects_untrusted_non_youtube_urls(self):
+        with self.assertRaisesRegex(ValueError, "YouTube video ID"):
+            batch_metadata.parse_video_reference("https://example.com/watch?v=abcdefghijk")
+
+    def test_json_tag_array_preserves_commas_inside_tag(self):
+        self.assertEqual(
+            batch_metadata.parse_tags_cell('["AI, explained", "machine learning"]'),
+            ["AI, explained", "machine learning"],
+        )
+        self.assertEqual(batch_metadata.parse_tags_cell("[]"), [])
+
+    def test_duplicate_video_ids_invalidate_both_rows(self):
+        payload = (
+            "video_id,title\n"
+            f"{VIDEO_ID},First\n"
+            f"{VIDEO_ID},Second\n"
+        ).encode()
+        parsed = batch_metadata.parse_metadata_file("changes.csv", payload)
+
+        self.assertEqual([row["status"] for row in parsed["rows"]], ["invalid", "invalid"])
+        self.assertTrue(all("Duplicate video ID" in row["errors"][0] for row in parsed["rows"]))
+
+    def test_excel_import_reads_first_sheet(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["Video ID", "New Title", "New Description", "Tags"])
+        sheet.append([VIDEO_ID, "Excel title", None, "one | two"])
+        stream = io.BytesIO()
+        workbook.save(stream)
+
+        parsed = batch_metadata.parse_metadata_file("changes.xlsx", stream.getvalue())
+        row = parsed["rows"][0]
+        self.assertEqual(row["video_id"], VIDEO_ID)
+        self.assertEqual(row["title"], "Excel title")
+        self.assertEqual(row["tags"], ["one", "two"])
+
+    def test_prepare_batch_owner_verifies_and_preserves_blank_fields(self):
+        youtube = FakeYoutube({VIDEO_ID: make_snippet()})
+        payload = f"video_id,title,description,tags\n{VIDEO_ID},Updated title,,\n".encode()
+        parsed = batch_metadata.parse_metadata_file("changes.csv", payload)
+
+        staged = batch_metadata.prepare_metadata_batch(youtube, parsed)
+        row = staged["rows"][0]
+
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["changed_fields"], ["title"])
+        self.assertEqual(row["before"]["description"], "Current description")
+        self.assertEqual(row["proposed"]["description"], "Current description")
+        self.assertEqual(row["proposed"]["tags"], ["old tag", "keep me"])
+        self.assertEqual(len(row["digest"]), 64)
+        self.assertEqual(len(youtube._videos.calls), 1)
+
+    def test_prepare_batch_refuses_non_owner_video(self):
+        youtube = FakeYoutube({VIDEO_ID: make_snippet(channelId="UCNotTheConfiguredChannel000000")})
+        payload = f"video_id,title\n{VIDEO_ID},Updated title\n".encode()
+        parsed = batch_metadata.parse_metadata_file("changes.csv", payload)
+
+        staged = batch_metadata.prepare_metadata_batch(youtube, parsed)
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "invalid")
+        self.assertIn("Ownership check failed", row["errors"][0])
+
+    def test_prepare_batch_validates_youtube_title_limit(self):
+        youtube = FakeYoutube({VIDEO_ID: make_snippet()})
+        payload = f"video_id,title\n{VIDEO_ID},{'x' * 101}\n".encode()
+        parsed = batch_metadata.parse_metadata_file("changes.csv", payload)
+
+        staged = batch_metadata.prepare_metadata_batch(youtube, parsed)
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "invalid")
+        self.assertIn("100 characters", row["errors"][0])
+
+    def test_prepare_batch_marks_unchanged_proposal_without_write(self):
+        youtube = FakeYoutube({VIDEO_ID: make_snippet()})
+        payload = f"video_id,title\n{VIDEO_ID},Current title\n".encode()
+        parsed = batch_metadata.parse_metadata_file("changes.csv", payload)
+
+        staged = batch_metadata.prepare_metadata_batch(youtube, parsed)
+        self.assertEqual(staged["rows"][0]["status"], "no_change")
+
+    def test_row_limit_is_enforced(self):
+        data = ["video_id,title"]
+        data.extend(f"{VIDEO_ID[:-1]}{i % 10},Title {i}" for i in range(batch_metadata.BATCH_MAX_ROWS + 1))
+        with self.assertRaisesRegex(ValueError, "more than 25"):
+            batch_metadata.parse_metadata_file("changes.csv", ("\n".join(data) + "\n").encode())
+
+    def test_results_csv_contains_status_and_video_url(self):
+        batch = {
+            "rows": [{
+                "video_id": VIDEO_ID,
+                "proposed_title": "Updated title",
+                "status": "verified",
+                "changed_fields": ["title", "tags"],
+                "errors": [],
+                "result_message": "YouTube read-back matched.",
+            }]
+        }
+        rows = list(csv.DictReader(io.StringIO(batch_metadata.build_results_csv(batch))))
+        self.assertEqual(rows[0]["status"], "verified")
+        self.assertEqual(rows[0]["video_url"], f"https://www.youtube.com/watch?v={VIDEO_ID}")
+        self.assertEqual(rows[0]["changed_fields"], "title, tags")
+
+
+if __name__ == "__main__":
+    unittest.main()
