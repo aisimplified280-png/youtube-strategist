@@ -640,7 +640,7 @@ def parse_batch_instructions(
                 "exact_description": exact_description if description_intent in {"exact", "clear"} else None,
                 "tags_intent": tags_intent,
                 "exact_tags": exact_tags if tags_intent in {"exact", "clear"} else None,
-                "original_instruction": "\\n\\n".join(instruction_parts) or local_context.get("segment", combined_shared),
+                "original_instruction": "\n\n".join(instruction_parts) or local_context.get("segment", combined_shared),
                 "errors": [],
             })
 
