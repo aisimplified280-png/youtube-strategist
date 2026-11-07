@@ -9,14 +9,66 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import re
+import unicodedata
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from openpyxl import load_workbook
 
 import youtube_analytics_connector as connector
+
+logger = logging.getLogger("batch_metadata")
+
+VALID_ROW_STATUSES = {
+    "ready",
+    "approved",
+    "publishing",
+    "verified",
+    "no_change",
+    "invalid",
+    "failed",
+    "verification_unavailable",
+}
+
+
+def normalize_title_for_comparison(title: str) -> str:
+    """Normalize title by removing emojis, punctuation, symbols, extra whitespace, and lowercasing."""
+    if not title or not isinstance(title, str):
+        return ""
+    clean = "".join(ch for ch in title if unicodedata.category(ch)[0] not in ('S', 'P', 'C'))
+    clean = re.sub(r"[^\w\s]", " ", clean)
+    return re.sub(r"\s+", " ", clean).strip().casefold()
+
+
+def validate_title_angles_quality(cur_title: str, angles: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    """Validate that title angles are distinct, under 100 chars, and not merely typographical variations."""
+    if not isinstance(angles, list) or len(angles) < 3:
+        return False, "AI title optimization did not produce the required 3 title angles (curiosity, value, search)."
+
+    norm_current = normalize_title_for_comparison(cur_title)
+    norm_angles = []
+    seen_angles = set()
+
+    for idx, angle in enumerate(angles):
+        if not isinstance(angle, dict):
+            return False, f"Title angle #{idx+1} is not a valid dictionary."
+        t = str(angle.get("title", "")).strip()
+        if not t:
+            return False, f"Title angle #{idx+1} has an empty title."
+        if len(t) > 100:
+            return False, f"Title angle #{idx+1} exceeds 100 characters ({len(t)} chars): '{t[:40]}...'"
+        norm_t = normalize_title_for_comparison(t)
+        if norm_current and norm_t == norm_current:
+            return False, f"Generated title '{t}' is merely a trivial punctuation, emoji, or casing change of current title '{cur_title}'."
+        if norm_t in seen_angles:
+            return False, f"Generated title angle '{t}' duplicates another generated angle."
+        seen_angles.add(norm_t)
+        norm_angles.append(norm_t)
+
+    return True, ""
 
 
 BATCH_MAX_ROWS = 25
@@ -236,6 +288,7 @@ def create_batch_from_text_plan(text_plan: Dict[str, Any]) -> Dict[str, Any]:
             "tags": item.get("exact_tags"),
             "title_intent": item.get("title_intent", "unmentioned"),
             "exact_title": item.get("exact_title"),
+            "context_title": item.get("context_title", ""),
             "description_intent": item.get("description_intent", "unmentioned"),
             "exact_description": item.get("exact_description"),
             "tags_intent": item.get("tags_intent", "unmentioned"),
@@ -243,6 +296,8 @@ def create_batch_from_text_plan(text_plan: Dict[str, Any]) -> Dict[str, Any]:
             "fields_requested": item.get("fields_requested", []),
             "original_instruction": item.get("original_instruction", ""),
             "title_angles": [],
+            "recommended_title": "",
+            "recommendation_reason": "",
             "rationale": [],
             "status": "parsed" if (item.get("video_id") and not item.get("errors")) else "invalid",
             "errors": list(item.get("errors", [])),
@@ -406,6 +461,15 @@ def prepare_metadata_batch(
                     gen_kwargs["fields"] = fields_to_optimize
                 if "transcript" in sig.parameters or has_var_keyword:
                     gen_kwargs["transcript"] = transcript
+                if "context_title" in sig.parameters or has_var_keyword:
+                    gen_kwargs["context_title"] = row.get("context_title", "")
+
+                logger.info(
+                    "Batch AI generator invoked for video_id=%s, title_intent=%s, fields=%s",
+                    video_id,
+                    t_intent,
+                    fields_to_optimize,
+                )
 
                 ai_result = ai_generator(**gen_kwargs)
                 if not isinstance(ai_result, dict):
@@ -422,17 +486,53 @@ def prepare_metadata_batch(
             proposed["title"] = row.get("exact_title") or row.get("title") or before.get("title", "")
             row["title_angles"] = []
         elif t_intent == "optimize":
-            opt_title = ai_result.get("title") or ""
-            proposed["title"] = opt_title
             angles = ai_result.get("title_angles")
+            is_valid_angles = True
+            err_msg = ""
             if angles is not None:
-                if not isinstance(angles, list) or len(angles) < 3:
-                    row["status"] = "invalid"
-                    row["errors"].append("AI title optimization did not produce the required 3 title angles (curiosity, value, search).")
-                else:
-                    row["title_angles"] = angles
-            else:
-                row["title_angles"] = []
+                is_valid_angles, err_msg = validate_title_angles_quality(before.get("title", ""), angles)
+                if not is_valid_angles and ai_generator:
+                    # One controlled repair attempt
+                    try:
+                        logger.info("Performing controlled repair attempt for video_id=%s: %s", video_id, err_msg)
+                        repair_kwargs = deepcopy(gen_kwargs)
+                        repair_kwargs["instruction"] = (
+                            f"{row.get('original_instruction', '')}\n\n"
+                            f"CONTROLLED REPAIR ATTEMPT: The proposed title angles were rejected: {err_msg}.\n"
+                            f"Generate 3 genuinely distinct title angles with different wording from '{before.get('title', '')}':\n"
+                            "1. Curiosity / Intrigue, 2. Direct Value / Outcome, 3. Search / SEO."
+                        )
+                        repaired_result = ai_generator(**repair_kwargs)
+                        if isinstance(repaired_result, dict) and repaired_result.get("title_angles"):
+                            r_valid, r_err = validate_title_angles_quality(before.get("title", ""), repaired_result.get("title_angles", []))
+                            if r_valid:
+                                ai_result = repaired_result
+                                angles = repaired_result.get("title_angles")
+                                is_valid_angles = True
+                            else:
+                                err_msg = r_err
+                    except Exception as r_exc:
+                        err_msg = f"{err_msg}; repair attempt failed: {r_exc}"
+
+            if not is_valid_angles:
+                row["status"] = "invalid"
+                row["errors"].append(f"AI title optimization failed quality validation: {err_msg}")
+                logger.warning("Video %s title angle validation failed: %s", video_id, err_msg)
+                continue
+
+            opt_title = ai_result.get("recommended_title") or ai_result.get("title") or ""
+            # If the recommended title is identical to the current title after normalization, pick the first angle that differs
+            if normalize_title_for_comparison(opt_title) == normalize_title_for_comparison(before.get("title", "")) and angles:
+                for ang in angles:
+                    if normalize_title_for_comparison(ang.get("title", "")) != normalize_title_for_comparison(before.get("title", "")):
+                        opt_title = ang.get("title", "")
+                        break
+
+            proposed["title"] = opt_title
+            row["proposed_title"] = opt_title
+            row["recommended_title"] = opt_title
+            row["recommendation_reason"] = ai_result.get("recommendation_reason") or ai_result.get("rationale") or ""
+            row["title_angles"] = angles or []
             if ai_result.get("rationale"):
                 row["rationale"] = ai_result.get("rationale")
         else:
@@ -471,6 +571,14 @@ def prepare_metadata_batch(
 
         # Revalidate snippet, compute changed fields, check constraints and digest
         revalidate_batch_row(row)
+        logger.info(
+            "Staging result for video_id=%s: status=%s, title_intent=%s, valid_angles=%d, changed_fields=%s",
+            video_id,
+            row.get("status"),
+            t_intent,
+            len(row.get("title_angles", [])),
+            row.get("changed_fields", []),
+        )
 
     parsed_batch["ready_count"] = sum(row.get("status") == "ready" for row in rows)
     parsed_batch["invalid_count"] = sum(row.get("status") == "invalid" for row in rows)
