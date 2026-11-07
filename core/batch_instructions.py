@@ -552,13 +552,14 @@ def parse_batch_instructions(
 
     channel_videos = channel_videos or []
     if secrets:
-        groq_section = secrets.get("groq", {})
+        groq_section = secrets.get("groq") or secrets.get("chatgroq") or {}
         gemini_section = secrets.get("gemini", {})
         groq_config = groq_section if isinstance(groq_section, Mapping) else {}
         gemini_config = gemini_section if isinstance(gemini_section, Mapping) else {}
         groq_key = (
             groq_key or groq_config.get("api_key")
             or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
+            or secrets.get("CHATGROQ_API_KEY") or secrets.get("chatgroq_api_key")
         )
         groq_model = (
             groq_model or groq_config.get("model")
