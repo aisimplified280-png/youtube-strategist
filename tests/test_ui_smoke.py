@@ -214,9 +214,11 @@ class UISmokeTests(unittest.TestCase):
 
         self.assertFalse(at.exception, f"Batch wizard raised unexpectedly: {at.exception}")
         markdown_texts = [item.value for item in at.markdown]
+        code_values = [item.value for item in at.code]
+        visible_text = "\\n".join(markdown_texts + code_values)
         self.assertTrue(any("Batch workflow" in value for value in markdown_texts))
-        self.assertTrue(any("Current title one" in value for value in markdown_texts))
-        self.assertFalse(any("Current title two" in value for value in markdown_texts))
+        self.assertIn("Current title one", visible_text)
+        self.assertNotIn("Current title two", visible_text)
         button_labels = [button.label for button in at.button]
         self.assertIn("Next →", button_labels)
         self.assertNotIn("Switch Video", button_labels)
