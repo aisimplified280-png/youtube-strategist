@@ -214,7 +214,7 @@ def render_app():
                 "batch_metadata_file_name", "batch_text_instructions_input", "batch_text_input_area",
                 "batch_metadata_uploader", "batch_selected_video_ids", "batch_review_index",
                 "batch_flow_step", "show_batch_metadata", "studio_export_evidence_index",
-                "show_studio_uploader", "session_audit_records",
+                "show_studio_uploader",
             ):
                 st.session_state.pop(key, None)
             st.rerun()
