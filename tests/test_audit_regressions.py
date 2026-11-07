@@ -370,6 +370,77 @@ class TestAuditRegressions(unittest.TestCase):
         self.assertFalse(item["ctr_period_known"])
 
 
+    def test_xlsx_upload_parses_all_three_studio_worksheets(self):
+        from io import BytesIO
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        table = workbook.active
+        table.title = "Table data"
+        table.append(["Video ID", "Video title", "Views", "Impressions", "CTR"])
+        table.append(["Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!", 883, 11205, 2.01])
+
+        chart = workbook.create_sheet("Chart data")
+        chart.append(["Date", "Views"])
+        chart.append(["2026-11-01", 12])
+        chart.append(["2026-11-02", 15])
+
+        totals = workbook.create_sheet("Totals")
+        totals.append(["Video ID", "Video title", "Views", "Impressions", "CTR"])
+        totals.append(["Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!", 883, 11205, 2.01])
+
+        buffer = BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+
+        result = studio_export_analyzer.analyze_uploaded_files([
+            ("Untitled spreadsheet (1).xlsx", buffer.getvalue())
+        ])
+        reports = result["reports"]
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(reports), 3)
+        self.assertEqual(
+            {report["source_sheet"] for report in reports},
+            {"Table data", "Chart data", "Totals"},
+        )
+        by_sheet = {report["source_sheet"]: report for report in reports}
+        self.assertEqual(by_sheet["Table data"]["report_type"], "video_performance")
+        self.assertEqual(by_sheet["Table data"]["video_count"], 1)
+        self.assertEqual(by_sheet["Chart data"]["report_type"], "daily_trend")
+        self.assertEqual(by_sheet["Totals"]["video_count"], 1)
+
+        index = studio_export_analyzer.build_video_evidence_index(reports)
+        evidence = studio_export_analyzer.find_video_evidence(
+            index, "Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!"
+        )
+        self.assertEqual(len(evidence), 2)
+        self.assertEqual({item["source_sheet"] for item in evidence}, {"Table data", "Totals"})
+        self.assertEqual({item["source_file"] for item in evidence}, {"Untitled spreadsheet (1).xlsx"})
+
+    def test_xlsx_upload_reports_unreadable_nonempty_worksheet(self):
+        from io import BytesIO
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        workbook.active.title = "Table data"
+        workbook.active.append(["Video ID", "Video title", "Views"])
+        workbook.active.append(["Cp0TzsGEbB0", "Sample", 5])
+        notes = workbook.create_sheet("Notes")
+        notes.append(["Owner", "Comment"])
+        notes.append(["AI Simplified Lab", "No analytics data here"])
+
+        buffer = BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+
+        result = studio_export_analyzer.analyze_uploaded_files([
+            ("Studio workbook.xlsx", buffer.getvalue())
+        ])
+        self.assertEqual(len(result["reports"]), 1)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["source_sheet"], "Notes")
+        self.assertIn("report header", result["errors"][0]["error"])
+
     def test_video_publish_time_is_not_report_period(self):
         csv_data = (
             "Video ID,Video title,Video publish time,Views,Impressions,CTR\n"
