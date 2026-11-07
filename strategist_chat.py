@@ -866,6 +866,9 @@ def render_batch_metadata_import(youtube, subject=None):
             fingerprint = hashlib.sha256(payload).hexdigest()
             active_batch = st.session_state.get("batch_metadata_review")
             if not active_batch or active_batch.get("fingerprint") != fingerprint:
+                st.session_state.pop("batch_metadata_review", None)
+                st.session_state["batch_metadata_payload"] = payload
+                st.session_state["batch_metadata_file_name"] = uploaded_file.name
                 if youtube is None:
                     st.warning("Connect YouTube with the channel-owner account before staging metadata changes.")
                 else:
@@ -874,9 +877,8 @@ def render_batch_metadata_import(youtube, subject=None):
                             staged = _stage_uploaded_metadata_batch(uploaded_file.name, payload, youtube)
                         staged["fingerprint"] = fingerprint
                         staged["file_name"] = uploaded_file.name
+                        staged["review_revision"] = 1
                         st.session_state["batch_metadata_review"] = staged
-                        st.session_state["batch_metadata_payload"] = payload
-                        st.session_state["batch_metadata_file_name"] = uploaded_file.name
                         st.success(
                             f"Loaded {len(staged['rows'])} rows: {staged.get('ready_count', 0)} ready, "
                             f"{staged.get('invalid_count', 0)} invalid, "
@@ -896,7 +898,7 @@ def render_batch_metadata_import(youtube, subject=None):
         invalid_count = sum(row.get("status") == "invalid" for row in rows)
         unchanged_count = sum(row.get("status") == "no_change" for row in rows)
 
-        st.markdown(f"**File:** \`{batch.get('file_name', 'metadata upload')}\`")
+        st.caption(f"File: {batch.get('file_name', 'metadata upload')}")
         metric_cols = st.columns(4)
         metric_cols[0].metric("Ready", ready_count)
         metric_cols[1].metric("Verified", verified_count)
@@ -917,6 +919,7 @@ def render_batch_metadata_import(youtube, subject=None):
                     )
                 refreshed["fingerprint"] = batch.get("fingerprint")
                 refreshed["file_name"] = batch.get("file_name")
+                refreshed["review_revision"] = int(batch.get("review_revision", 1)) + 1
                 st.session_state["batch_metadata_review"] = refreshed
                 st.rerun()
             except Exception as error:
@@ -975,7 +978,7 @@ def render_batch_metadata_import(youtube, subject=None):
             selected_key = "_".join(selected_ids)
             approval_key = (
                 f"batch_exact_approval_{batch.get('fingerprint', '')[:12]}_"
-                f"{len(selected_ids)}_{selected_key}"
+                f"{batch.get('review_revision', 1)}_{len(selected_ids)}_{selected_key}"
             )
             approved = st.checkbox(
                 f"I reviewed and approve the exact metadata shown for all {len(selected_ids)} selected videos.",
