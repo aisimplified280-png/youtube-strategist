@@ -2139,7 +2139,7 @@ def render_copilot_chat(
                 status = getattr(getattr(error, "resp", None), "status", None)
                 if status in (401, 403):
                     summary = (
-                        "YouTube Analytics denied this scan. Reconnect YouTube in Settings to grant the "
+                        "YouTube Analytics denied this scan. Use the YouTube button at the top to reconnect and grant the "
                         "current read permissions, then try the scan again."
                     )
                 else:
