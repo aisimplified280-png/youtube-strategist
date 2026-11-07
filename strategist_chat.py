@@ -1399,85 +1399,48 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 key=f"batch_publish_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}",
             )
             if publish_clicked:
-                success_count = 0
-                failure_count = 0
+                with st.spinner("Publishing selected videos sequentially and verifying every approved metadata field..."):
+                    publish_result = batch_metadata.publish_approved_batch_rows(
+                        youtube,
+                        rows,
+                        selected_ids,
+                        approved=approved,
+                        approval_fingerprint=approval_fingerprint,
+                        review_revision=batch.get("review_revision", 1),
+                        audit_callback=_batch_audit_callback,
+                    )
+
                 selected_set = set(selected_ids)
-                with st.spinner("Publishing selected videos sequentially and verifying each YouTube update..."):
-                    for row in rows:
-                        if row.get("video_id") not in selected_set or row.get("status") != "ready":
-                            continue
-                        row["attempted"] = True
-                        row["status"] = "publishing"
-                        expected_digest = connector.metadata_proposal_digest(
-                            row["video_id"],
-                            row["before"],
-                            row["proposed"],
+                for row in rows:
+                    if row.get("video_id") not in selected_set or not row.get("attempted"):
+                        continue
+                    try:
+                        record_proposal_decision(
+                            video_id=row["video_id"],
+                            proposal_digest=row.get("digest", ""),
+                            status="APPLIED" if row.get("status") == "verified" else "FAILED",
+                            proposal_dict=row.get("proposed", {}),
+                            feedback=row.get("result_message", "Batch metadata operation finished."),
+                            owner_id=subject,
+                            is_demo=False,
                         )
-                        if row.get("digest") != expected_digest:
-                            row["status"] = "failed"
-                            row["result_message"] = "Publish blocked: proposal digest mismatch. Proposal was modified after approval."
-                            failure_count += 1
-                            continue
+                    except Exception:
+                        pass
 
-                        try:
-                            result = connector.apply_approved_dashboard_proposal(
-                                youtube,
-                                row["video_id"],
-                                row["before"],
-                                row["proposed"],
-                                row["digest"],
-                                audit_callback=_batch_audit_callback,
-                            )
-                            # Direct YouTube read-back verification
-                            verify_read = None
-                            try:
-                                verify_read = connector.fetch_video_snippet(youtube, row["video_id"])
-                            except Exception as v_err:
-                                row["status"] = "verification_unavailable"
-                                row["result_message"] = f"Update was written to YouTube, but read-back verification was unavailable: {v_err}"
-                                failure_count += 1
-                                continue
-
-                            if verify_read and verify_read.get("title") == row["proposed"]["title"]:
-                                row["status"] = "verified"
-                                row["result_message"] = (
-                                    f"Verified on YouTube: {result.get('title', row.get('proposed_title', 'Updated video'))}"
-                                )
-                                success_count += 1
-                            else:
-                                row["status"] = "failed"
-                                row["result_message"] = "Publish written to YouTube, but read-back verification did not match the staged proposal."
-                                failure_count += 1
-
-                            try:
-                                record_proposal_decision(
-                                    video_id=row["video_id"],
-                                    proposal_digest=row["digest"],
-                                    status="APPLIED" if row["status"] == "verified" else "FAILED",
-                                    proposal_dict=row["proposed"],
-                                    feedback="Batch metadata update approved and post-write verified",
-                                    owner_id=subject,
-                                    is_demo=False,
-                                )
-                            except Exception:
-                                pass
-                        except Exception as error:
-                            err_str = str(error)
-                            if "verification unavailable" in err_str.lower():
-                                row["status"] = "verification_unavailable"
-                            else:
-                                row["status"] = "failed"
-                            row["result_message"] = _apply_error_message(error)
-                            failure_count += 1
                 batch["rows"] = rows
                 st.session_state["batch_metadata_review"] = batch
-                if failure_count:
+                if publish_result.get("blocked"):
+                    st.error(publish_result.get("message") or "Publishing was blocked. Review the batch and approve again.")
+                elif publish_result.get("failure_count"):
                     st.warning(
-                        f"Batch finished: {success_count} verified, {failure_count} not verified. "
+                        f"Batch finished: {publish_result.get('success_count', 0)} verified, "
+                        f"{publish_result.get('failure_count', 0)} not verified. "
                         "Failed rows were not retried."
                     )
                 else:
-                    st.success(f"Batch finished: all {success_count} selected updates were verified.")
+                    st.success(
+                        f"Batch finished: all {publish_result.get('success_count', 0)} selected updates were verified."
+                    )
                 st.rerun()
         else:
             st.info("Check 'Include in approved batch' on one or more ready videos above to enable approval and publishing.")
