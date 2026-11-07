@@ -1571,5 +1571,29 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         self.assertEqual(youtube._videos.update_calls, [])
 
 
+    def test_27_connector_readback_http_error_is_not_reported_as_publish_failure(self):
+        row = self._ready_publish_row()
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint([row], review_revision=1)
+        verification_error = connector.MetadataVerificationUnavailableError(
+            "The update may have succeeded, but YouTube read-back verification was unavailable: HTTP 403"
+        )
+        with patch.object(
+            connector,
+            "apply_approved_dashboard_proposal",
+            side_effect=verification_error,
+        ):
+            result = batch_metadata.publish_approved_batch_rows(
+                object(), [row], [row["video_id"]],
+                approved=True,
+                approval_fingerprint=fingerprint,
+                review_revision=1,
+            )
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(row["status"], "verification_unavailable")
+        self.assertIn("read-back verification was unavailable", row["result_message"])
+
+
+
 if __name__ == "__main__":
     unittest.main()

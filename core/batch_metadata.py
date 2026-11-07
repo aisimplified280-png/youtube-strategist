@@ -506,6 +506,11 @@ def publish_approved_batch_rows(
                 row["digest"],
                 audit_callback=audit_callback or (lambda entry: None),
             )
+        except connector.MetadataVerificationUnavailableError as error:
+            row["status"] = "verification_unavailable"
+            row["result_message"] = str(error) or "The metadata update may have succeeded, but YouTube read-back verification was unavailable."
+            result["failure_count"] += 1
+            continue
         except Exception as error:
             message = str(error)
             lowered = message.casefold()

@@ -47,6 +47,10 @@ class MetadataValidationError(ValueError):
     """Raised when a proposed video metadata change is unsafe or invalid."""
 
 
+class MetadataVerificationUnavailableError(RuntimeError):
+    """Raised when an update was sent but its post-write YouTube read-back was unavailable."""
+
+
 class VideoNotFoundError(LookupError):
     """Raised when the YouTube API does not return the requested video."""
 
@@ -1219,7 +1223,9 @@ def _apply_metadata_update(
             proposal_id=proposal_id,
             audit_callback=audit_callback,
         )
-        raise
+        raise MetadataVerificationUnavailableError(
+            f"The update for {video_id} may have succeeded, but YouTube read-back verification was unavailable: {error}"
+        ) from error
     except (GoogleAuthError, httplib2.HttpLib2Error, OSError) as error:
         _write_audit_entry(
             audit_log,
@@ -1228,7 +1234,7 @@ def _apply_metadata_update(
             proposal_id=proposal_id,
             audit_callback=audit_callback,
         )
-        raise RuntimeError(
+        raise MetadataVerificationUnavailableError(
             f"The update for {video_id} may have succeeded, but YouTube could not be "
             "reached for verification. Reload metadata; do not retry blindly."
         ) from error
