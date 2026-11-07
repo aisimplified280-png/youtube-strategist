@@ -579,6 +579,7 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
                 period = f"{selected.get('date_start') or '?'} to {selected.get('date_end') or '?'}"
             return selected.get(field), {
                 "source_file": selected.get("source_file"),
+                "source_sheet": selected.get("source_sheet"),
                 "period": period,
                 "period_known": bool(period),
             }
@@ -608,16 +609,23 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             if isinstance(item.get("ctr_percent"), (int, float))
             and isinstance(item.get("impressions"), (int, float))
         ]
-        dated_reach_records = [
-            item for item in reach_records if item.get("date_end") or item.get("date_start")
-        ]
-        if dated_reach_records:
-            reach_record = max(dated_reach_records, key=lambda item: (
+        def reach_source_rank(item):
+            sheet = str(item.get("source_sheet") or "").casefold()
+            sheet_preference = (
+                3 if "table" in sheet else
+                2 if "chart" in sheet else
+                1 if "total" in sheet else
+                0
+            )
+            return (
+                bool(item.get("date_end") or item.get("date_start")),
+                item.get("report_type") == "video_performance",
+                sheet_preference,
                 str(item.get("date_end") or ""),
                 str(item.get("date_start") or ""),
-            ))
-        else:
-            reach_record = reach_records[-1] if reach_records else {}
+            )
+
+        reach_record = max(reach_records, key=reach_source_rank) if reach_records else {}
         impressions = reach_record.get("impressions")
         ctr_percent = reach_record.get("ctr_percent")
         reach_period = None
@@ -661,7 +669,10 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             "subscribers_gained": metrics.get("subscribersGained"),
             "impressions": impressions,
             "ctr_percent": ctr_percent,
-            "ctr_source": reach_record.get("source_file") if reach_record else None,
+            "ctr_source": (
+                f"{reach_record.get('source_file')}"
+                + (f" · {reach_record.get('source_sheet')}" if reach_record.get('source_sheet') else "")
+            ) if reach_record else None,
             "ctr_period": reach_period,
             "ctr_period_known": bool(reach_period),
         })
