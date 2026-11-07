@@ -1067,7 +1067,15 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
 
     rows = batch.get("rows", [])
     if not rows:
-        st.warning("This batch contains no video proposals. Replace it with a valid batch.")
+        st.warning("This batch contains no video proposals. Return to chat to provide a corrected instruction or file.")
+        if st.button("← Back to chat", key="batch_back_to_chat_empty", use_container_width=True):
+            for key in (
+                "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+                "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+                "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+            ):
+                st.session_state.pop(key, None)
+            st.rerun()
         return
 
     ready_count = sum(row.get("status") == "ready" for row in rows)
@@ -1113,16 +1121,6 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
     metric_cols[2].metric("Failed", failed_count)
     metric_cols[3].metric("Invalid / unchanged", invalid_count + unchanged_count)
 
-    if st.button("＋ Start a new batch", key=f"batch_new_{fingerprint[:10]}"):
-        for key in (
-            "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
-            "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
-            "batch_selected_video_ids", "batch_review_index", "batch_flow_step",
-        ):
-            st.session_state.pop(key, None)
-        st.session_state["show_batch_metadata"] = True
-        st.rerun()
-
     if ready_count == 0 and verified_count == 0:
         st.warning(
             f"There are no publishable proposals in this batch "
@@ -1154,7 +1152,7 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 use_container_width=True,
             )
         with col_replace:
-            st.caption("Need different videos? Start a new batch above.")
+            st.caption("To replace the list, return to chat and send a new batch instruction or attach another file.")
 
         if refresh_clicked:
             try:
@@ -1516,16 +1514,6 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 st.caption(result_row.get("status", "unknown").replace("_", " ").upper())
                 if result_row.get("result_message"):
                     st.caption(result_row["result_message"])
-        if st.button("← Back to chat", key=f"batch_back_to_chat_{fingerprint[:10]}", use_container_width=True):
-            for key in (
-                "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
-                "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
-                "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
-                "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
-            ):
-                st.session_state.pop(key, None)
-            st.rerun()
-
         if st.button("Review this batch again", key=f"batch_review_again_{fingerprint[:10]}"):
             st.session_state["batch_flow_step"] = "review"
             st.rerun()
@@ -1538,6 +1526,16 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
             mime="text/csv",
             key=f"batch_results_{fingerprint[:12]}",
         )
+
+    if st.button("← Back to chat", key=f"batch_back_to_chat_{fingerprint[:10]}", use_container_width=True):
+        for key in (
+            "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+            "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+            "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+            "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+        ):
+            st.session_state.pop(key, None)
+        st.rerun()
 
 def render_copilot_chat(
     youtube=None,
