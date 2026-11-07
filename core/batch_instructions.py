@@ -37,8 +37,12 @@ EXPLICIT_ID_PATTERN = re.compile(
 )
 
 LIST_OR_BARE_ID_PATTERN = re.compile(
-    r"(?:^|[ \t\r\n])(?:\d+[\.\)]|[-*•]|\[\d+\])?\s*(?:video\s*(?:id|#)?\s*[:=]?\s*|\bid:\s*)?([A-Za-z0-9_-]{11})\b(?:\s*[—\-\:\s]|$)",
-    re.MULTILINE,
+    # Bare IDs are only accepted as a complete line (optionally numbered/bulleted),
+    # or as an ID followed by an explicit separator and descriptive title text.
+    # Anchoring prevents ordinary 11-character words such as "Exact-Match" in a
+    # video title from being misidentified as an additional YouTube video ID.
+    r"^[ \t]*(?:(?:\d+[\.\)]|[-*•]|\[\d+\])[ \t]*)?(?:video\s*(?:id|#)?\s*[:=]?\s*|\bid:\s*)?([A-Za-z0-9_-]{11})\b(?:[ \t]*(?:[—\-:][ \t]*[^\r\n]*)?)?[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 EXCLUDED_ID_TOKENS = {
