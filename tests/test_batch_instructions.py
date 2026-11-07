@@ -167,6 +167,11 @@ class TestBatchTextInterpretation(unittest.TestCase):
             "Optimize TITLE ONLY for all four videos.\n"
             "Preserve every existing description and tag exactly."
         )
+        extracted_refs = batch_instructions.extract_video_references_from_text(text)
+        self.assertEqual(
+            [ref["video_id"] for ref in extracted_refs],
+            [video_id for video_id, _ in videos],
+        )
         # Simulate a parser model that misreads the shared directive and mistakes
         # the first current title for an exact replacement while leaving the rest blank.
         ai_plan = {
