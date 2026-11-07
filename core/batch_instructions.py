@@ -578,20 +578,69 @@ def parse_batch_instructions(
 
     raw_candidates: List[Dict[str, Any]] = []
 
+    # Build deterministic per-reference context even when the LLM returns a complete plan.
+    # Explicit user intent must outrank the LLM parser: otherwise a model can silently turn
+    # "optimize title only" into "unmentioned"/"preserve" for some or all videos.
+    deterministic_by_id: Dict[str, Dict[str, Any]] = {}
+    for ref_index, ref in enumerate(all_refs):
+        ref_id = ref.get("video_id")
+        if not ref_id:
+            continue
+        segment_start = ref["start"]
+        segment_end = all_refs[ref_index + 1]["start"] if ref_index + 1 < len(all_refs) else len(text)
+        segment_text = text[segment_start:segment_end].strip()
+        deterministic_by_id[ref_id] = {
+            "intent": extract_field_values_and_intents(segment_text),
+            "segment": segment_text,
+        }
+
     if ai_plan:
-        # Use AI parsed items
+        # Use AI for interpretation only where deterministic text rules do not find an
+        # explicit local or shared instruction. Local instructions override shared ones.
         for item in ai_plan.get("videos", []):
             raw_ref = item.get("reference", "")
+            item_video_id = item.get("video_id")
+            if not item_video_id and raw_ref:
+                try:
+                    item_video_id = parse_video_reference(raw_ref)
+                except ValueError:
+                    item_video_id = None
+
+            local_context = deterministic_by_id.get(item_video_id, {})
+            local_intent = local_context.get("intent", {})
+
+            def _merged_field_intent(intent_key: str, exact_key: str):
+                for source in (local_intent, shared_intent):
+                    candidate = source.get(intent_key, "unmentioned")
+                    if candidate and candidate != "unmentioned":
+                        return candidate, source.get(exact_key)
+                candidate = item.get(intent_key, "unmentioned") or "unmentioned"
+                return candidate, item.get(exact_key)
+
+            title_intent, exact_title = _merged_field_intent("title_intent", "exact_title")
+            description_intent, exact_description = _merged_field_intent(
+                "description_intent", "exact_description"
+            )
+            tags_intent, exact_tags = _merged_field_intent("tags_intent", "exact_tags")
+
+            specific_instruction = str(item.get("video_specific_instructions") or "").strip()
+            shared_instruction = combined_shared.strip()
+            instruction_parts = []
+            for instruction_part in (specific_instruction, shared_instruction):
+                if instruction_part and instruction_part not in instruction_parts:
+                    instruction_parts.append(instruction_part)
+
             raw_candidates.append({
                 "reference": raw_ref,
-                "video_id": item.get("video_id"),
-                "title_intent": item.get("title_intent", "unmentioned"),
-                "exact_title": item.get("exact_title"),
-                "description_intent": item.get("description_intent", "unmentioned"),
-                "exact_description": item.get("exact_description"),
-                "tags_intent": item.get("tags_intent", "unmentioned"),
-                "exact_tags": item.get("exact_tags"),
-                "original_instruction": item.get("video_specific_instructions") or combined_shared,
+                "video_id": item_video_id,
+                "title_intent": title_intent,
+                "exact_title": exact_title if title_intent == "exact" else None,
+                "context_title": local_intent.get("context_title") or item.get("context_title", ""),
+                "description_intent": description_intent,
+                "exact_description": exact_description if description_intent in {"exact", "clear"} else None,
+                "tags_intent": tags_intent,
+                "exact_tags": exact_tags if tags_intent in {"exact", "clear"} else None,
+                "original_instruction": "\\n\\n".join(instruction_parts) or local_context.get("segment", combined_shared),
                 "errors": [],
             })
 
