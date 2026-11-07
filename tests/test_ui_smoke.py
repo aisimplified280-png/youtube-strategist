@@ -55,10 +55,14 @@ class UISmokeTests(unittest.TestCase):
         markdown_texts = [m.value for m in at.markdown]
         self.assertTrue(any("AI Simplified Lab" in value for value in markdown_texts))
         self.assertGreater(len(at.chat_input), 0, "Chat input must be present")
-        self.assertGreater(len(at.file_uploader), 0, "File uploader must be present")
+        self.assertEqual(len(at.file_uploader), 0, "Attachments must live in the chat composer, not a separate uploader panel")
         self.assertNotIn("demo_mode", at.session_state)
         button_labels = [button.label for button in at.button]
         self.assertFalse(any("Demo" in label for label in button_labels))
+        self.assertIn("＋ New chat", button_labels)
+        self.assertFalse(any("Settings" in label for label in button_labels))
+        self.assertFalse(any("Batch Metadata Manager" in label for label in button_labels))
+        self.assertFalse(any("Studio Export Attachments" in label for label in button_labels))
 
         button_labels = [button.label for button in at.button]
         for expected in (
@@ -66,6 +70,22 @@ class UISmokeTests(unittest.TestCase):
             "✨ Full review", "📊 Find videos to optimize",
         ):
             self.assertIn(expected, button_labels, f"Missing starter suggestion: {expected}")
+
+    def test_starting_point_shortcuts_disappear_after_conversation_begins(self):
+        """Landing shortcuts are a one-time starting aid, not a persistent toolbar."""
+        at = AppTest.from_file(APP_PATH, default_timeout=15)
+        at.session_state["strategist_chat_history"] = [
+            {"role": "user", "content": "Please review this video."},
+            {"role": "assistant", "content": "Sure — paste the video link."},
+        ]
+        with patch("core.auth.verify_owner_access", return_value=(True, "owner123", None)):
+            at.run()
+        self.assertFalse(at.exception, f"App threw unexpected exception: {at.exception}")
+        labels = [button.label for button in at.button]
+        self.assertFalse(any(label in {
+            "🎯 Title angles", "📱 Description hook", "🔎 Search tags",
+            "✨ Full review", "📊 Find videos to optimize",
+        } for label in labels))
 
     def test_unverified_proposal_has_no_simulated_or_real_publish_action(self):
         """Unverified ownership exposes neither a demo simulation nor a real write action."""
@@ -222,7 +242,7 @@ class UISmokeTests(unittest.TestCase):
         button_labels = [button.label for button in at.button]
         self.assertIn("Next →", button_labels)
         self.assertNotIn("Switch Video", button_labels)
-        self.assertEqual(len(at.chat_input), 0, "Single-video chat must stay out of the active batch flow")
+        self.assertGreater(len(at.chat_input), 0, "The same conversation composer must remain available below the batch step")
 
 
 if __name__ == "__main__":
