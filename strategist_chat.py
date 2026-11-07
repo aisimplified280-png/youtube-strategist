@@ -878,10 +878,144 @@ def _stage_uploaded_metadata_batch(file_name, payload, youtube):
     return batch_metadata.prepare_metadata_batch(youtube, parsed)
 
 
+def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, youtube=None):
+    """Build a single-call AI metadata generator function with Groq primary and Gemini fallback."""
+    secrets = secrets or {}
+    groq = secrets.get("groq", {}) if isinstance(secrets.get("groq"), dict) else {}
+    gemini = secrets.get("gemini", {}) if isinstance(secrets.get("gemini"), dict) else {}
+
+    groq_key = groq.get("api_key") or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
+    groq_model = groq.get("model") or secrets.get("GROQ_MODEL") or secrets.get("groq_model") or DEFAULT_GROQ_MODEL
+    groq_fallbacks = groq.get("fallback_models", [])
+    if isinstance(groq_fallbacks, str):
+        groq_fallbacks = [i.strip() for i in groq_fallbacks.split(",") if i.strip()]
+
+    gemini_key = gemini.get("api_key") or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
+    gemini_model = gemini.get("model") or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model") or DEFAULT_MODEL
+    gemini_fallbacks = gemini.get("fallback_models", [])
+    if isinstance(gemini_fallbacks, str):
+        gemini_fallbacks = [i.strip() for i in gemini_fallbacks.split(",") if i.strip()]
+
+    if not groq_key and not gemini_key:
+        return None
+
+    def _generator(
+        video_id: str,
+        before: Dict[str, Any],
+        instruction: str = "",
+        fields: Optional[List[str]] = None,
+        transcript: str = "",
+    ) -> Dict[str, Any]:
+        fields = fields or ["title", "description", "tags"]
+        cur_title = before.get("title", "")
+        cur_desc = before.get("description", "")
+        cur_tags = before.get("tags", [])
+
+        prompt = (
+            "You are the YouTube Metadata Optimization Assistant for AI Simplified Lab.\n"
+            "Generate optimized metadata for the following video based on the user's instructions.\n\n"
+            f"Video ID: {video_id}\n"
+            f"Current Title: {cur_title}\n"
+            f"Current Description:\n{cur_desc}\n"
+            f"Current Tags: {json.dumps(cur_tags)}\n"
+        )
+        if transcript:
+            prompt += f"\nVideo Transcript (excerpt):\n{transcript[:2500]}\n"
+        if instruction:
+            prompt += f"\nUser Instruction:\n{instruction}\n"
+
+        prompt += (
+            f"\nFields to optimize: {', '.join(fields)}.\n\n"
+            "Return a strictly valid JSON object with:\n"
+            "{\n"
+            '  "title": "<proposed primary title, <= 100 characters>",\n'
+            '  "title_angles": [\n'
+            '    {"angle": "curiosity", "label": "Curiosity Angle", "title": "<title <= 100 chars>"},\n'
+            '    {"angle": "value", "label": "Direct Value", "title": "<title <= 100 chars>"},\n'
+            '    {"angle": "search", "label": "Search/SEO", "title": "<title <= 100 chars>"}\n'
+            "  ],\n"
+            '  "description": "<proposed full description, <= 5000 characters>",\n'
+            '  "tags": ["<tag1>", "<tag2>", ...],\n'
+            '  "rationale": "<brief explanation of strategic choices>"\n'
+            "}\n"
+            "CRITICAL RULES:\n"
+            "- Return JSON only. No markdown formatting, no code fences.\n"
+            "- If title is in fields to optimize, title must be <= 100 chars, and title_angles MUST contain exactly 3 angles: curiosity, value, and search.\n"
+            "- Description must be <= 5000 characters.\n"
+            "- Tags must be an array of strings, total character count <= 500.\n"
+        )
+
+        def _json_validator(raw_text: str):
+            try:
+                clean = raw_text.strip()
+                if clean.startswith("```"):
+                    clean = re.sub(r"^```(?:json)?\s*", "", clean)
+                    clean = re.sub(r"\s*```$", "", clean)
+                data = json.loads(clean)
+                if not isinstance(data, dict):
+                    return False, "Response is not a JSON object"
+                if "title" in fields:
+                    if not data.get("title") or len(str(data["title"])) > 100:
+                        return False, "Title must be between 1 and 100 characters"
+                    angles = data.get("title_angles")
+                    if not isinstance(angles, list) or len(angles) < 3:
+                        return False, "Must provide 3 title angles"
+                if "description" in fields:
+                    if len(str(data.get("description", ""))) > 5000:
+                        return False, "Description exceeds 5000 characters"
+                if "tags" in fields:
+                    tags = data.get("tags")
+                    if not isinstance(tags, list):
+                        return False, "Tags must be a list"
+                    if sum(len(str(t)) for t in tags) > 500:
+                        return False, "Tags exceed 500 characters"
+                return True, ""
+            except Exception as e:
+                return False, f"JSON parse error: {e}"
+
+        raw_response, provider, model_used = _generate_with_fallbacks(
+            groq_key=groq_key,
+            groq_model=groq_model,
+            groq_fallbacks=groq_fallbacks,
+            gemini_key=gemini_key,
+            gemini_model=gemini_model,
+            gemini_fallbacks=gemini_fallbacks,
+            prompt=prompt,
+            validator=_json_validator,
+        )
+
+        clean = raw_response.strip()
+        if clean.startswith("```"):
+            clean = re.sub(r"^```(?:json)?\s*", "", clean)
+            clean = re.sub(r"\s*```$", "", clean)
+        parsed_result = json.loads(clean)
+        parsed_result["provider"] = provider
+        parsed_result["model"] = model_used
+        return parsed_result
+
+    return _generator
+
+
 def _stage_text_metadata_batch(text, youtube, secrets=None):
-    parsed_plan = batch_instructions.parse_batch_instructions(text)
+    channel_videos = []
+    if youtube:
+        try:
+            channel_videos = connector.get_owner_channel_videos(youtube, limit=200)
+        except Exception:
+            channel_videos = []
+    ai_gen = build_batch_metadata_generator(secrets, youtube=youtube)
+    parsed_plan = batch_instructions.parse_batch_instructions(
+        text,
+        channel_videos=channel_videos,
+        secrets=secrets,
+    )
     canonical = batch_metadata.create_batch_from_text_plan(parsed_plan)
-    return batch_metadata.prepare_metadata_batch(youtube, canonical, secrets=secrets)
+    return batch_metadata.prepare_metadata_batch(
+        youtube,
+        canonical,
+        secrets=secrets,
+        ai_generator=ai_gen,
+    )
 
 
 def _is_batch_intent(message: str, urls: List[str]) -> bool:
@@ -1114,15 +1248,10 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                             )
                             if new_t != row.get("proposed", {}).get("title", ""):
                                 row["proposed"]["title"] = new_t
-                                row["proposed_title"] = new_t
-                                try:
-                                    connector._validate_metadata(row["proposed"])
-                                    row["digest"] = connector.metadata_proposal_digest(vid, row["before"], row["proposed"])
-                                    if "title" not in row["changed_fields"]:
-                                        row["changed_fields"].append("title")
-                                except Exception as err:
-                                    row["errors"] = [str(err)]
+                                batch_metadata.revalidate_batch_row(row)
+                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
                                 st.session_state["batch_metadata_review"] = batch
+                                st.rerun()
                         else:
                             st.code(row.get("proposed", {}).get("title", ""), language=None)
 
@@ -1134,8 +1263,8 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                             with angle_cols[a_idx]:
                                 if st.button(f"{angle.get('label', angle.get('angle', 'Option'))}: {angle.get('title', '')[:35]}...", key=f"btn_ang_{vid}_{a_idx}_{index}"):
                                     row["proposed"]["title"] = angle["title"]
-                                    row["proposed_title"] = angle["title"]
-                                    row["digest"] = connector.metadata_proposal_digest(vid, row["before"], row["proposed"])
+                                    batch_metadata.revalidate_batch_row(row)
+                                    batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
                                     st.session_state["batch_metadata_review"] = batch
                                     st.rerun()
 
@@ -1155,14 +1284,10 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                             )
                             if new_d != row.get("proposed", {}).get("description", ""):
                                 row["proposed"]["description"] = new_d
-                                try:
-                                    connector._validate_metadata(row["proposed"])
-                                    row["digest"] = connector.metadata_proposal_digest(vid, row["before"], row["proposed"])
-                                    if "description" not in row["changed_fields"]:
-                                        row["changed_fields"].append("description")
-                                except Exception as err:
-                                    row["errors"] = [str(err)]
+                                batch_metadata.revalidate_batch_row(row)
+                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
                                 st.session_state["batch_metadata_review"] = batch
+                                st.rerun()
                         else:
                             st.text_area("Prop Desc", value=row.get("proposed", {}).get("description", ""), height=100, disabled=True, key=f"view_prop_d_{vid}_{index}", label_visibility="collapsed")
 
@@ -1182,14 +1307,10 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                             parsed_new_tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
                             if parsed_new_tags != row.get("proposed", {}).get("tags", []):
                                 row["proposed"]["tags"] = parsed_new_tags
-                                try:
-                                    connector._validate_metadata(row["proposed"])
-                                    row["digest"] = connector.metadata_proposal_digest(vid, row["before"], row["proposed"])
-                                    if "tags" not in row["changed_fields"]:
-                                        row["changed_fields"].append("tags")
-                                except Exception as err:
-                                    row["errors"] = [str(err)]
+                                batch_metadata.revalidate_batch_row(row)
+                                batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
                                 st.session_state["batch_metadata_review"] = batch
+                                st.rerun()
                         else:
                             st.caption(", ".join(row.get("proposed", {}).get("tags", [])) or "*(none)*")
 
@@ -1200,11 +1321,12 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
         st.markdown(f"**Selected for publishing:** {len(selected_ids)} of {ready_count} ready video proposals")
 
         if selected_ids:
-            selected_key = "_".join(selected_ids)
-            approval_key = (
-                f"batch_exact_approval_{batch.get('fingerprint', '')[:12]}_"
-                f"{batch.get('review_revision', 1)}_{len(selected_ids)}_{selected_key}"
+            selected_rows = [r for r in rows if r.get("video_id") in selected_ids and r.get("status") == "ready"]
+            approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(
+                selected_rows,
+                review_revision=batch.get("review_revision", 1),
             )
+            approval_key = f"batch_approval_box_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}"
             approved = st.checkbox(
                 f"I reviewed and approve the exact metadata shown for all {len(selected_ids)} selected videos.",
                 value=False,
@@ -1215,7 +1337,7 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 type="primary",
                 use_container_width=True,
                 disabled=not approved or youtube is None,
-                key=f"batch_publish_{batch.get('fingerprint', '')[:12]}_{len(selected_ids)}_{selected_key}",
+                key=f"batch_publish_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}",
             )
             if publish_clicked:
                 success_count = 0
@@ -1226,6 +1348,17 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                         if row.get("video_id") not in selected_set or row.get("status") != "ready":
                             continue
                         row["attempted"] = True
+                        expected_digest = connector.metadata_proposal_digest(
+                            row["video_id"],
+                            row["before"],
+                            row["proposed"],
+                        )
+                        if row.get("digest") != expected_digest:
+                            row["status"] = "failed"
+                            row["result_message"] = "Publish blocked: proposal digest mismatch. Proposal was modified after approval."
+                            failure_count += 1
+                            continue
+
                         try:
                             result = connector.apply_approved_dashboard_proposal(
                                 youtube,

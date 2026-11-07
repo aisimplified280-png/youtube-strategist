@@ -2,14 +2,17 @@
 
 Interprets ordinary-language paragraphs, numbered lists, or structured text
 describing which YouTube videos to change and what to change.
-Uses strict JSON schema validation, safe reference resolution, and error isolation.
+Uses Groq/Gemini structured interpretation with strict JSON schema validation,
+fallback recovery, and deterministic reference reconciliation.
 """
 
 import copy
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
+
+import requests
 
 import youtube_analytics_connector as connector
 from core.batch_metadata import VIDEO_ID_RE, parse_tags_cell, parse_video_reference
@@ -18,7 +21,11 @@ from core.batch_metadata import VIDEO_ID_RE, parse_tags_cell, parse_video_refere
 MAX_BATCH_TEXT_LENGTH = 20_000
 MAX_BATCH_VIDEOS = 25
 
-# Matches common YouTube URLs and explicit video ID patterns
+GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+
 YOUTUBE_URL_PATTERN = re.compile(
     r"https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s\"'>)]+|shorts/[A-Za-z0-9_-]{11}|embed/[A-Za-z0-9_-]{11}|live/[A-Za-z0-9_-]{11})|youtu\.be/[A-Za-z0-9_-]{11}[^\s\"'>)]*)",
     re.IGNORECASE,
@@ -31,16 +38,19 @@ EXPLICIT_ID_PATTERN = re.compile(
 
 
 def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
-    """Extract YouTube video references (URLs, IDs, or named video entries) from text."""
+    """Extract all YouTube video references (URLs, IDs) from text with their positions."""
     if not text or not isinstance(text, str):
         return []
 
     found_refs = []
-    seen_ids = set()
+    seen_spans = set()
 
-    # 1. URL patterns
     for match in YOUTUBE_URL_PATTERN.finditer(text):
         url = match.group(0).rstrip(".,;!?:")
+        span = (match.start(), match.end())
+        if span in seen_spans:
+            continue
+        seen_spans.add(span)
         try:
             vid = parse_video_reference(url)
             found_refs.append({
@@ -50,7 +60,6 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
                 "start": match.start(),
                 "end": match.end(),
             })
-            seen_ids.add(vid)
         except ValueError:
             found_refs.append({
                 "raw_reference": url,
@@ -60,10 +69,11 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
                 "end": match.end(),
             })
 
-    # 2. Explicit ID labels like "Video ID: cxsx2ZppQvg" or "id: cxsx2ZppQvg"
     for match in EXPLICIT_ID_PATTERN.finditer(text):
         vid = match.group(1)
-        if vid not in seen_ids:
+        span = (match.start(), match.end())
+        if span not in seen_spans:
+            seen_spans.add(span)
             found_refs.append({
                 "raw_reference": vid,
                 "video_id": vid,
@@ -71,9 +81,7 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
                 "start": match.start(),
                 "end": match.end(),
             })
-            seen_ids.add(vid)
 
-    # Sort by appearance in text
     found_refs.sort(key=lambda r: r["start"])
     return found_refs
 
@@ -82,7 +90,7 @@ def resolve_channel_video_by_title(
     title_query: str,
     channel_videos: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Resolve a video title against the authenticated owner's channel videos.
+    """Resolve a video title against the authenticated owner's channel uploads.
     
     Returns a dict with 'status' ('resolved', 'ambiguous', 'unresolved') and details.
     """
@@ -104,9 +112,9 @@ def resolve_channel_video_by_title(
         if not v_id:
             continue
         if v_title == title_query.strip():
-            exact_matches.append({"id": v_id, "title": v_title})
+            exact_matches.append({"id": v_id, "title": v_title, "publishedAt": vid.get("publishedAt", "")})
         elif v_title.casefold() == clean_query:
-            casefold_matches.append({"id": v_id, "title": v_title})
+            casefold_matches.append({"id": v_id, "title": v_title, "publishedAt": vid.get("publishedAt", "")})
 
     matches = exact_matches or casefold_matches
     if len(matches) == 1:
@@ -118,11 +126,13 @@ def resolve_channel_video_by_title(
             "matches": matches,
         }
     elif len(matches) > 1:
+        match_descriptions = [f"ID {m['id']} ('{m['title']}', published {m.get('publishedAt', 'N/A')[:10]})" for m in matches]
+        details = "; ".join(match_descriptions)
         return {
             "status": "ambiguous",
             "video_id": None,
             "title": title_query,
-            "error": f"Title matches {len(matches)} uploads on your channel. Please specify the exact video ID or URL.",
+            "error": f"Title matches {len(matches)} uploads on your channel: {details}. Specify the exact video ID or URL.",
             "matches": matches,
         }
     else:
@@ -135,10 +145,13 @@ def resolve_channel_video_by_title(
         }
 
 
-def parse_instruction_intent_deterministic(instruction: str) -> Dict[str, Any]:
-    """Deterministically extract field change intent, exact values, and clearing instructions."""
-    text = instruction or ""
-    lower = text.casefold()
+def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
+    """Deterministically extract field change intent, exact values, and clearing instructions.
+    
+    Robust against apostrophes, multiline descriptions, decimal tags, JSON tag arrays, and quotes.
+    """
+    text_content = str(text or "")
+    lower = text_content.casefold()
 
     title_intent = "unmentioned"
     exact_title = None
@@ -149,7 +162,7 @@ def parse_instruction_intent_deterministic(instruction: str) -> Dict[str, Any]:
     tags_intent = "unmentioned"
     exact_tags = None
 
-    # Title preservation detection
+    # 1. Title intent & extraction
     title_preserves = bool(re.search(
         r"\b(?:keep|preserve|leave|don't change|do not change|without changing)\s+(?:the\s+)?(?:current\s+|existing\s+)?titles?\b|"
         r"\btitles?\s+(?:unchanged|as[- ]is|intact|remain unchanged|should remain unchanged)\b|"
@@ -157,35 +170,58 @@ def parse_instruction_intent_deterministic(instruction: str) -> Dict[str, Any]:
         lower,
     ))
 
-    # Exact title extraction: e.g. change the title to '...' or title: "..."
-    title_match = re.search(
-        r"(?:change|set|update)?\s*(?:the\s+)?title\s*(?:to|:|=)\s*['\"]([^'\"]+)['\"]",
-        text,
+    # Check for exact title: triple quotes, double/single quotes, or labeled Title:
+    exact_title_match = re.search(
+        r"(?:change|set|update)?\s*(?:the\s+)?title\s*(?:to|:|=)\s*['\"]{1,3}([\s\S]*?)['\"]{1,3}",
+        text_content,
         re.IGNORECASE,
     )
-    if title_match:
+    if not exact_title_match:
+        exact_title_match = re.search(
+            r"\bTitle\s*:\s*([^\n\r]+)",
+            text_content,
+            re.IGNORECASE,
+        )
+
+    if exact_title_match and exact_title_match.group(1).strip():
         title_intent = "exact"
-        exact_title = title_match.group(1).strip()
+        exact_title = exact_title_match.group(1).strip()
     elif title_preserves:
         title_intent = "preserve"
-    elif re.search(r"\b(?:improve|optimize|rewrite|generate|craft|new)\s+(?:the\s+)?titles?\b", lower):
+    elif re.search(r"\b(?:improve|optimize|rewrite|generate|craft|new)\b[\s\S]{0,25}?\btitles?\b|\btitles?\b[\s\S]{0,25}?\b(?:improve|optimize|rewrite|update)\b", lower):
         title_intent = "optimize"
 
-    # Description detection
-    # Check for explicit clearing: empty description
-    if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:the\s+)?descriptions?\b", lower):
+    # 2. Description intent & extraction
+    if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:the\s+)?descriptions?\b", lower) or 'description: ""' in lower or "description: ''" in lower:
         desc_intent = "clear"
         exact_desc = ""
     else:
-        # Check for exact description in quotes or code block
-        desc_exact_match = re.search(
-            r"(?:change|set|update)?\s*(?:the\s+)?description\s*(?:to|:|=)\s*['\"]{1,3}([\s\S]*?)['\"]{1,3}",
-            text,
+        # Check triple quotes, or quotes, or multiline block
+        desc_triple = re.search(
+            r"(?:change|set|update)?\s*(?:the\s+)?description\s*(?:to|:|=)\s*([\"']{3})([\s\S]*?)\1",
+            text_content,
             re.IGNORECASE,
         )
-        if desc_exact_match and desc_exact_match.group(1).strip():
+        desc_quoted = re.search(
+            r"(?:change|set|update)?\s*(?:the\s+)?description\s*(?:to|:|=)\s*[\"']([\s\S]*?)[\"']",
+            text_content,
+            re.IGNORECASE,
+        )
+        desc_block = re.search(
+            r"\bDescription\s*:\s*([\s\S]+?)(?=\n\s*(?:Tags:|Title:|Video\s*\d+:|https?://|$))",
+            text_content,
+            re.IGNORECASE,
+        )
+
+        if desc_triple and desc_triple.group(2).strip():
             desc_intent = "exact"
-            exact_desc = desc_exact_match.group(1).strip()
+            exact_desc = desc_triple.group(2).strip()
+        elif desc_quoted and desc_quoted.group(1).strip():
+            desc_intent = "exact"
+            exact_desc = desc_quoted.group(1).strip()
+        elif desc_block and desc_block.group(1).strip() and not re.search(r"^(?:improve|optimize|keep|preserve)\b", desc_block.group(1).strip(), re.I):
+            desc_intent = "exact"
+            exact_desc = desc_block.group(1).strip()
         elif bool(re.search(
             r"\b(?:keep|preserve|leave|don't change|do not change)\s+(?:the\s+)?(?:current\s+|existing\s+)?descriptions?\b|"
             r"\bdescriptions?\s+(?:unchanged|as[- ]is|intact)\b|"
@@ -196,27 +232,36 @@ def parse_instruction_intent_deterministic(instruction: str) -> Dict[str, Any]:
         elif re.search(r"\b(?:improve|optimize|rewrite|update|craft|new)\b[\s\S]{0,30}?\bdescriptions?\b|\bdescriptions?\b[\s\S]{0,30}?\b(?:improve|optimize|update)\b", lower):
             desc_intent = "optimize"
 
-    # Tags detection
-    # Check for explicit clearing: e.g. "tags: []" or "clear tags"
+    # 3. Tags intent & extraction
     if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:all\s+)?(?:the\s+)?tags\b", lower) or "tags: []" in lower or "tags:[]" in lower:
         tags_intent = "clear"
         exact_tags = []
     else:
-        # Check for exact tags e.g. tags: tag1, tag2, tag3 or use these tags: a, b, c
-        tags_match = re.search(
-            r"(?:use\s+(?:these\s+)?tags|tags\s*[:=]|set\s+tags\s+to)\s*[:=]?\s*(\[[^\]]*\]|[^.\n]+)",
-            text,
+        # Check JSON array first
+        tags_json_match = re.search(r"(?:tags\s*[:=]|use\s+tags\s*[:=]?)\s*(\[[^\]]*\])", text_content, re.IGNORECASE)
+        tags_text_match = re.search(
+            r"(?:use\s+(?:these\s+)?tags|tags\s*[:=]|set\s+tags\s+to)\s*[:=]?\s*([^\n\r]+)",
+            text_content,
             re.IGNORECASE,
         )
-        if tags_match:
-            raw_tags = tags_match.group(1).strip().rstrip(".,;")
+        if tags_json_match:
             try:
-                parsed_t = parse_tags_cell(raw_tags)
+                parsed_t = parse_tags_cell(tags_json_match.group(1))
                 if parsed_t is not None:
                     tags_intent = "exact"
                     exact_tags = parsed_t
             except ValueError:
                 pass
+        elif tags_text_match:
+            raw_tags = tags_text_match.group(1).strip().rstrip(".,;")
+            if not re.search(r"^(?:improve|optimize|keep|preserve)\b", raw_tags, re.I):
+                try:
+                    parsed_t = parse_tags_cell(raw_tags)
+                    if parsed_t is not None:
+                        tags_intent = "exact"
+                        exact_tags = parsed_t
+                except ValueError:
+                    pass
 
         if tags_intent == "unmentioned":
             if bool(re.search(
@@ -248,49 +293,102 @@ def parse_instruction_intent_deterministic(instruction: str) -> Dict[str, Any]:
     }
 
 
-def split_text_into_video_sections(text: str) -> Tuple[str, List[Dict[str, Any]]]:
-    """Split batch instructions text into shared instructions and individual video sections."""
-    lines = text.splitlines()
-    shared_lines = []
-    video_sections = []
+def parse_instruction_intent_deterministic(instruction: str) -> Dict[str, Any]:
+    """Compatibility wrapper for extract_field_values_and_intents."""
+    return extract_field_values_and_intents(instruction)
 
-    # Regex for section headers like: "Video 1:", "Video 2:", "1.", "2.", "Video https://..."
-    section_header_re = re.compile(
-        r"^(?:(?:video\s*\d+|video\s*[A-Za-z0-9_-]{11}|\d+[\.\)])\s*[:\-]?\s*|\bfor\s+video\s+)",
-        re.IGNORECASE,
+
+def _call_groq_json(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    response = requests.post(
+        GROQ_CHAT_ENDPOINT,
+        headers=headers,
+        json={
+            "model": model or DEFAULT_GROQ_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
+            "max_tokens": 4096,
+        },
+        timeout=60,
     )
+    response.raise_for_status()
+    payload = response.json()
+    content_str = payload["choices"][0]["message"]["content"]
+    return json.loads(content_str)
 
-    current_section = None
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            if current_section:
-                current_section["lines"].append(line)
-            continue
+def _call_gemini_json(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
+    url = f"{GEMINI_ENDPOINT.format(model=model or DEFAULT_GEMINI_MODEL)}?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+    }
+    response = requests.post(url, headers=headers, json=body, timeout=60)
+    response.raise_for_status()
+    payload = response.json()
+    text = payload["candidates"][0]["content"]["parts"][0]["text"]
+    return json.loads(text)
 
-        # Check if line indicates start of a video section
-        is_header = bool(section_header_re.match(stripped)) or YOUTUBE_URL_PATTERN.search(stripped)
-        # But if it's in the middle and no section started yet, treat as shared or first section
-        has_url_or_id = bool(YOUTUBE_URL_PATTERN.search(stripped) or EXPLICIT_ID_PATTERN.search(stripped))
 
-        if is_header and has_url_or_id:
-            if current_section:
-                video_sections.append(current_section)
-            current_section = {
-                "header": stripped,
-                "lines": [line],
-            }
-        elif current_section:
-            current_section["lines"].append(line)
-        else:
-            shared_lines.append(line)
+def _interpret_batch_instructions_with_ai(
+    text: str,
+    groq_key: Optional[str] = None,
+    groq_model: Optional[str] = None,
+    gemini_key: Optional[str] = None,
+    gemini_model: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Use Groq-first, Gemini-fallback AI to interpret natural-language instructions into structured JSON."""
+    prompt = f"""You are the structured parser for YouTube metadata batch instructions.
+Interpret the following user instruction text into a strict structured JSON batch plan.
 
-    if current_section:
-        video_sections.append(current_section)
+USER TEXT:
+\"\"\"
+{text}
+\"\"\"
 
-    shared_text = "\n".join(shared_lines).strip()
-    return shared_text, video_sections
+Return ONLY a JSON object matching this schema:
+{{
+  "shared_instructions": "string (instructions that apply to all videos)",
+  "videos": [
+    {{
+      "reference": "string (the video URL, ID, or title mentioned)",
+      "video_id": "11-character video ID if identifiable, else null",
+      "title_intent": "exact" | "optimize" | "preserve" | "unmentioned",
+      "exact_title": "string or null",
+      "description_intent": "exact" | "optimize" | "preserve" | "clear" | "unmentioned",
+      "exact_description": "string or null",
+      "tags_intent": "exact" | "optimize" | "preserve" | "clear" | "unmentioned",
+      "exact_tags": ["string"] or null,
+      "video_specific_instructions": "string",
+      "clarification_required": "string or null"
+    }}
+  ]
+}}
+
+Rules:
+1. Every distinct video reference mentioned in the text must have an entry in 'videos'.
+2. If exact text was supplied by the user (in quotes or labeled), set intent to "exact" and preserve the text accurately (do not modify apostrophes or quotes).
+3. If user asked to clear description or tags (e.g. "clear tags", "tags: []"), set intent to "clear" and exact_tags to [] or exact_description to "".
+4. If user asked to optimize, improve, or craft a new field, set intent to "optimize".
+5. If user asked to keep or preserve a field, set intent to "preserve".
+6. If a field was not mentioned, set intent to "unmentioned".
+"""
+
+    if groq_key:
+        try:
+            return _call_groq_json(groq_key, groq_model, prompt)
+        except Exception:
+            pass
+
+    if gemini_key:
+        try:
+            return _call_gemini_json(gemini_key, gemini_model, prompt)
+        except Exception:
+            pass
+
+    return None
 
 
 def validate_batch_instructions_schema(data: Any) -> Tuple[bool, List[str]]:
@@ -336,15 +434,13 @@ def parse_batch_instructions(
     groq_model: Optional[str] = None,
     gemini_key: Optional[str] = None,
     gemini_model: Optional[str] = None,
+    secrets: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Main entrypoint to parse natural-language batch instructions into a structured batch plan.
+    """Parse natural-language batch instructions into a structured batch plan.
     
-    Returns a dictionary containing:
-      - 'raw_text': str
-      - 'videos': list of structured video instruction dicts
-      - 'shared_instructions': str
-      - 'total_identified': int
-      - 'errors': list of batch-level errors
+    Uses structured LLM interpretation when credentials are provided, with strict
+    schema validation and deterministic reconciliation against every extracted URL and ID.
     """
     if not text or not isinstance(text, str):
         raise ValueError("Please provide batch instructions text.")
@@ -356,159 +452,220 @@ def parse_batch_instructions(
         )
 
     channel_videos = channel_videos or []
-    shared_text, video_sections = split_text_into_video_sections(text)
-    shared_intent = parse_instruction_intent_deterministic(shared_text)
+    if secrets:
+        groq_key = groq_key or secrets.get("GROQ_API_KEY") or secrets.get("groq_api_key")
+        groq_model = groq_model or secrets.get("GROQ_MODEL") or secrets.get("groq_model")
+        gemini_key = gemini_key or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
+        gemini_model = gemini_model or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model")
 
-    # 1. First, extract all direct video references from the text
-    refs = extract_video_references_from_text(text)
+    # 1. First, extract ALL direct video references appearing in the text
+    all_refs = extract_video_references_from_text(text)
 
-    # If there are video sections, process each section
-    parsed_videos: List[Dict[str, Any]] = []
-    seen_references: Dict[str, Dict[str, Any]] = {}
+    # 2. Try structured AI interpretation if credentials are provided
+    ai_plan = None
+    if groq_key or gemini_key:
+        candidate_plan = _interpret_batch_instructions_with_ai(
+            text, groq_key=groq_key, groq_model=groq_model, gemini_key=gemini_key, gemini_model=gemini_model
+        )
+        if candidate_plan:
+            is_valid, _ = validate_batch_instructions_schema(candidate_plan)
+            if is_valid and candidate_plan.get("videos"):
+                ai_plan = candidate_plan
 
-    if video_sections:
-        for section in video_sections:
-            sec_text = "\n".join(section["lines"])
-            sec_refs = extract_video_references_from_text(sec_text)
-            sec_intent = parse_instruction_intent_deterministic(sec_text)
+    # 3. Deterministic parsing (used standalone or as reconciliation baseline)
+    # Extract shared instructions: text before first reference or after all references
+    first_start = all_refs[0]["start"] if all_refs else len(text)
+    last_end = all_refs[-1]["end"] if all_refs else 0
 
-            # Fallback to shared intent if field unmentioned in section
-            final_title_intent = sec_intent["title_intent"] if sec_intent["title_intent"] != "unmentioned" else shared_intent["title_intent"]
-            final_exact_title = sec_intent["exact_title"] if sec_intent["exact_title"] is not None else shared_intent["exact_title"]
+    shared_prefix = text[:first_start].strip()
+    shared_suffix = text[last_end:].strip()
+    combined_shared = f"{shared_prefix}\n{shared_suffix}".strip()
+    shared_intent = extract_field_values_and_intents(combined_shared)
 
-            final_desc_intent = sec_intent["description_intent"] if sec_intent["description_intent"] != "unmentioned" else shared_intent["description_intent"]
-            final_exact_desc = sec_intent["exact_description"] if sec_intent["exact_description"] is not None else shared_intent["exact_description"]
+    raw_candidates: List[Dict[str, Any]] = []
 
-            final_tags_intent = sec_intent["tags_intent"] if sec_intent["tags_intent"] != "unmentioned" else shared_intent["tags_intent"]
-            final_exact_tags = sec_intent["exact_tags"] if sec_intent["exact_tags"] is not None else shared_intent["exact_tags"]
-
-            # Target reference
-            if sec_refs:
-                primary_ref = sec_refs[0]
-                raw_ref = primary_ref["raw_reference"]
-                vid = primary_ref["video_id"]
-            else:
-                raw_ref = section["header"]
-                vid = None
-
-            video_entry = {
+    if ai_plan:
+        # Use AI parsed items
+        for item in ai_plan.get("videos", []):
+            raw_ref = item.get("reference", "")
+            raw_candidates.append({
                 "reference": raw_ref,
-                "video_id": vid,
-                "title_query": None,
-                "original_instruction": sec_text.strip(),
+                "video_id": item.get("video_id"),
+                "title_intent": item.get("title_intent", "unmentioned"),
+                "exact_title": item.get("exact_title"),
+                "description_intent": item.get("description_intent", "unmentioned"),
+                "exact_description": item.get("exact_description"),
+                "tags_intent": item.get("tags_intent", "unmentioned"),
+                "exact_tags": item.get("exact_tags"),
+                "original_instruction": item.get("video_specific_instructions") or combined_shared,
+                "errors": [],
+            })
+
+    # Deterministic reconciliation: ensure EVERY reference in all_refs is present
+    parsed_ids_or_urls = {
+        c.get("video_id") or c.get("reference")
+        for c in raw_candidates if (c.get("video_id") or c.get("reference"))
+    }
+
+    # If no AI plan or some references were omitted by AI, process segments
+    if not ai_plan or len(raw_candidates) < len(all_refs):
+        # Segment text per reference: each reference gets surrounding context up to next reference
+        for i, ref in enumerate(all_refs):
+            ref_id = ref.get("video_id")
+            raw_url = ref.get("raw_reference")
+            if ref_id in parsed_ids_or_urls or raw_url in parsed_ids_or_urls:
+                continue
+
+            seg_start = ref["start"]
+            seg_end = all_refs[i + 1]["start"] if (i + 1 < len(all_refs)) else len(text)
+            seg_text = text[seg_start:seg_end].strip()
+
+            local_intent = extract_field_values_and_intents(seg_text)
+
+            # Combine with shared intent (local overrides shared)
+            final_title_intent = local_intent["title_intent"] if local_intent["title_intent"] != "unmentioned" else shared_intent["title_intent"]
+            final_exact_title = local_intent["exact_title"] if local_intent["exact_title"] is not None else shared_intent["exact_title"]
+
+            final_desc_intent = local_intent["description_intent"] if local_intent["description_intent"] != "unmentioned" else shared_intent["description_intent"]
+            final_exact_desc = local_intent["exact_description"] if local_intent["exact_description"] is not None else shared_intent["exact_description"]
+
+            final_tags_intent = local_intent["tags_intent"] if local_intent["tags_intent"] != "unmentioned" else shared_intent["tags_intent"]
+            final_exact_tags = local_intent["exact_tags"] if local_intent["exact_tags"] is not None else shared_intent["exact_tags"]
+
+            raw_candidates.append({
+                "reference": raw_url,
+                "video_id": ref_id,
                 "title_intent": final_title_intent,
                 "exact_title": final_exact_title,
                 "description_intent": final_desc_intent,
                 "exact_description": final_exact_desc,
                 "tags_intent": final_tags_intent,
                 "exact_tags": final_exact_tags,
-                "fields_requested": [
-                    f for f in ("title", "description", "tags")
-                    if (f == "title" and final_title_intent in {"exact", "optimize"})
-                    or (f == "description" and final_desc_intent in {"exact", "optimize", "clear"})
-                    or (f == "tags" and final_tags_intent in {"exact", "optimize", "clear"})
-                ],
-                "is_ambiguous": False,
-                "is_unresolved": False,
-                "conflict_detected": False,
+                "original_instruction": seg_text or combined_shared,
                 "errors": [],
-            }
-            parsed_videos.append(video_entry)
-    elif refs:
-        # Multiple refs listed with shared instructions
-        for ref in refs:
-            video_entry = {
-                "reference": ref["raw_reference"],
-                "video_id": ref["video_id"],
-                "title_query": None,
-                "original_instruction": shared_text,
+            })
+
+    # If no URLs/IDs were found, check if non-YouTube/invalid URLs or channel video titles are present
+    if not raw_candidates:
+        any_url_pattern = re.compile(r"https?://[^\s\"'>)]+", re.IGNORECASE)
+        for m in any_url_pattern.finditer(text):
+            url = m.group(0).rstrip(".,;!?:")
+            raw_candidates.append({
+                "reference": url,
+                "video_id": None,
+                "is_unresolved": True,
+                "errors": [f"Invalid or unsupported video URL: '{url}'"],
+                "original_instruction": text,
                 "title_intent": shared_intent["title_intent"],
                 "exact_title": shared_intent["exact_title"],
                 "description_intent": shared_intent["description_intent"],
                 "exact_description": shared_intent["exact_description"],
                 "tags_intent": shared_intent["tags_intent"],
                 "exact_tags": shared_intent["exact_tags"],
-                "fields_requested": list(shared_intent["fields_requested"]),
-                "is_ambiguous": False,
-                "is_unresolved": False,
-                "conflict_detected": False,
-                "errors": [],
-            }
-            parsed_videos.append(video_entry)
-    else:
-        # Check if references are exact titles
-        # Lines starting with quotes or video names
-        title_candidates = [l.strip().strip("-*•").strip() for l in text.splitlines() if l.strip()]
-        for candidate in title_candidates:
-            if candidate.startswith("http") or len(candidate) < 3:
-                continue
-            res = resolve_channel_video_by_title(candidate, channel_videos)
+            })
+
+    if not raw_candidates and channel_videos:
+        # Check quoted terms for channel video titles
+        quoted_terms = re.findall(r"['\"]([^'\"]{3,100})['\"]", text)
+        matched_quoted = False
+        for term in quoted_terms:
+            res = resolve_channel_video_by_title(term, channel_videos)
             if res["status"] in {"resolved", "ambiguous"}:
-                parsed_videos.append({
-                    "reference": candidate,
+                matched_quoted = True
+                local_intent = extract_field_values_and_intents(text)
+                raw_candidates.append({
+                    "reference": term,
                     "video_id": res["video_id"],
-                    "title_query": candidate,
-                    "original_instruction": shared_text,
-                    "title_intent": shared_intent["title_intent"],
-                    "exact_title": shared_intent["exact_title"],
-                    "description_intent": shared_intent["description_intent"],
-                    "exact_description": shared_intent["exact_description"],
-                    "tags_intent": shared_intent["tags_intent"],
-                    "exact_tags": shared_intent["exact_tags"],
-                    "fields_requested": list(shared_intent["fields_requested"]),
+                    "title_intent": local_intent["title_intent"] if local_intent["title_intent"] != "unmentioned" else shared_intent["title_intent"],
+                    "exact_title": local_intent["exact_title"] if local_intent["exact_title"] is not None else shared_intent["exact_title"],
+                    "description_intent": local_intent["description_intent"] if local_intent["description_intent"] != "unmentioned" else shared_intent["description_intent"],
+                    "exact_description": local_intent["exact_description"] if local_intent["exact_description"] is not None else shared_intent["exact_description"],
+                    "tags_intent": local_intent["tags_intent"] if local_intent["tags_intent"] != "unmentioned" else shared_intent["tags_intent"],
+                    "exact_tags": local_intent["exact_tags"] if local_intent["exact_tags"] is not None else shared_intent["exact_tags"],
+                    "original_instruction": text,
                     "is_ambiguous": res["status"] == "ambiguous",
-                    "is_unresolved": False,
-                    "conflict_detected": False,
                     "errors": [res["error"]] if res.get("error") else [],
                 })
 
-    # If no videos could be extracted at all
-    if not parsed_videos:
+        if not matched_quoted:
+            lines = [l.strip().strip("-*•").strip() for l in text.splitlines() if l.strip()]
+            for line in lines:
+                if line.startswith("http") or len(line) < 3:
+                    continue
+                res = resolve_channel_video_by_title(line, channel_videos)
+                if res["status"] in {"resolved", "ambiguous"}:
+                    raw_candidates.append({
+                        "reference": line,
+                        "video_id": res["video_id"],
+                        "title_intent": shared_intent["title_intent"],
+                        "exact_title": shared_intent["exact_title"],
+                        "description_intent": shared_intent["description_intent"],
+                        "exact_description": shared_intent["exact_description"],
+                        "tags_intent": shared_intent["tags_intent"],
+                        "exact_tags": shared_intent["exact_tags"],
+                        "original_instruction": combined_shared,
+                        "is_ambiguous": res["status"] == "ambiguous",
+                        "errors": [res["error"]] if res.get("error") else [],
+                    })
+
+    if not raw_candidates:
         raise ValueError("No video links, IDs, or recognizable channel titles were found in the batch instructions.")
 
-    # Check 25 video limit
-    if len(parsed_videos) > MAX_BATCH_VIDEOS:
+    if len(raw_candidates) > MAX_BATCH_VIDEOS:
         raise ValueError(
-            f"This batch contains more than {MAX_BATCH_VIDEOS} videos ({len(parsed_videos)} identified). "
+            f"This batch contains more than {MAX_BATCH_VIDEOS} videos ({len(raw_candidates)} identified). "
             "Please split your instructions into smaller batches."
         )
 
-    # Resolve references and check for duplicates / conflicts
-    deduped_videos: List[Dict[str, Any]] = []
-    seen_by_id: Dict[str, Dict[str, Any]] = {}
+    # Resolution, deduplication, conflict checking
+    final_videos: List[Dict[str, Any]] = []
+    seen_videos: Dict[str, Dict[str, Any]] = {}
 
-    for row in parsed_videos:
-        # If video_id not yet resolved, try resolving by URL or channel title
-        if not row["video_id"] and row["reference"]:
+    for row in raw_candidates:
+        ref_str = str(row.get("reference") or "")
+        vid = row.get("video_id")
+
+        if not vid and ref_str:
             try:
-                row["video_id"] = parse_video_reference(row["reference"])
+                vid = parse_video_reference(ref_str)
+                row["video_id"] = vid
             except ValueError:
                 if channel_videos:
-                    res = resolve_channel_video_by_title(row["reference"], channel_videos)
+                    res = resolve_channel_video_by_title(ref_str, channel_videos)
                     if res["status"] == "resolved":
-                        row["video_id"] = res["video_id"]
+                        vid = res["video_id"]
+                        row["video_id"] = vid
                     elif res["status"] == "ambiguous":
                         row["is_ambiguous"] = True
                         row["errors"].append(res["error"])
                     else:
                         row["is_unresolved"] = True
-                        row["errors"].append(f"Unresolved reference: '{row['reference']}'")
+                        row["errors"].append(f"Unresolved title reference: '{ref_str}'")
                 else:
                     row["is_unresolved"] = True
-                    row["errors"].append(f"Invalid YouTube URL or ID: '{row['reference']}'")
+                    row["errors"].append(f"Invalid YouTube URL or unresolvable title: '{ref_str}'")
 
-        vid = row["video_id"]
+        fields_requested = [
+            f for f in ("title", "description", "tags")
+            if (f == "title" and row.get("title_intent") in {"exact", "optimize"})
+            or (f == "description" and row.get("description_intent") in {"exact", "optimize", "clear"})
+            or (f == "tags" and row.get("tags_intent") in {"exact", "optimize", "clear"})
+        ]
+        row["fields_requested"] = fields_requested
+        row["is_ambiguous"] = row.get("is_ambiguous", False)
+        row["is_unresolved"] = row.get("is_unresolved", False)
+        row["conflict_detected"] = False
+
         if vid:
-            if vid in seen_by_id:
-                existing = seen_by_id[vid]
-                # Check for conflicting instructions
+            if vid in seen_videos:
+                existing = seen_videos[vid]
                 if (
-                    existing["title_intent"] != row["title_intent"]
-                    or existing["exact_title"] != row["exact_title"]
-                    or existing["description_intent"] != row["description_intent"]
-                    or existing["exact_description"] != row["exact_description"]
-                    or existing["tags_intent"] != row["tags_intent"]
-                    or existing["exact_tags"] != row["exact_tags"]
+                    existing.get("title_intent") != row.get("title_intent")
+                    or existing.get("exact_title") != row.get("exact_title")
+                    or existing.get("description_intent") != row.get("description_intent")
+                    or existing.get("exact_description") != row.get("exact_description")
+                    or existing.get("tags_intent") != row.get("tags_intent")
+                    or existing.get("exact_tags") != row.get("exact_tags")
                 ):
                     existing["conflict_detected"] = True
                     row["conflict_detected"] = True
@@ -516,20 +673,15 @@ def parse_batch_instructions(
                     if err_msg not in existing["errors"]:
                         existing["errors"].append(err_msg)
                     row["errors"].append(err_msg)
-                else:
-                    # Harmless duplicate reference, note deduplication
-                    pass
-                deduped_videos.append(row)
             else:
-                seen_by_id[vid] = row
-                deduped_videos.append(row)
-        else:
-            deduped_videos.append(row)
+                seen_videos[vid] = row
+
+        final_videos.append(row)
 
     return {
         "raw_text": text,
-        "shared_instructions": shared_text,
-        "videos": deduped_videos,
-        "total_identified": len(deduped_videos),
+        "shared_instructions": combined_shared,
+        "videos": final_videos,
+        "total_identified": len(final_videos),
         "errors": [],
     }

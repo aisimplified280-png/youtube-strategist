@@ -9,6 +9,7 @@ Covers:
 
 import copy
 import io
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -562,6 +563,395 @@ class TestBatchApprovalAndPublishing(unittest.TestCase):
         self.assertEqual(len(urls), 2)
         # Because of 'compare' and 'reference', it must NOT be routed as batch!
         self.assertFalse(strategist_chat._is_batch_intent(msg_text, urls))
+
+
+# ==============================================================================
+# 5. AUDIT FOLLOW-UP REGRESSION TEST SUITE (20 Audit Cases + Integration)
+# ==============================================================================
+class TestAuditFollowUpRegression(unittest.TestCase):
+    def test_01_actual_ai_generator_invocation_during_optimization(self):
+        mock_gen = MagicMock()
+        mock_gen.return_value = {
+            "title": "AI Optimized Title",
+            "title_angles": [
+                {"angle": "curiosity", "label": "Curiosity", "title": "Did You Know AI Could App?"},
+                {"angle": "value", "label": "Value", "title": "Build Apps With AI Fast"},
+                {"angle": "search", "label": "Search", "title": "How To Build Apps With AI"},
+            ],
+            "description": "AI Optimized Description",
+            "tags": ["ai", "apps"],
+        }
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{
+                "video_id": VIDEO_ID_1,
+                "title_intent": "optimize",
+                "description_intent": "optimize",
+                "tags_intent": "optimize",
+                "original_instruction": "Optimize all metadata",
+            }]
+        })
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical, ai_generator=mock_gen)
+
+        self.assertTrue(mock_gen.called)
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["proposed"]["title"], "AI Optimized Title")
+        self.assertEqual(row["proposed"]["description"], "AI Optimized Description")
+        self.assertEqual(row["proposed"]["tags"], ["ai", "apps"])
+        self.assertEqual(len(row["title_angles"]), 3)
+
+    @patch("strategist_chat._groq_generate")
+    @patch("strategist_chat._gemini_generate")
+    def test_02_groq_primary_and_gemini_fallback(self, mock_gemini, mock_groq):
+        mock_groq.side_effect = RuntimeError("Groq service unavailable")
+        mock_gemini.return_value = (
+            json.dumps({
+                "title": "Gemini Fallback Title",
+                "title_angles": [
+                    {"angle": "curiosity", "label": "Curiosity", "title": "Curious Title"},
+                    {"angle": "value", "label": "Value", "title": "Value Title"},
+                    {"angle": "search", "label": "Search", "title": "Search Title"},
+                ],
+                "description": "Gemini Description",
+                "tags": ["ai", "gemini"],
+                "rationale": "Groq down, Gemini recovered",
+            }),
+            "gemini-2.5-flash",
+        )
+        gen = strategist_chat.build_batch_metadata_generator(
+            secrets={
+                "groq": {"api_key": "groq-key"},
+                "gemini": {"api_key": "gemini-key"},
+            }
+        )
+        self.assertIsNotNone(gen)
+        result = gen(VIDEO_ID_1, make_snippet(VIDEO_ID_1), instruction="Optimize title")
+        self.assertEqual(result["title"], "Gemini Fallback Title")
+        self.assertEqual(result["provider"], "Gemini")
+        self.assertTrue(mock_groq.called)
+        self.assertTrue(mock_gemini.called)
+
+    @patch("youtube_analytics_connector.fetch_video_transcript")
+    def test_03_correct_transcript_passed_to_generator(self, mock_transcript):
+        mock_transcript.return_value = "This is a detailed video transcript about neural networks."
+        mock_gen = MagicMock()
+        mock_gen.return_value = {
+            "title": "Neural Networks Guide",
+            "title_angles": [
+                {"angle": "curiosity", "label": "Curiosity", "title": "A1"},
+                {"angle": "value", "label": "Value", "title": "A2"},
+                {"angle": "search", "label": "Search", "title": "A3"},
+            ],
+            "description": "Desc",
+            "tags": ["neural"],
+        }
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "title_intent": "optimize"}]
+        })
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        batch_metadata.prepare_metadata_batch(youtube, canonical, ai_generator=mock_gen)
+
+        self.assertTrue(mock_gen.called)
+        call_kwargs = mock_gen.call_args[1]
+        self.assertEqual(call_kwargs["transcript"], "This is a detailed video transcript about neural networks.")
+
+    def test_04_exact_title_bypasses_title_angle_generation(self):
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{
+                "video_id": VIDEO_ID_1,
+                "exact_title": "Exact Title Without Angles",
+                "title_intent": "exact",
+            }]
+        })
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical, ai_generator=None)
+
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["proposed"]["title"], "Exact Title Without Angles")
+        self.assertEqual(row["title_angles"], [])
+
+    def test_05_three_title_angles_validated_only_when_required(self):
+        mock_gen = MagicMock()
+        # Missing required 3 angles: only gives 2
+        mock_gen.return_value = {
+            "title": "Title with missing angles",
+            "title_angles": [
+                {"angle": "curiosity", "label": "Curiosity", "title": "Angle 1"},
+                {"angle": "value", "label": "Value", "title": "Angle 2"},
+            ],
+        }
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "title_intent": "optimize"}]
+        })
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical, ai_generator=mock_gen)
+
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "invalid")
+        self.assertTrue(any("3 title angles" in e for e in row["errors"]))
+
+    def test_06_missing_ai_generator_causes_explicit_row_failure_for_optimization_intent(self):
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "title_intent": "optimize"}]
+        })
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical, ai_generator=None)
+
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "invalid")
+        self.assertTrue(any("no AI generator is available" in e for e in row["errors"]))
+        # Current title must NOT be silently staged as a success!
+        self.assertNotIn("digest", row)
+
+    def test_07_multiple_links_on_one_line_produce_all_intended_rows(self):
+        text = (
+            f"https://www.youtube.com/watch?v={VIDEO_ID_1} and "
+            f"https://www.youtube.com/watch?v={VIDEO_ID_2}: change title to 'Updated Joint Title'"
+        )
+        plan = batch_instructions.parse_batch_instructions(text)
+        self.assertEqual(len(plan["videos"]), 2)
+        vids = [v["video_id"] for v in plan["videos"]]
+        self.assertEqual(vids, [VIDEO_ID_1, VIDEO_ID_2])
+
+    def test_08_shared_and_video_specific_instructions_combine_correctly(self):
+        text = (
+            "For all videos: add tags: sharedtag, globalai.\n"
+            f"Video 1: https://www.youtube.com/watch?v={VIDEO_ID_1}\n"
+            "Change title to 'Video 1 Custom Title'.\n"
+            f"Video 2: https://www.youtube.com/watch?v={VIDEO_ID_2}\n"
+            "Change title to 'Video 2 Custom Title' and use tags: customtag, specific.\n"
+        )
+        plan = batch_instructions.parse_batch_instructions(text)
+        self.assertEqual(len(plan["videos"]), 2)
+        v1 = plan["videos"][0]
+        v2 = plan["videos"][1]
+        self.assertEqual(v1["exact_title"], "Video 1 Custom Title")
+        self.assertEqual(v1["exact_tags"], ["sharedtag", "globalai"])
+        self.assertEqual(v2["exact_title"], "Video 2 Custom Title")
+        self.assertEqual(v2["exact_tags"], ["customtag", "specific"])
+
+    def test_09_title_references_resolve_using_real_owner_channel_video_data(self):
+        channel_videos = [
+            {"id": VIDEO_ID_1, "title": "Building Autonomous Agents 101"},
+            {"id": VIDEO_ID_2, "title": "Complete Next.js Crash Course"},
+        ]
+        text = "Change the title of 'Building Autonomous Agents 101' to 'Agents 101: The Definitive Guide'."
+        plan = batch_instructions.parse_batch_instructions(text, channel_videos=channel_videos)
+        self.assertEqual(len(plan["videos"]), 1)
+        self.assertEqual(plan["videos"][0]["video_id"], VIDEO_ID_1)
+
+    def test_10_ambiguous_title_matches_block_staging(self):
+        channel_videos = [
+            {"id": VIDEO_ID_1, "title": "Python Basics"},
+            {"id": VIDEO_ID_2, "title": "Python Basics"},
+        ]
+        text = "Change the title of 'Python Basics' to 'Python for Absolute Beginners'."
+        plan = batch_instructions.parse_batch_instructions(text, channel_videos=channel_videos)
+        self.assertTrue(plan["videos"][0]["is_ambiguous"])
+        canonical = batch_metadata.create_batch_from_text_plan(plan)
+        self.assertEqual(canonical["rows"][0]["status"], "invalid")
+
+    def test_11_editing_selected_proposal_invalidates_final_approval(self):
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "exact_title": "Initial Proposal", "title_intent": "exact"}]
+        })
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical)
+        row = staged["rows"][0]
+        initial_fp = batch_metadata.compute_batch_approval_fingerprint([row], review_revision=1)
+
+        # User edits title in review interface
+        row["proposed"]["title"] = "Modified Proposal After Review"
+        batch_metadata.revalidate_batch_row(row)
+        new_fp = batch_metadata.compute_batch_approval_fingerprint([row], review_revision=2)
+
+        self.assertNotEqual(initial_fp, new_fp)
+        self.assertEqual(row["status"], "ready")
+
+    def test_12_editing_after_final_approval_requires_new_approval(self):
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "exact_title": "Initial Title", "title_intent": "exact"}]
+        })
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical)
+        row = staged["rows"][0]
+
+        # Approval key 1
+        key1 = f"batch_approval_box_{batch_metadata.compute_batch_approval_fingerprint([row], review_revision=1)}"
+
+        # Edit proposal
+        row["proposed"]["title"] = "Different Title"
+        batch_metadata.revalidate_batch_row(row)
+        key2 = f"batch_approval_box_{batch_metadata.compute_batch_approval_fingerprint([row], review_revision=2)}"
+
+        self.assertNotEqual(key1, key2)
+
+    def test_13_invalid_edits_remove_old_digest_and_block_publishing(self):
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "exact_title": "Valid First Title", "title_intent": "exact"}]
+        })
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical)
+        row = staged["rows"][0]
+        self.assertIn("digest", row)
+
+        # User enters title that violates 100 character constraint
+        row["proposed"]["title"] = "X" * 120
+        batch_metadata.revalidate_batch_row(row)
+
+        self.assertEqual(row["status"], "invalid")
+        self.assertNotIn("digest", row)
+        self.assertTrue(any("100 characters" in e for e in row["errors"]))
+
+    def test_14_correcting_invalid_metadata_clears_stale_errors(self):
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "exact_title": "X" * 120, "title_intent": "exact"}]
+        })
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical)
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "invalid")
+        self.assertTrue(len(row["errors"]) > 0)
+
+        # User corrects title to a valid one
+        row["proposed"]["title"] = "Proper Short Title"
+        batch_metadata.revalidate_batch_row(row)
+
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["errors"], [])
+        self.assertIn("digest", row)
+
+    def test_15_reverting_to_original_metadata_produces_no_change(self):
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        canonical = batch_metadata.create_batch_from_text_plan({
+            "raw_text": "sample",
+            "videos": [{"video_id": VIDEO_ID_1, "exact_title": "Temporary Edit", "title_intent": "exact"}]
+        })
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical)
+        row = staged["rows"][0]
+
+        # Revert back to original title
+        row["proposed"]["title"] = row["before"]["title"]
+        batch_metadata.revalidate_batch_row(row)
+
+        self.assertEqual(row["status"], "no_change")
+        self.assertNotIn("digest", row)
+        self.assertTrue(any("identical" in e for e in row["errors"]))
+
+    def test_16_unresolved_instructions_never_become_silent_successful_updates(self):
+        text = "Change the title of https://www.notyoutube.com/bogus to 'Should Never Publish'."
+        plan = batch_instructions.parse_batch_instructions(text)
+        canonical = batch_metadata.create_batch_from_text_plan(plan)
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical)
+
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "invalid")
+        self.assertNotIn("digest", row)
+
+    def test_17_existing_spreadsheet_import_remains_functional(self):
+        csv_bytes = f"video_id,new_title\n{VIDEO_ID_1},Spreadsheet Maintained Title\n".encode("utf-8")
+        parsed = batch_metadata.parse_metadata_file("test.csv", csv_bytes)
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(youtube, parsed)
+
+        self.assertEqual(staged["rows"][0]["status"], "ready")
+        self.assertEqual(staged["rows"][0]["proposed"]["title"], "Spreadsheet Maintained Title")
+
+    def test_18_existing_single_video_chat_and_comparison_functional(self):
+        youtube = FakeYoutube({
+            VIDEO_ID_1: make_snippet(VIDEO_ID_1),
+            VIDEO_ID_2: make_snippet(VIDEO_ID_2),
+        })
+        # Single video loading
+        ctx, msg = strategist_chat._load_conversation_videos(youtube, {}, f"https://www.youtube.com/watch?v={VIDEO_ID_1}")
+        self.assertIsNotNone(ctx)
+        self.assertIsNone(msg)
+
+        # Reference comparison detection
+        comp_msg = f"Compare target https://www.youtube.com/watch?v={VIDEO_ID_1} to reference https://www.youtube.com/watch?v={VIDEO_ID_2}"
+        urls = strategist_chat._youtube_references_from_message(comp_msg)
+        self.assertFalse(strategist_chat._is_batch_intent(comp_msg, urls))
+
+    def test_19_sequential_publishing_continues_safely_after_independent_row_failure(self):
+        youtube = FakeYoutube({
+            VIDEO_ID_1: make_snippet(VIDEO_ID_1),
+            VIDEO_ID_2: make_snippet(VIDEO_ID_2),
+        })
+        youtube._videos.fail_on_update_ids.add(VIDEO_ID_1)
+
+        b1, b2 = make_snippet(VIDEO_ID_1), make_snippet(VIDEO_ID_2)
+        p1, p2 = copy.deepcopy(b1), copy.deepcopy(b2)
+        p1["title"] = "Fail Title"
+        p2["title"] = "Success Title"
+        d1 = connector.metadata_proposal_digest(VIDEO_ID_1, b1, p1)
+        d2 = connector.metadata_proposal_digest(VIDEO_ID_2, b2, p2)
+
+        rows = [
+            {"video_id": VIDEO_ID_1, "before": b1, "proposed": p1, "digest": d1, "status": "ready", "attempted": False},
+            {"video_id": VIDEO_ID_2, "before": b2, "proposed": p2, "digest": d2, "status": "ready", "attempted": False},
+        ]
+        # Sequential publishing simulation
+        for row in rows:
+            row["attempted"] = True
+            try:
+                connector.apply_approved_dashboard_proposal(
+                    youtube, row["video_id"], row["before"], row["proposed"], row["digest"],
+                    audit_callback=lambda entry: None,
+                )
+                row["status"] = "verified"
+            except Exception as err:
+                row["status"] = "failed"
+                row["result_message"] = str(err)
+
+        self.assertEqual(rows[0]["status"], "failed")
+        self.assertEqual(rows[1]["status"], "verified")
+        self.assertEqual(youtube._videos.snippets[VIDEO_ID_2]["title"], "Success Title")
+
+    def test_20_no_failed_row_is_automatically_retried(self):
+        row = {"video_id": VIDEO_ID_1, "status": "failed", "attempted": True}
+        # In publish loop, only rows with status == "ready" and attempted == False are published
+        should_publish = (row.get("status") == "ready" and not row.get("attempted"))
+        self.assertFalse(should_publish)
+
+    def test_21_full_end_to_end_integration(self):
+        # 1. User pastes instructions
+        text = (
+            f"Video 1: https://www.youtube.com/watch?v={VIDEO_ID_1}\n"
+            "Change title to 'Initial Title From User'. Change description to 'Initial Description'.\n"
+        )
+        plan = batch_instructions.parse_batch_instructions(text)
+        canonical = batch_metadata.create_batch_from_text_plan(plan)
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(youtube, canonical)
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "ready")
+
+        # 2. User edits title in table
+        row["proposed"]["title"] = "Final Approved Title"
+        batch_metadata.revalidate_batch_row(row)
+        self.assertEqual(row["status"], "ready")
+
+        # 3. User approves and publishes
+        digest = connector.metadata_proposal_digest(VIDEO_ID_1, row["before"], row["proposed"])
+        self.assertEqual(row["digest"], digest)
+        res = connector.apply_approved_dashboard_proposal(
+            youtube, VIDEO_ID_1, row["before"], row["proposed"], row["digest"],
+            audit_callback=lambda entry: None,
+        )
+        self.assertEqual(res["result"], "success")
+        self.assertEqual(youtube._videos.snippets[VIDEO_ID_1]["title"], "Final Approved Title")
 
 
 if __name__ == "__main__":

@@ -117,6 +117,18 @@ def fetch_video_snippet(youtube, video_id):
     return snippet
 
 
+def fetch_video_transcript(youtube, video_id: str) -> str:
+    """Fetch video transcript text if available."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        transcript = YouTubeTranscriptApi().fetch(video_id)
+        if isinstance(transcript, list):
+            return "\n".join(snippet.get("text", "") for snippet in transcript if isinstance(snippet, dict))
+        return ""
+    except Exception:
+        return ""
+
+
 def _parse_video_reference(reference):
     value = reference.strip()
     if not value:
@@ -213,6 +225,29 @@ def _fetch_video_details(youtube, video_ids):
                 continue
             videos[item["id"]] = item
     return videos
+
+
+def get_owner_channel_videos(youtube, limit=200):
+    """Retrieve owner channel uploads for title resolution and batch matching."""
+    if youtube is None:
+        return []
+    try:
+        video_ids = _list_recent_upload_ids(youtube, limit)
+        if not video_ids:
+            return []
+        details = _fetch_video_details(youtube, video_ids)
+        return [
+            {
+                "id": vid,
+                "video_id": vid,
+                "title": item.get("snippet", {}).get("title", ""),
+                "description": item.get("snippet", {}).get("description", ""),
+                "publishedAt": item.get("snippet", {}).get("publishedAt", ""),
+            }
+            for vid, item in details.items()
+        ]
+    except Exception:
+        return []
 
 
 def _format_assessment(video):
