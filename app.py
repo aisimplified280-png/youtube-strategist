@@ -217,7 +217,7 @@ def render_app():
         with sub_c2:
             with st.popover("⚙️ Settings", use_container_width=True):
                 st.markdown("#### Settings & Access")
-                st.caption(f"Authenticated Owner: `{subject}`")
+                st.caption("Owner Access: Verified")
                 st.divider()
 
                 st.markdown("**YouTube Integration**")
@@ -235,6 +235,10 @@ def render_app():
                         st.link_button(btn_text, yt_auth_url, type="primary", use_container_width=True)
                     elif yt_err:
                         st.caption(f"OAuth notice: {yt_err}")
+
+                st.divider()
+                st.markdown("**Long-term Memory**")
+                st.caption("Private Google Sheets memory is planned as a future enhancement and is not required for batch metadata operations.")
 
 
     # Canonical Single-Chat Landing
