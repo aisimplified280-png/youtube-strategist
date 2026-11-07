@@ -837,9 +837,19 @@ def update_studio_attachments(
         ]
         analysis = studio_export_analyzer.analyze_uploaded_files(file_payloads)
         reports = analysis.get("reports", [])
+        errors = analysis.get("errors", [])
         evidence_index = studio_export_analyzer.build_video_evidence_index(reports)
         st.session_state["studio_export_evidence_index"] = evidence_index
-        notice = f"Parsed {len(reports)} Studio report(s). Evidence linked by exact Video ID and title fallback."
+        if not reports:
+            details = "; ".join(f"{item.get('filename')}: {item.get('error')}" for item in errors)
+            notice = "No YouTube Studio report could be parsed."
+            if details:
+                notice += " " + details
+        else:
+            notice = f"Parsed {len(reports)} Studio report(s). Evidence linked by exact Video ID and title fallback."
+            if errors:
+                details = "; ".join(f"{item.get('filename')}: {item.get('error')}" for item in errors)
+                notice += f" {len(errors)} file(s) failed to parse: {details}"
         if context:
             matched_evidence = studio_export_analyzer.find_video_evidence(
                 evidence_index, context["target_id"], context.get("title")
@@ -1735,14 +1745,19 @@ def render_copilot_chat(
                     metric_cols[1].metric("Watch time", f"{watch_value:,.0f} min" if isinstance(watch_value, (int, float)) else "Unavailable")
                     metric_cols[2].metric("Impressions", f"{impressions_value:,.0f}" if isinstance(impressions_value, (int, float)) else "Unavailable")
                     metric_cols[3].metric("CTR", f"{ctr_value:.2f}%" if isinstance(ctr_value, (int, float)) else "Unavailable")
+                    lifetime_views = item.get("lifetime_views")
+                    if isinstance(lifetime_views, (int, float)):
+                        st.caption(f"Lifetime views (YouTube): {lifetime_views:,.0f}")
                     if isinstance(apv_value, (int, float)):
                         st.caption(f"Average percentage viewed: {apv_value:.1f}% • {item.get('format_group', 'Format unconfirmed')}")
+                    elif isinstance(views_value, (int, float)) and views_value <= 0:
+                        st.caption(f"Average percentage viewed: Unavailable (no views in the selected {opportunity_scan.get('period', {}).get('days', 28)}-day period) • {item.get('format_group', 'Format unconfirmed')}")
                     else:
-                        st.caption(item.get("format_group", "Format unconfirmed"))
-                    if item.get("ctr_period"):
+                        st.caption(f"Average percentage viewed: Not returned • {item.get('format_group', 'Format unconfirmed')}")
+                    if item.get("ctr_source"):
+                        reach_scope = item.get("ctr_period") or "date range not stated in the uploaded Studio export"
                         st.caption(
-                            f"Reach metrics source: {item.get('ctr_source') or 'Studio export'} "
-                            f"({item['ctr_period']})"
+                            f"Reach metrics source: {item.get('ctr_source')} ({reach_scope})"
                         )
                     for reason in item.get("reasons", []):
                         st.markdown(f"- {reason}")
