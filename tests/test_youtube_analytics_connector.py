@@ -350,6 +350,37 @@ class MetadataConnectorTests(unittest.TestCase):
             )
             self.assertIsNone(entry["after"])
 
+
+    def test_verification_http_error_is_classified_as_unavailable(self):
+        youtube = FakeYoutube({"video-1": make_snippet()})
+        plan = connector.prepare_metadata_update(
+            youtube, {"id": "video-1", "title": "A better title"}
+        )
+        error = HttpError(
+            SimpleNamespace(status=403, reason="Forbidden"),
+            b'{"error": {"message": "read-back denied"}}',
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            audit_log = Path(temp_dir) / "audit.jsonl"
+            with patch.object(connector, "fetch_video_snippet", side_effect=error):
+                with self.assertRaisesRegex(
+                    connector.MetadataVerificationUnavailableError,
+                    "read-back verification was unavailable",
+                ):
+                    connector.execute_metadata_updates(
+                        youtube,
+                        [plan],
+                        dry_run=False,
+                        confirmed_ids={"video-1"},
+                        audit_log=audit_log,
+                    )
+
+            self.assertEqual(len(youtube._videos.write_calls), 1)
+            entry = json.loads(audit_log.read_text(encoding="utf-8"))
+            self.assertEqual(entry["result"], "verification failed (HTTP 403)")
+            self.assertIsNone(entry["after"])
+
     def test_verification_transport_error_is_audited_without_retry(self):
         youtube = FakeYoutube({"video-1": make_snippet()})
         plan = connector.prepare_metadata_update(
@@ -363,7 +394,7 @@ class MetadataConnectorTests(unittest.TestCase):
                 "fetch_video_snippet",
                 side_effect=OSError("verification transport detail"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "may have succeeded"):
+                with self.assertRaisesRegex(connector.MetadataVerificationUnavailableError, "may have succeeded"):
                     connector.execute_metadata_updates(
                         youtube,
                         [plan],
