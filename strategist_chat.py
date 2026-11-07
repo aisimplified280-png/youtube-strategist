@@ -1072,6 +1072,9 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 "Optimize up to 25 videos in one batch. Add instructions or import a spreadsheet. "
                 "Every change remains staged until you explicitly approve it."
             )
+            if st.button("← Return to single-video chat", key="batch_exit_to_single_chat"):
+                st.session_state["show_batch_metadata"] = False
+                st.rerun()
             tab_text, tab_file = st.tabs(["📝 Paste instructions", "📁 Spreadsheet"])
             with tab_text:
                 st.text_area(
@@ -1658,7 +1661,7 @@ def render_copilot_chat(
     render_batch_metadata_import(youtube, subject, secrets=secrets)
 
     # Batch mode is a focused workflow; hide any previously loaded single-video context/proposal.
-    if st.session_state.get("batch_metadata_review"):
+    if st.session_state.get("batch_metadata_review") or st.session_state.get("show_batch_metadata"):
         return
 
     # 1. Active Video Context Card
