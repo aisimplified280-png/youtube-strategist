@@ -1042,7 +1042,7 @@ def render_batch_metadata_import(youtube, subject=None):
                     st.success(f"Batch finished: all {success_count} selected updates were verified.")
                 st.rerun()
 
-        if verified_count or failed_count:
+        if batch.get('rows'):
             report = batch_metadata.build_results_csv(batch)
             st.download_button(
                 "Download batch results report",
