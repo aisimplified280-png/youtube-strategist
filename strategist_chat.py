@@ -846,10 +846,26 @@ def update_studio_attachments(
             if details:
                 notice += " " + details
         else:
-            notice = f"Parsed {len(reports)} Studio report(s). Evidence linked by exact Video ID and title fallback."
+            if len(file_payloads) == 1 and str(file_payloads[0][0]).lower().endswith(".xlsx"):
+                worksheet_details = "; ".join(
+                    f"{item.get('source_sheet') or 'worksheet'} "
+                    f"({item.get('report_type')}, {item.get('video_count', 0)} video rows)"
+                    for item in reports
+                )
+                notice = (
+                    f"Parsed {len(reports)} worksheet(s) from {file_payloads[0][0]}: "
+                    f"{worksheet_details}. Evidence linked by exact Video ID and title fallback."
+                )
+            else:
+                notice = f"Parsed {len(reports)} Studio report(s). Evidence linked by exact Video ID and title fallback."
             if errors:
-                details = "; ".join(f"{item.get('filename')}: {item.get('error')}" for item in errors)
-                notice += f" {len(errors)} file(s) failed to parse: {details}"
+                details = "; ".join(
+                    f"{item.get('filename')}"
+                    + (f" · {item.get('source_sheet')}" if item.get("source_sheet") else "")
+                    + f": {item.get('error')}"
+                    for item in errors
+                )
+                notice += f" {len(errors)} file/worksheet(s) failed to parse: {details}"
         if context:
             matched_evidence = studio_export_analyzer.find_video_evidence(
                 evidence_index, context["target_id"], context.get("title")
