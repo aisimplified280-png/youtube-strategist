@@ -519,7 +519,7 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
         text = _decode_upload(data)
         if not text.strip():
             raise StudioExportError("This file is empty.")
-        delimiter = "\\t" if suffix == "tsv" else _detect_delimiter(text)
+        delimiter = "\t" if suffix == "tsv" else _detect_delimiter(text)
         try:
             matrix = list(csv.reader(io.StringIO(text), delimiter=delimiter))
         except csv.Error as error:
