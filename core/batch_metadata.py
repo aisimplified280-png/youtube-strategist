@@ -9,15 +9,118 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import re
+import unicodedata
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from openpyxl import load_workbook
 
 import youtube_analytics_connector as connector
 
+logger = logging.getLogger("batch_metadata")
+
+VALID_ROW_STATUSES = {
+    "ready",
+    "approved",
+    "publishing",
+    "verified",
+    "no_change",
+    "invalid",
+    "failed",
+    "verification_unavailable",
+}
+
+
+def normalize_title_for_comparison(title: str) -> str:
+    """Normalize title by removing emojis, punctuation, symbols, extra whitespace, and lowercasing."""
+    if not title or not isinstance(title, str):
+        return ""
+    clean = "".join(ch for ch in title if unicodedata.category(ch)[0] not in ('S', 'P', 'C'))
+    clean = re.sub(r"[^\w\s]", " ", clean)
+    return re.sub(r"\s+", " ", clean).strip().casefold()
+
+
+def validate_title_angles_quality(cur_title: str, angles: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    """Require exactly one distinct, non-trivial title for each approved angle."""
+    required_angles = {"curiosity", "value", "search"}
+    if not isinstance(angles, list) or len(angles) != 3:
+        return False, "AI title optimization must produce exactly 3 title angles (curiosity, value, search)."
+
+    norm_current = normalize_title_for_comparison(cur_title)
+    seen_types = set()
+    seen_titles = set()
+
+    for idx, angle in enumerate(angles):
+        if not isinstance(angle, dict):
+            return False, f"Title angle #{idx + 1} is not a valid dictionary."
+        angle_type = str(angle.get("angle", "")).strip().casefold()
+        if angle_type not in required_angles:
+            return False, f"Title angle #{idx + 1} has unsupported category '{angle_type}'. Use curiosity, value, or search."
+        if angle_type in seen_types:
+            return False, f"Duplicate title angle category '{angle_type}'."
+        seen_types.add(angle_type)
+
+        title = angle.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return False, f"Title angle #{idx + 1} has an empty or invalid title."
+        title = title.strip()
+        if len(title) > 100:
+            return False, f"Title angle #{idx + 1} exceeds 100 characters ({len(title)} chars)."
+
+        normalized = normalize_title_for_comparison(title)
+        if not normalized:
+            return False, f"Title angle #{idx + 1} contains no meaningful title text."
+        if norm_current and normalized == norm_current:
+            return False, f"Generated title '{title}' is only a punctuation, emoji, symbol, or casing variation of the current title."
+        if normalized in seen_titles:
+            return False, f"Generated title angle '{title}' duplicates another angle."
+        seen_titles.add(normalized)
+
+    missing = required_angles - seen_types
+    if missing:
+        return False, "Missing required title angle categories: " + ", ".join(sorted(missing)) + "."
+    return True, ""
+
+
+def validate_title_optimization_result(cur_title: str, result: Dict[str, Any]) -> Tuple[bool, str]:
+    """Validate the complete AI title recommendation, not just the angle array."""
+    if not isinstance(result, dict):
+        return False, "AI title optimization did not return a valid object."
+
+    angles = result.get("title_angles")
+    valid, error = validate_title_angles_quality(cur_title, angles)
+    if not valid:
+        return False, error
+
+    title = result.get("title")
+    recommended = result.get("recommended_title")
+    if not isinstance(title, str) or not title.strip():
+        return False, "AI title optimization did not provide a primary title."
+    if not isinstance(recommended, str) or not recommended.strip():
+        return False, "AI title optimization did not provide the required recommended_title."
+    title = title.strip()
+    recommended = recommended.strip()
+
+    if title != recommended:
+        return False, "The primary title and recommended_title do not match."
+    angle_titles = {angle["title"].strip() for angle in angles}
+    if recommended not in angle_titles:
+        return False, "recommended_title must exactly match one of the three validated title angles."
+
+    reason = result.get("recommendation_reason")
+    if not isinstance(reason, str) or not reason.strip():
+        rationale = result.get("rationale")
+        if isinstance(rationale, str) and rationale.strip():
+            result["recommendation_reason"] = rationale.strip()
+        else:
+            return False, "AI title optimization did not explain why the recommended title is strongest."
+    return True, ""
+
+
+BATCH_MAX_ROWS = 25
 
 BATCH_MAX_ROWS = 25
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -236,6 +339,7 @@ def create_batch_from_text_plan(text_plan: Dict[str, Any]) -> Dict[str, Any]:
             "tags": item.get("exact_tags"),
             "title_intent": item.get("title_intent", "unmentioned"),
             "exact_title": item.get("exact_title"),
+            "context_title": item.get("context_title", ""),
             "description_intent": item.get("description_intent", "unmentioned"),
             "exact_description": item.get("exact_description"),
             "tags_intent": item.get("tags_intent", "unmentioned"),
@@ -243,6 +347,8 @@ def create_batch_from_text_plan(text_plan: Dict[str, Any]) -> Dict[str, Any]:
             "fields_requested": item.get("fields_requested", []),
             "original_instruction": item.get("original_instruction", ""),
             "title_angles": [],
+            "recommended_title": "",
+            "recommendation_reason": "",
             "rationale": [],
             "status": "parsed" if (item.get("video_id") and not item.get("errors")) else "invalid",
             "errors": list(item.get("errors", [])),
@@ -306,6 +412,152 @@ def compute_batch_approval_fingerprint(
         hasher.update(vid.encode("utf-8"))
         hasher.update(digest.encode("utf-8"))
     return hasher.hexdigest()[:16]
+
+
+def batch_metadata_readback_mismatches(actual: Dict[str, Any], expected: Dict[str, Any]) -> List[str]:
+    """Return every approved metadata field that does not match a fresh YouTube snippet."""
+    if not isinstance(actual, dict):
+        return ["snippet"]
+    mismatches = []
+    if actual.get("title") != expected.get("title"):
+        mismatches.append("title")
+    if actual.get("description", "") != expected.get("description", ""):
+        mismatches.append("description")
+    actual_tags = {str(tag).casefold() for tag in actual.get("tags", [])}
+    expected_tags = {str(tag).casefold() for tag in expected.get("tags", [])}
+    if actual_tags != expected_tags:
+        mismatches.append("tags")
+    if actual.get("categoryId") != expected.get("categoryId"):
+        mismatches.append("categoryId")
+    return mismatches
+
+
+def publish_approved_batch_rows(
+    youtube,
+    rows: List[Dict[str, Any]],
+    selected_ids,
+    *,
+    approved: bool = False,
+    approval_fingerprint: Optional[str] = None,
+    review_revision: int = 1,
+    audit_callback=None,
+) -> Dict[str, Any]:
+    """Publish selected READY rows only after an explicit, current approval fingerprint."""
+    result = {
+        "success_count": 0,
+        "failure_count": 0,
+        "blocked": False,
+        "message": "",
+    }
+    selected = list(dict.fromkeys(str(video_id) for video_id in (selected_ids or []) if video_id))
+    if not approved:
+        result.update(blocked=True, message="Publishing requires explicit approval of the exact reviewed proposals.")
+        return result
+    if not selected:
+        result.update(blocked=True, message="Select at least one ready video proposal before publishing.")
+        return result
+
+    selected_set = set(selected)
+    selected_rows = [row for row in rows if str(row.get("video_id", "")) in selected_set and row.get("status") == "ready"]
+    if len(selected_rows) != len(selected):
+        result.update(
+            blocked=True,
+            message="Publishing was blocked because one or more selected rows are no longer READY. Refresh and review the batch again.",
+        )
+        return result
+
+    current_fingerprint = compute_batch_approval_fingerprint(
+        selected_rows,
+        review_revision=review_revision,
+    )
+    if not approval_fingerprint or approval_fingerprint != current_fingerprint:
+        result.update(
+            blocked=True,
+            message="Publishing was blocked because the approval fingerprint is stale or does not match the current proposals. Review and approve the latest values again.",
+        )
+        return result
+
+    # Record the explicit approval state before any API operation begins.
+    for row in selected_rows:
+        row["status"] = "approved"
+        row["approved_fingerprint"] = current_fingerprint
+
+    for row in selected_rows:
+        row["attempted"] = True
+        row["status"] = "publishing"
+        video_id = row["video_id"]
+        expected_digest = connector.metadata_proposal_digest(
+            video_id,
+            row.get("before", {}),
+            row.get("proposed", {}),
+        )
+        if row.get("digest") != expected_digest:
+            row["status"] = "failed"
+            row["result_message"] = "Publish blocked: proposal digest mismatch. The proposal changed after approval."
+            result["failure_count"] += 1
+            continue
+
+        try:
+            apply_result = connector.apply_approved_dashboard_proposal(
+                youtube,
+                video_id,
+                row["before"],
+                row["proposed"],
+                row["digest"],
+                audit_callback=audit_callback or (lambda entry: None),
+            )
+        except Exception as error:
+            message = str(error)
+            lowered = message.casefold()
+            if any(term in lowered for term in (
+                "could not be reached for verification",
+                "verification unavailable",
+                "verification failed",
+                "outcome is unknown",
+                "may have succeeded",
+            )) and not any(term in lowered for term in ("verification mismatch", "found different metadata")):
+                row["status"] = "verification_unavailable"
+            else:
+                row["status"] = "failed"
+            row["result_message"] = message or type(error).__name__
+            result["failure_count"] += 1
+            continue
+
+        if not isinstance(apply_result, dict) or apply_result.get("result") != "success":
+            row["status"] = "no_change" if isinstance(apply_result, dict) and apply_result.get("result") == "no changes" else "failed"
+            row["result_message"] = "YouTube did not confirm a successful metadata update."
+            result["failure_count"] += 1
+            continue
+
+        try:
+            verified = connector.fetch_video_snippet(youtube, video_id)
+        except Exception as error:
+            row["status"] = "verification_unavailable"
+            row["result_message"] = (
+                "The update call succeeded, but a fresh YouTube read-back was unavailable: "
+                f"{error}"
+            )
+            result["failure_count"] += 1
+            continue
+
+        mismatches = batch_metadata_readback_mismatches(verified, row["proposed"])
+        if mismatches:
+            row["status"] = "failed"
+            row["result_message"] = (
+                "YouTube read-back did not match the approved proposal. Mismatched fields: "
+                + ", ".join(mismatches)
+                + "."
+            )
+            result["failure_count"] += 1
+            continue
+
+        row["status"] = "verified"
+        row["result_message"] = (
+            f"Verified on YouTube: {apply_result.get('title', row.get('proposed_title', 'Updated video'))}"
+        )
+        result["success_count"] += 1
+
+    return result
 
 
 def prepare_metadata_batch(
@@ -406,6 +658,15 @@ def prepare_metadata_batch(
                     gen_kwargs["fields"] = fields_to_optimize
                 if "transcript" in sig.parameters or has_var_keyword:
                     gen_kwargs["transcript"] = transcript
+                if "context_title" in sig.parameters or has_var_keyword:
+                    gen_kwargs["context_title"] = row.get("context_title", "")
+
+                logger.info(
+                    "Batch AI generator invoked for video_id=%s, title_intent=%s, fields=%s",
+                    video_id,
+                    t_intent,
+                    fields_to_optimize,
+                )
 
                 ai_result = ai_generator(**gen_kwargs)
                 if not isinstance(ai_result, dict):
@@ -422,17 +683,53 @@ def prepare_metadata_batch(
             proposed["title"] = row.get("exact_title") or row.get("title") or before.get("title", "")
             row["title_angles"] = []
         elif t_intent == "optimize":
-            opt_title = ai_result.get("title") or ""
+            is_valid_result, err_msg = validate_title_optimization_result(
+                before.get("title", ""),
+                ai_result,
+            )
+            if not is_valid_result and ai_generator:
+                # One controlled repair attempt; a second invalid response fails closed.
+                try:
+                    logger.info(
+                        "Performing controlled title repair for video_id=%s: %s",
+                        video_id,
+                        err_msg,
+                    )
+                    repair_kwargs = deepcopy(gen_kwargs)
+                    repair_kwargs["instruction"] = (
+                        f"{row.get('original_instruction', '')}\\n\\n"
+                        f"CONTROLLED REPAIR ATTEMPT: The previous title output was rejected: {err_msg}\\n"
+                        "Return exactly three distinct angles, one each for curiosity, value, and search. "
+                        "Each title must differ meaningfully from the current title and from the other two. "
+                        "Set title and recommended_title to exactly one of those three titles, and explain "
+                        "the recommendation in recommendation_reason."
+                    )
+                    repaired_result = ai_generator(**repair_kwargs)
+                    repaired_valid, repaired_error = validate_title_optimization_result(
+                        before.get("title", ""),
+                        repaired_result,
+                    )
+                    if repaired_valid:
+                        ai_result = repaired_result
+                        is_valid_result = True
+                    else:
+                        err_msg = repaired_error
+                except Exception as repair_error:
+                    err_msg = f"{err_msg}; controlled repair failed: {repair_error}"
+
+            if not is_valid_result:
+                row["status"] = "invalid"
+                row["errors"].append(f"AI title optimization failed quality validation: {err_msg}")
+                logger.warning("Video %s title optimization rejected: %s", video_id, err_msg)
+                continue
+
+            angles = ai_result["title_angles"]
+            opt_title = ai_result.get("recommended_title") or ai_result["title"]
             proposed["title"] = opt_title
-            angles = ai_result.get("title_angles")
-            if angles is not None:
-                if not isinstance(angles, list) or len(angles) < 3:
-                    row["status"] = "invalid"
-                    row["errors"].append("AI title optimization did not produce the required 3 title angles (curiosity, value, search).")
-                else:
-                    row["title_angles"] = angles
-            else:
-                row["title_angles"] = []
+            row["proposed_title"] = opt_title
+            row["recommended_title"] = opt_title
+            row["recommendation_reason"] = ai_result.get("recommendation_reason", "")
+            row["title_angles"] = angles
             if ai_result.get("rationale"):
                 row["rationale"] = ai_result.get("rationale")
         else:
@@ -471,6 +768,14 @@ def prepare_metadata_batch(
 
         # Revalidate snippet, compute changed fields, check constraints and digest
         revalidate_batch_row(row)
+        logger.info(
+            "Staging result for video_id=%s: status=%s, title_intent=%s, valid_angles=%d, changed_fields=%s",
+            video_id,
+            row.get("status"),
+            t_intent,
+            len(row.get("title_angles", [])),
+            row.get("changed_fields", []),
+        )
 
     parsed_batch["ready_count"] = sum(row.get("status") == "ready" for row in rows)
     parsed_batch["invalid_count"] = sum(row.get("status") == "invalid" for row in rows)

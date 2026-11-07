@@ -926,13 +926,15 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
 
         prompt += (
             f"\nFields to optimize: {', '.join(fields)}.\n\n"
-            "Return a strictly valid JSON object with:\n"
+            "Return a strictly valid JSON object matching this schema:\n"
             "{\n"
-            '  "title": "<proposed primary title, <= 100 characters>",\n'
+            '  "recommended_title": "<strongest proposed title, <= 100 characters>",\n'
+            '  "recommendation_reason": "<brief rationale for why recommended_title is the strongest choice>",\n'
+            '  "title": "<must match recommended_title, <= 100 characters>",\n'
             '  "title_angles": [\n'
-            '    {"angle": "curiosity", "label": "Curiosity Angle", "title": "<title <= 100 chars>"},\n'
-            '    {"angle": "value", "label": "Direct Value", "title": "<title <= 100 chars>"},\n'
-            '    {"angle": "search", "label": "Search/SEO", "title": "<title <= 100 chars>"}\n'
+            '    {"angle": "curiosity", "label": "Curiosity / Intrigue", "title": "<title <= 100 chars>"},\n'
+            '    {"angle": "value", "label": "Direct Value / Outcome", "title": "<title <= 100 chars>"},\n'
+            '    {"angle": "search", "label": "Search / SEO", "title": "<title <= 100 chars>"}\n'
             "  ],\n"
             '  "description": "<proposed full description, <= 5000 characters>",\n'
             '  "tags": ["<tag1>", "<tag2>", ...],\n'
@@ -940,7 +942,14 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
             "}\n"
             "CRITICAL RULES:\n"
             "- Return JSON only. No markdown formatting, no code fences.\n"
-            "- If title is in fields to optimize, title must be <= 100 chars, and title_angles MUST contain exactly 3 angles: curiosity, value, and search.\n"
+            "- If title is in fields to optimize:\n"
+            "  * title_angles MUST contain exactly 3 angles: 'curiosity', 'value', and 'search'.\n"
+            "  * Each angle title must be <= 100 chars and MUST NOT be identical to the current title.\n"
+            "  * Each of the 3 angles must be distinct from one another.\n"
+            "  * 'recommended_title' and 'title' must match one of the 3 generated title angles.\n"
+            "  * 'recommendation_reason' must explain why that angle was chosen.\n"
+            "- If description is preserved, return the current description exactly.\n"
+            "- If tags are preserved, return the current tags exactly.\n"
             "- Description must be <= 5000 characters.\n"
             "- Tags must be an array of strings, total character count <= 500.\n"
         )
@@ -955,11 +964,15 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
                 if not isinstance(data, dict):
                     return False, "Response is not a JSON object"
                 if "title" in fields:
-                    if not data.get("title") or len(str(data["title"])) > 100:
-                        return False, "Title must be between 1 and 100 characters"
                     angles = data.get("title_angles")
                     if not isinstance(angles, list) or len(angles) < 3:
                         return False, "Must provide 3 title angles"
+                    is_valid, err_msg = batch_metadata.validate_title_angles_quality(cur_title, angles)
+                    if not is_valid:
+                        return False, f"Title angles quality validation failed: {err_msg}"
+                    rec_t = data.get("recommended_title") or data.get("title")
+                    if not rec_t or len(str(rec_t)) > 100:
+                        return False, "Title must be between 1 and 100 characters"
                 if "description" in fields:
                     if len(str(data.get("description", ""))) > 5000:
                         return False, "Description exceeds 5000 characters"
@@ -1020,13 +1033,18 @@ def _stage_text_metadata_batch(text, youtube, secrets=None):
 
 def _is_batch_intent(message: str, urls: List[str]) -> bool:
     """Determine if user chat message has batch intent rather than single target (+ optional ref)."""
-    if len(urls) > 2:
+    all_refs = batch_instructions.extract_video_references_from_text(message)
+    if len(all_refs) > 2 or len(urls) > 2:
         return True
-    if len(urls) == 2:
+    if len(all_refs) == 2 or len(urls) == 2:
         lower = message.casefold()
         if any(term in lower for term in ("reference", "compare", "benchmark", "versus", "vs", "model after", "like this", "target and reference")):
             return False
         if any(term in lower for term in ("both", "each", "all", "video 1", "video 2", "1.", "2.", "batch", "these videos")):
+            return True
+    if len(all_refs) >= 1:
+        lower = message.casefold()
+        if any(term in lower for term in ("batch", "for all videos", "all listed videos", "every video", "each video", "optimize title only")):
             return True
     return False
 
@@ -1136,10 +1154,13 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
 
         rows = batch.get("rows", [])
         ready_count = sum(row.get("status") == "ready" for row in rows)
+        approved_count = sum(row.get("status") == "approved" for row in rows)
+        publishing_count = sum(row.get("status") == "publishing" for row in rows)
         verified_count = sum(row.get("status") == "verified" for row in rows)
         failed_count = sum(row.get("status") == "failed" for row in rows)
         invalid_count = sum(row.get("status") == "invalid" for row in rows)
         unchanged_count = sum(row.get("status") == "no_change" for row in rows)
+        unavail_count = sum(row.get("status") == "verification_unavailable" for row in rows)
 
         st.divider()
         st.caption(f"Source: **{batch.get('file_name', 'Batch proposals')}** (in session memory only)")
@@ -1147,7 +1168,14 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
         metric_cols[0].metric("Ready", ready_count)
         metric_cols[1].metric("Verified", verified_count)
         metric_cols[2].metric("Failed", failed_count)
-        metric_cols[3].metric("Skipped", invalid_count + unchanged_count)
+        metric_cols[3].metric("Skipped / Invalid", invalid_count + unchanged_count + unavail_count)
+
+        if ready_count == 0:
+            st.warning(
+                f"Publishing is unavailable: 0 video proposals are currently ready for publishing "
+                f"({unchanged_count} unchanged, {invalid_count} invalid). "
+                "Review the details below or refine the instructions to generate new proposals."
+            )
 
         if st.button(
             "Refresh current YouTube metadata and review again",
@@ -1203,10 +1231,13 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 with top_cols[1]:
                     badge_color = {
                         "ready": "#34D399",
+                        "approved": "#60A5FA",
+                        "publishing": "#FBBF24",
                         "verified": "#10B981",
                         "failed": "#EF4444",
                         "invalid": "#F59E0B",
                         "no_change": "#94A3B8",
+                        "verification_unavailable": "#A855F7",
                     }.get(status, "#64748B")
                     st.markdown(
                         f'<div style="text-align: right;"><span style="color: {badge_color}; font-weight: 700; font-size: 0.85rem; border: 1px solid {badge_color}; border-radius: 4px; padding: 2px 8px;">{status.replace("_", " ").upper()}</span></div>',
@@ -1225,13 +1256,50 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                     st.success("YouTube read-back verified this update.")
                 elif status == "failed":
                     st.error("Update failed or read-back did not match. Stale metadata check prevented partial write.")
+                elif status == "verification_unavailable":
+                    st.warning("Update was sent to YouTube, but read-back verification was temporarily unavailable.")
                 else:
                     for error in row.get("errors", []):
                         st.warning(error)
 
-                if status in {"ready", "verified", "failed", "no_change"}:
+                if status in {"ready", "verified", "failed", "no_change", "verification_unavailable"}:
                     changed_fields = row.get("changed_fields", [])
                     st.caption("Changed fields: " + (", ".join(f"**{f}**" for f in changed_fields) if changed_fields else "None"))
+
+                    if row.get("title_angles") and status == "ready":
+                        angles = row.get("title_angles", [])
+                        rec_title = row.get("recommended_title") or row.get("proposed", {}).get("title", "")
+                        rec_reason = row.get("recommendation_reason") or row.get("rationale", "")
+                        st.markdown("##### 🎯 Title Angles (3 Generated)")
+                        if rec_reason:
+                            st.info(f"💡 **Recommended Angle**: {rec_title}\n\n*Rationale*: {rec_reason}")
+
+                        angle_labels = []
+                        angle_map = {}
+                        for ang in angles:
+                            lbl = f"**{ang.get('label') or ang.get('angle', 'Option').title()}**: {ang.get('title', '')}"
+                            angle_labels.append(lbl)
+                            angle_map[lbl] = ang.get("title", "")
+
+                        current_prop_title = row.get("proposed", {}).get("title", "")
+                        default_radio_idx = 0
+                        for idx, lbl in enumerate(angle_labels):
+                            if angle_map[lbl] == current_prop_title:
+                                default_radio_idx = idx
+                                break
+
+                        chosen_angle_label = st.radio(
+                            "Select title angle to apply:",
+                            options=angle_labels,
+                            index=default_radio_idx,
+                            key=f"radio_ang_{vid}_{index}_{batch.get('review_revision', 1)}",
+                        )
+                        if angle_map.get(chosen_angle_label) and angle_map[chosen_angle_label] != current_prop_title:
+                            row["proposed"]["title"] = angle_map[chosen_angle_label]
+                            batch_metadata.revalidate_batch_row(row)
+                            batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
+                            st.session_state["batch_metadata_review"] = batch
+                            st.rerun()
 
                     comp_c1, comp_c2 = st.columns(2)
                     with comp_c1:
@@ -1255,25 +1323,12 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                         else:
                             st.code(row.get("proposed", {}).get("title", ""), language=None)
 
-                    if row.get("title_angles") and status == "ready":
-                        angles = row.get("title_angles", [])
-                        st.caption("Select an alternative validated title angle:")
-                        angle_cols = st.columns(len(angles))
-                        for a_idx, angle in enumerate(angles):
-                            with angle_cols[a_idx]:
-                                if st.button(f"{angle.get('label', angle.get('angle', 'Option'))}: {angle.get('title', '')[:35]}...", key=f"btn_ang_{vid}_{a_idx}_{index}"):
-                                    row["proposed"]["title"] = angle["title"]
-                                    batch_metadata.revalidate_batch_row(row)
-                                    batch["review_revision"] = int(batch.get("review_revision", 1)) + 1
-                                    st.session_state["batch_metadata_review"] = batch
-                                    st.rerun()
-
                     desc_c1, desc_c2 = st.columns(2)
                     with desc_c1:
                         st.markdown("**Current Description**")
                         st.text_area("Current Desc", value=row.get("before", {}).get("description", ""), height=100, disabled=True, key=f"cur_d_{vid}_{index}", label_visibility="collapsed")
                     with desc_c2:
-                        st.markdown(f"**Proposed Description** {'*(Modified)*' if 'description' in changed_fields else ''}")
+                        st.markdown(f"**Proposed Description** {'*(Modified)*' if 'description' in changed_fields else '*(Preserved)*'}")
                         if status == "ready" and not row.get("attempted"):
                             new_d = st.text_area(
                                 "Edit Proposed Desc",
@@ -1290,13 +1345,15 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                                 st.rerun()
                         else:
                             st.text_area("Prop Desc", value=row.get("proposed", {}).get("description", ""), height=100, disabled=True, key=f"view_prop_d_{vid}_{index}", label_visibility="collapsed")
+                    if "description" not in changed_fields:
+                        st.caption("🔒 Description preserved unchanged.")
 
                     tags_c1, tags_c2 = st.columns(2)
                     with tags_c1:
                         st.markdown("**Current Separate Tags**")
                         st.caption(", ".join(row.get("before", {}).get("tags", [])) or "*(none)*")
                     with tags_c2:
-                        st.markdown(f"**Proposed Separate Tags** {'*(Modified)*' if 'tags' in changed_fields else ''}")
+                        st.markdown(f"**Proposed Separate Tags** {'*(Modified)*' if 'tags' in changed_fields else '*(Preserved)*'}")
                         if status == "ready" and not row.get("attempted"):
                             new_tags_str = st.text_input(
                                 "Edit Tags",
@@ -1313,6 +1370,8 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                                 st.rerun()
                         else:
                             st.caption(", ".join(row.get("proposed", {}).get("tags", [])) or "*(none)*")
+                    if "tags" not in changed_fields:
+                        st.caption("🔒 Tags preserved unchanged.")
 
                 if row.get("result_message"):
                     st.info(row["result_message"])
@@ -1340,64 +1399,48 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 key=f"batch_publish_{batch.get('fingerprint', '')[:8]}_{approval_fingerprint}",
             )
             if publish_clicked:
-                success_count = 0
-                failure_count = 0
-                selected_set = set(selected_ids)
-                with st.spinner("Publishing selected videos sequentially and verifying each YouTube update..."):
-                    for row in rows:
-                        if row.get("video_id") not in selected_set or row.get("status") != "ready":
-                            continue
-                        row["attempted"] = True
-                        expected_digest = connector.metadata_proposal_digest(
-                            row["video_id"],
-                            row["before"],
-                            row["proposed"],
-                        )
-                        if row.get("digest") != expected_digest:
-                            row["status"] = "failed"
-                            row["result_message"] = "Publish blocked: proposal digest mismatch. Proposal was modified after approval."
-                            failure_count += 1
-                            continue
+                with st.spinner("Publishing selected videos sequentially and verifying every approved metadata field..."):
+                    publish_result = batch_metadata.publish_approved_batch_rows(
+                        youtube,
+                        rows,
+                        selected_ids,
+                        approved=approved,
+                        approval_fingerprint=approval_fingerprint,
+                        review_revision=batch.get("review_revision", 1),
+                        audit_callback=_batch_audit_callback,
+                    )
 
-                        try:
-                            result = connector.apply_approved_dashboard_proposal(
-                                youtube,
-                                row["video_id"],
-                                row["before"],
-                                row["proposed"],
-                                row["digest"],
-                                audit_callback=_batch_audit_callback,
-                            )
-                            row["status"] = "verified"
-                            row["result_message"] = (
-                                f"Verified on YouTube: {result.get('title', row.get('proposed_title', 'Updated video'))}"
-                            )
-                            success_count += 1
-                            try:
-                                record_proposal_decision(
-                                    video_id=row["video_id"],
-                                    proposal_digest=row["digest"],
-                                    status="APPLIED",
-                                    proposal_dict=row["proposed"],
-                                    feedback="Batch metadata update approved and post-write verified",
-                                    owner_id=subject,
-                                    is_demo=False,
-                                )
-                            except Exception:
-                                pass
-                        except Exception as error:
-                            row["status"] = "failed"
-                            row["result_message"] = _apply_error_message(error)
-                            failure_count += 1
+                selected_set = set(selected_ids)
+                for row in rows:
+                    if row.get("video_id") not in selected_set or not row.get("attempted"):
+                        continue
+                    try:
+                        record_proposal_decision(
+                            video_id=row["video_id"],
+                            proposal_digest=row.get("digest", ""),
+                            status="APPLIED" if row.get("status") == "verified" else "FAILED",
+                            proposal_dict=row.get("proposed", {}),
+                            feedback=row.get("result_message", "Batch metadata operation finished."),
+                            owner_id=subject,
+                            is_demo=False,
+                        )
+                    except Exception:
+                        pass
+
                 batch["rows"] = rows
                 st.session_state["batch_metadata_review"] = batch
-                if failure_count:
+                if publish_result.get("blocked"):
+                    st.error(publish_result.get("message") or "Publishing was blocked. Review the batch and approve again.")
+                elif publish_result.get("failure_count"):
                     st.warning(
-                        f"Batch finished: {success_count} verified, {failure_count} not verified. "
+                        f"Batch finished: {publish_result.get('success_count', 0)} verified, "
+                        f"{publish_result.get('failure_count', 0)} not verified. "
                         "Failed rows were not retried."
                     )
                 else:
-                    st.success(f"Batch finished: all {success_count} selected updates were verified.")
+                    st.success(
+                        f"Batch finished: all {publish_result.get('success_count', 0)} selected updates were verified."
+                    )
                 st.rerun()
         else:
             st.info("Check 'Include in approved batch' on one or more ready videos above to enable approval and publishing.")
@@ -1886,6 +1929,23 @@ def render_copilot_chat(
             st.rerun()
 
         # Detect target video switch or fresh target load
+        # Check if batch approval is being attempted via conversational chat while a batch is active
+        active_batch = st.session_state.get("batch_metadata_review")
+        if active_batch and not urls and not title_reference and not _is_batch_intent(instruction, urls):
+            low_inst = instruction.lower().strip()
+            if any(term in low_inst for term in ("ok go ahead", "approve", "publish", "apply changes", "publish all", "confirm", "go ahead")):
+                batch_msg = (
+                    "To publish batch proposals, please use the explicit approval controls in the "
+                    "**📦 Batch Metadata Manager** section above. Select the checkboxes for the videos you wish to "
+                    "publish, review the exact values, and click **Approve & Publish Selected Videos**. "
+                    "Chat messages cannot bypass the exact cryptographic approval gate."
+                )
+                _append_history(history, "user", instruction)
+                _append_history(history, "assistant", batch_msg)
+                with st.chat_message("assistant"):
+                    st.warning(batch_msg)
+                st.rerun()
+
         # Check if user message indicates batch request
         if _is_batch_intent(instruction, urls):
             try:

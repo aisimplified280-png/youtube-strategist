@@ -36,6 +36,16 @@ EXPLICIT_ID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+LIST_OR_BARE_ID_PATTERN = re.compile(
+    r"(?:^|[ \t\r\n])(?:\d+[\.\)]|[-*•]|\[\d+\])?\s*(?:video\s*(?:id|#)?\s*[:=]?\s*|\bid:\s*)?([A-Za-z0-9_-]{11})\b(?:\s*[—\-\:\s]|$)",
+    re.MULTILINE,
+)
+
+EXCLUDED_ID_TOKENS = {
+    "description", "instruction", "suggestions", "conclusions", "preferences",
+    "information", "replacement", "categorized", "spreadsheet", "performance",
+}
+
 
 def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
     """Extract all YouTube video references (URLs, IDs) from text with their positions."""
@@ -72,7 +82,7 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
     for match in EXPLICIT_ID_PATTERN.finditer(text):
         vid = match.group(1)
         span = (match.start(), match.end())
-        if span not in seen_spans:
+        if span not in seen_spans and vid.lower() not in EXCLUDED_ID_TOKENS:
             seen_spans.add(span)
             found_refs.append({
                 "raw_reference": vid,
@@ -81,6 +91,22 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
                 "start": match.start(),
                 "end": match.end(),
             })
+
+    for match in LIST_OR_BARE_ID_PATTERN.finditer(text):
+        vid = match.group(1)
+        # Find exact span of the ID group
+        span = match.span(1)
+        if span not in seen_spans and vid.lower() not in EXCLUDED_ID_TOKENS and VIDEO_ID_RE.fullmatch(vid):
+            # Check if this span was already covered by another match
+            if not any(s[0] <= span[0] and span[1] <= s[1] for s in seen_spans):
+                seen_spans.add(span)
+                found_refs.append({
+                    "raw_reference": vid,
+                    "video_id": vid,
+                    "type": "id",
+                    "start": span[0],
+                    "end": span[1],
+                })
 
     found_refs.sort(key=lambda r: r["start"])
     return found_refs
@@ -163,6 +189,37 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
     exact_tags = None
 
     # 1. Title intent & extraction
+    context_title = None
+    # Identify context/current title labels:
+    # Lines labelled "Current title:", "Existing title:", or "<ID> — <Title>" provide
+    # existing metadata for context. They must NOT be interpreted as exact replacement titles.
+    ctx_match = re.search(
+        r"\b(?:current|existing|original|target|old)\s+titles?\s*[:=]\s*([^\n\r]+)",
+        text_content,
+        re.IGNORECASE,
+    )
+    if ctx_match:
+        context_title = ctx_match.group(1).strip().strip("'\"“”")
+    else:
+        dash_match = re.search(
+            r"\b[A-Za-z0-9_-]{11}\s*[—\-]\s*([^\n\r]+)",
+            text_content,
+        )
+        if dash_match:
+            cand = dash_match.group(1).strip().strip("'\"“”")
+            if not re.search(r"\b(?:change|set|update|optimize|improve|rewrite)\b", cand, re.IGNORECASE):
+                context_title = cand
+
+    # Check for explicit title-only requests
+    title_only = bool(re.search(
+        r"\b(?:optimize|improve|change|update)\s+(?:the\s+)?titles?\s+only\b|"
+        r"\btitles?\s+only\b|"
+        r"\bonly\s+(?:the\s+)?titles?\b|"
+        r"\boptimize\s+titles?\b[^\.\n\r;]{0,50}?\b(?:preserve|keep)\s+(?:the\s+)?(?:descriptions?|tags?|both)\b",
+        lower,
+    ))
+
+    # Check for title preservation intent
     title_preserves = bool(re.search(
         r"\b(?:keep|preserve|leave|don't change|do not change|without changing)\s+(?:the\s+)?(?:current\s+|existing\s+)?titles?\b|"
         r"\btitles?\s+(?:unchanged|as[- ]is|intact|remain unchanged|should remain unchanged)\b|"
@@ -170,26 +227,50 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
         lower,
     ))
 
-    # Check for exact title: triple quotes, double/single quotes, or labeled Title:
+    # Check for title optimization intent
+    optimize_title_match = bool(re.search(
+        r"\b(?:optimize|improve|rewrite|generate|craft|suggest|recommend|new|better)\s+(?:the\s+)?(?:video\s+)?titles?\b|"
+        r"\btitles?\s+(?:to\s+be\s+)?(?:optimized|improved|rewritten|generated)\b|"
+        r"\b(?:3|three)\s+(?:different\s+)?(?:title\s+)?angles\b|"
+        r"\brecommend\s+(?:the\s+)?strongest\s+title\b",
+        lower,
+    ))
+
+    # Check for exact title: triple quotes, double/single quotes, or labeled Title (excluding Current title)
     exact_title_match = re.search(
-        r"(?:change|set|update)?\s*(?:the\s+)?title\s*(?:to|:|=)\s*['\"]{1,3}([\s\S]*?)['\"]{1,3}",
+        r"(?:change|set|update|rename)\s+(?:the\s+)?title\s*(?:to|:|=)\s*['\"“”]{1,3}([\s\S]*?)['\"“”]{1,3}",
         text_content,
         re.IGNORECASE,
     )
     if not exact_title_match:
         exact_title_match = re.search(
-            r"\bTitle\s*:\s*([^\n\r]+)",
+            r"\b(?:new|proposed)\s+title\s*[:=]\s*['\"“”]{0,3}([\s\S]*?)['\"“”]{0,3}(?=\n|$)",
             text_content,
             re.IGNORECASE,
         )
+    if not exact_title_match and not context_title:
+        bare_title_match = re.search(
+            r"(?<!current\s)(?<!existing\s)(?<!original\s)(?<!target\s)(?<!old\s)\bTitle\s*:\s*([^\n\r]+)",
+            text_content,
+            re.IGNORECASE,
+        )
+        if bare_title_match:
+            exact_title_match = bare_title_match
 
-    if exact_title_match and exact_title_match.group(1).strip():
-        title_intent = "exact"
-        exact_title = exact_title_match.group(1).strip()
-    elif title_preserves:
+    if title_preserves:
         title_intent = "preserve"
-    elif re.search(r"\b(?:improve|optimize|rewrite|generate|craft|new)\b[\s\S]{0,25}?\btitles?\b|\btitles?\b[\s\S]{0,25}?\b(?:improve|optimize|rewrite|update)\b", lower):
+        exact_title = None
+    elif exact_title_match and exact_title_match.group(1).strip():
+        cand = exact_title_match.group(1).strip().strip("'\"“”")
+        if not re.search(r"\b(?:optimize|improve|rewrite|keep|preserve)\b", cand, re.IGNORECASE) and cand != context_title:
+            title_intent = "exact"
+            exact_title = cand
+        elif optimize_title_match or title_only:
+            title_intent = "optimize"
+            exact_title = None
+    elif optimize_title_match or title_only:
         title_intent = "optimize"
+        exact_title = None
 
     # 2. Description intent & extraction
     if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:the\s+)?descriptions?\b", lower) or 'description: ""' in lower or "description: ''" in lower:
@@ -274,6 +355,18 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
             elif re.search(r"\b(?:improve|optimize|update|generate|new)\b[\s\S]{0,30}?\btags\b|\btags\b[\s\S]{0,30}?\b(?:improve|optimize|update)\b", lower):
                 tags_intent = "optimize"
 
+    # If user explicitly said "preserve description and tags" or "optimize title only":
+    preserve_desc_tags = bool(re.search(
+        r"\b(?:preserve|keep|leave)\s+(?:the\s+)?(?:descriptions?|tags?|both|current\s+metadata)\b|"
+        r"\b(?:descriptions?|tags?)\s+(?:remain\s+)?(?:unchanged|intact|as[- ]is)\b",
+        lower,
+    ))
+    if title_only or preserve_desc_tags:
+        if desc_intent == "unmentioned":
+            desc_intent = "preserve"
+        if tags_intent == "unmentioned":
+            tags_intent = "preserve"
+
     fields_requested = []
     if title_intent in {"exact", "optimize"}:
         fields_requested.append("title")
@@ -285,6 +378,7 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
     return {
         "title_intent": title_intent,
         "exact_title": exact_title,
+        "context_title": context_title,
         "description_intent": desc_intent,
         "exact_description": exact_desc,
         "tags_intent": tags_intent,
@@ -525,6 +619,7 @@ def parse_batch_instructions(
             # Combine with shared intent (local overrides shared)
             final_title_intent = local_intent["title_intent"] if local_intent["title_intent"] != "unmentioned" else shared_intent["title_intent"]
             final_exact_title = local_intent["exact_title"] if local_intent["exact_title"] is not None else shared_intent["exact_title"]
+            final_context_title = local_intent.get("context_title") or shared_intent.get("context_title")
 
             final_desc_intent = local_intent["description_intent"] if local_intent["description_intent"] != "unmentioned" else shared_intent["description_intent"]
             final_exact_desc = local_intent["exact_description"] if local_intent["exact_description"] is not None else shared_intent["exact_description"]
@@ -537,6 +632,7 @@ def parse_batch_instructions(
                 "video_id": ref_id,
                 "title_intent": final_title_intent,
                 "exact_title": final_exact_title,
+                "context_title": final_context_title,
                 "description_intent": final_desc_intent,
                 "exact_description": final_exact_desc,
                 "tags_intent": final_tags_intent,
