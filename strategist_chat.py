@@ -1179,8 +1179,12 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
     unchanged_count = sum(row.get("status") == "no_change" for row in rows)
     unavail_count = sum(row.get("status") == "verification_unavailable" for row in rows)
     fingerprint = str(batch.get("fingerprint") or hashlib.sha256(
-        str([(r.get("video_id"), r.get("proposed", {}).get("title")) for r in rows]).encode("utf-8")
+        str([(r.get("video_id"), r.get("before", {}).get("title")) for r in rows]).encode("utf-8")
     ).hexdigest())
+    # Pin a stable identity so editor/selection widget keys do not change when a proposal is edited.
+    if not batch.get("fingerprint"):
+        batch["fingerprint"] = fingerprint
+        st.session_state["batch_metadata_review"] = batch
     selection = set(st.session_state.get("batch_selected_video_ids", []))
     flow_step = st.session_state.get("batch_flow_step", "review")
     if flow_step not in {"review", "approval", "complete"}:
