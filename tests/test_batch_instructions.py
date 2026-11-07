@@ -1450,7 +1450,7 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
                 ],
             }
 
-        plan = batch_instructions.parse_batch_instructions(f"1. {vid}\\nOptimize title.")
+        plan = batch_instructions.parse_batch_instructions(f"1. {vid}\nOptimize title.")
         staged = batch_metadata.prepare_metadata_batch(
             youtube,
             batch_metadata.create_batch_from_text_plan(plan),
