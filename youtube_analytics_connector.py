@@ -562,17 +562,25 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             ]
             if not records:
                 return None, None
-            selected = max(records, key=lambda item: (
-                str(item.get("date_end") or ""),
-                str(item.get("date_start") or ""),
-                str(item.get("source_file") or ""),
-            ))
+            # Prefer exports with explicit row-level dates. When dates are absent,
+            # preserve upload order: the last uploaded report is the freshest evidence.
+            dated_records = [
+                item for item in records if item.get("date_end") or item.get("date_start")
+            ]
+            if dated_records:
+                selected = max(dated_records, key=lambda item: (
+                    str(item.get("date_end") or ""),
+                    str(item.get("date_start") or ""),
+                ))
+            else:
+                selected = records[-1]
             period = None
             if selected.get("date_start") or selected.get("date_end"):
                 period = f"{selected.get('date_start') or '?'} to {selected.get('date_end') or '?'}"
             return selected.get(field), {
                 "source_file": selected.get("source_file"),
                 "period": period,
+                "period_known": bool(period),
             }
 
         duration_seconds = None
@@ -600,26 +608,40 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             if isinstance(item.get("ctr_percent"), (int, float))
             and isinstance(item.get("impressions"), (int, float))
         ]
-        reach_record = max(
-            reach_records,
-            key=lambda item: (
+        dated_reach_records = [
+            item for item in reach_records if item.get("date_end") or item.get("date_start")
+        ]
+        if dated_reach_records:
+            reach_record = max(dated_reach_records, key=lambda item: (
                 str(item.get("date_end") or ""),
                 str(item.get("date_start") or ""),
-                str(item.get("source_file") or ""),
-            ),
-        ) if reach_records else {}
+            ))
+        else:
+            reach_record = reach_records[-1] if reach_records else {}
         impressions = reach_record.get("impressions")
         ctr_percent = reach_record.get("ctr_percent")
         reach_period = None
         if reach_record.get("date_start") or reach_record.get("date_end"):
             reach_period = f"{reach_record.get('date_start') or '?'} to {reach_record.get('date_end') or '?'}"
-        average_view_percentage = metrics.get("averageViewPercentage")
-        if not isinstance(average_view_percentage, (int, float)):
-            average_view_percentage, _ = latest_value("average_view_percentage")
-        views = metrics.get("views")
 
+        views = metrics.get("views")
         if not isinstance(views, (int, float)):
             continue
+
+        # A zero-view period has no meaningful average-viewed percentage. Some API
+        # responses return 0.0 for that empty window; surface this as unavailable.
+        average_view_percentage = None
+        if views > 0:
+            average_view_percentage = metrics.get("averageViewPercentage")
+            if not isinstance(average_view_percentage, (int, float)):
+                average_view_percentage, _ = latest_value("average_view_percentage")
+
+        statistics = video.get("statistics", {}) or {}
+        lifetime_views = statistics.get("viewCount")
+        try:
+            lifetime_views = int(lifetime_views) if lifetime_views is not None else None
+        except (TypeError, ValueError):
+            lifetime_views = None
 
         enriched.append({
             "video_id": video_id,
@@ -629,6 +651,7 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             "duration_seconds": duration_seconds,
             "format_group": format_group,
             "views": views,
+            "lifetime_views": lifetime_views,
             "watch_time_minutes": metrics.get("estimatedMinutesWatched"),
             "average_view_duration_seconds": metrics.get("averageViewDuration"),
             "average_view_percentage": average_view_percentage,
@@ -640,6 +663,7 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             "ctr_percent": ctr_percent,
             "ctr_source": reach_record.get("source_file") if reach_record else None,
             "ctr_period": reach_period,
+            "ctr_period_known": bool(reach_period),
         })
 
     recommendations = rank_channel_video_opportunities(enriched, limit=limit)
