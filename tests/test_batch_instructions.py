@@ -11,6 +11,7 @@ import copy
 import io
 import json
 import unittest
+from collections import UserDict
 from unittest.mock import MagicMock, patch
 
 import core.batch_instructions as batch_instructions
@@ -705,6 +706,81 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         self.assertEqual(row["proposed"]["description"], "AI Optimized Description")
         self.assertEqual(row["proposed"]["tags"], ["ai", "apps"])
         self.assertEqual(len(row["title_angles"]), 3)
+
+    @patch("strategist_chat._groq_generate")
+    def test_batch_generator_accepts_streamlit_style_nested_secrets(self, mock_groq):
+        mock_groq.return_value = (
+            json.dumps({
+                "title": "How LLM Caching Saves Time",
+                "recommended_title": "How LLM Caching Saves Time",
+                "recommendation_reason": "It gives viewers a clear practical outcome.",
+                "title_angles": [
+                    {"angle": "curiosity", "title": "Why LLMs Repeat the Same Work"},
+                    {"angle": "value", "title": "How LLM Caching Saves Time"},
+                    {"angle": "search", "title": "LLM Prompt Caching Explained"},
+                ],
+                "description": "A practical explanation of LLM prompt caching.",
+                "tags": ["LLM", "prompt caching", "AI system design"],
+                "rationale": "Clear, useful and searchable.",
+            }),
+            "openai/gpt-oss-120b",
+        )
+
+        # Streamlit st.secrets nested sections are AttrDict/Mapping objects,
+        # not plain dicts. UserDict reproduces that mapping contract.
+        secrets = UserDict({
+            "groq": UserDict({
+                "api_key": "groq-test-key",
+                "model": "openai/gpt-oss-120b",
+                "fallback_models": [],
+            })
+        })
+        generator = strategist_chat.build_batch_metadata_generator(secrets=secrets)
+        self.assertIsNotNone(generator)
+
+        result = generator(
+            VIDEO_ID_1,
+            make_snippet(VIDEO_ID_1),
+            fields=["title", "description", "tags"],
+        )
+        self.assertEqual(result["provider"], "Groq")
+        self.assertEqual(result["title"], "How LLM Caching Saves Time")
+        self.assertTrue(mock_groq.called)
+
+    @patch("core.batch_instructions._interpret_batch_instructions_with_ai")
+    def test_batch_parser_reads_nested_streamlit_provider_secrets(self, mock_interpret):
+        expected_plan = {
+            "videos": [{
+                "reference": f"https://www.youtube.com/watch?v={VIDEO_ID_1}",
+                "video_id": VIDEO_ID_1,
+                "title_intent": "optimize",
+                "description_intent": "preserve",
+                "tags_intent": "preserve",
+                "video_specific_instructions": "Optimize the complete metadata package.",
+            }]
+        }
+        mock_interpret.return_value = expected_plan
+        secrets = UserDict({
+            "groq": UserDict({
+                "api_key": "groq-test-key",
+                "model": "openai/gpt-oss-120b",
+            }),
+            "gemini": UserDict({
+                "api_key": "gemini-fallback-key",
+                "model": "gemini-2.5-flash",
+            }),
+        })
+
+        plan = batch_instructions.parse_batch_instructions(
+            f"https://www.youtube.com/watch?v={VIDEO_ID_1} Optimize title, description and tags.",
+            secrets=secrets,
+        )
+
+        self.assertEqual(plan["total_identified"], 1)
+        self.assertTrue(mock_interpret.called)
+        self.assertEqual(mock_interpret.call_args.kwargs["groq_key"], "groq-test-key")
+        self.assertEqual(mock_interpret.call_args.kwargs["groq_model"], "openai/gpt-oss-120b")
+        self.assertEqual(mock_interpret.call_args.kwargs["gemini_key"], "gemini-fallback-key")
 
     @patch("strategist_chat._groq_generate")
     @patch("strategist_chat._gemini_generate")
