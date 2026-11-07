@@ -294,8 +294,8 @@ def _excel_cell_text(value, number_format=""):
     return str(value)
 
 
-def _read_xlsx_matrix(data: bytes) -> tuple[list[list[str]], str]:
-    """Read the worksheet that most clearly contains a Studio report table."""
+def _read_xlsx_matrices(data: bytes) -> list[tuple[str, list[list[str]]]]:
+    """Read every non-empty worksheet from an XLSX workbook, preserving sheet names."""
     try:
         from openpyxl import load_workbook
     except ImportError as error:
@@ -309,67 +309,59 @@ def _read_xlsx_matrix(data: bytes) -> tuple[list[list[str]], str]:
             "This does not look like a valid .xlsx workbook. Open it in Excel and save it as .xlsx, then try again."
         ) from error
 
-    best_matrix = None
-    best_sheet = None
-    best_rank = None
+    worksheets = []
     for worksheet in workbook.worksheets:
         matrix = [
             [_excel_cell_text(cell.value, cell.number_format) for cell in row]
             for row in worksheet.iter_rows()
         ]
-        best_header = None
-        for row_index, row in enumerate(matrix[:60]):
-            mapped = _map_row_columns(row)
-            if len(mapped) < 2:
-                continue
-            important = sum(field in mapped for field in (
-                "video_title", "views", "impressions", "ctr",
-                "elapsed_time", "retention_percent", "relative_retention",
-            ))
-            rank = (len(mapped) * 10 + important, -row_index)
-            if best_header is None or rank > best_header:
-                best_header = rank
-        if best_header is None:
+        if any(str(cell).strip() for row in matrix for cell in row):
+            worksheets.append((worksheet.title, matrix))
+    workbook.close()
+    return worksheets
+
+
+def _xlsx_matrix_rank(matrix):
+    """Return the best recognizable Studio-header rank for one worksheet, or None."""
+    best_header = None
+    for row_index, row in enumerate(matrix[:60]):
+        mapped = _map_row_columns(row)
+        if len(mapped) < 2:
             continue
-        rank = (best_header[0], best_header[1], len(matrix))
-        if best_rank is None or rank > best_rank:
+        important = sum(field in mapped for field in (
+            "video_title", "video_id", "views", "watch_time", "impressions", "ctr",
+            "average_view_percentage", "elapsed_time", "retention_percent",
+            "relative_retention", "content_type",
+        ))
+        rank = (len(mapped) * 10 + important, -row_index)
+        if best_header is None or rank > best_header:
+            best_header = rank
+    if best_header is None:
+        return None
+    return (best_header[0], best_header[1], len(matrix))
+
+
+def _read_xlsx_matrix(data: bytes) -> tuple[list[list[str]], str]:
+    """Backward-compatible helper returning the single strongest worksheet."""
+    worksheets = _read_xlsx_matrices(data)
+    best_matrix = None
+    best_sheet = None
+    best_rank = None
+    for sheet_name, matrix in worksheets:
+        rank = _xlsx_matrix_rank(matrix)
+        if rank is not None and (best_rank is None or rank > best_rank):
             best_rank = rank
             best_matrix = matrix
-            best_sheet = worksheet.title
-    workbook.close()
-
+            best_sheet = sheet_name
     if best_matrix is None:
         raise StudioExportError(
-            "I couldn't find a YouTube Studio report table in this workbook. Choose a worksheet with video titles/IDs and measurable report columns."
+            "I couldn't find a YouTube Studio report table in this workbook. "
+            "No non-empty worksheet contained at least two recognized report columns."
         )
     return best_matrix, best_sheet
 
-
-def parse_studio_export(filename: str, data: bytes) -> dict:
-    """Parse one Studio CSV/TSV/TXT or Excel workbook export in memory."""
-    suffix = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
-    if suffix not in {"csv", "tsv", "txt", "xlsx"}:
-        raise StudioExportError(
-            "Upload a YouTube Studio CSV, TSV, TXT, or .xlsx workbook."
-        )
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise StudioExportError(
-            "This file exceeds the 10 MB per-file limit. Export a narrower date range or split the report."
-        )
-
-    source_sheet = None
-    if suffix == "xlsx":
-        matrix, source_sheet = _read_xlsx_matrix(data)
-        delimiter = "excel"
-    else:
-        text = _decode_upload(data)
-        if not text.strip():
-            raise StudioExportError("This file is empty.")
-        delimiter = "\t" if suffix == "tsv" else _detect_delimiter(text)
-        try:
-            matrix = list(csv.reader(io.StringIO(text), delimiter=delimiter))
-        except csv.Error as error:
-            raise StudioExportError("The file could not be parsed as a CSV/TSV report.") from error
+def _parse_studio_matrix(filename: str, matrix: list[list[str]], delimiter: str, source_sheet: str | None = None) -> dict:
+    """Parse one already-loaded worksheet matrix using the common Studio column mapper."""
     if not matrix:
         raise StudioExportError("This file contains no rows.")
 
@@ -493,7 +485,7 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
     return {
         "filename": filename,
         "report_type": report_type,
-        "delimiter": "excel" if suffix == "xlsx" else ("tab" if delimiter == "\t" else ("semicolon" if delimiter == ";" else "comma")),
+        "delimiter": "excel" if delimiter == "excel" else ("tab" if delimiter == "\t" else ("semicolon" if delimiter == ";" else "comma")),
         "source_sheet": source_sheet,
         "header_row": header_index + 1,
         "header_labels": header_labels,
@@ -505,6 +497,65 @@ def parse_studio_export(filename: str, data: bytes) -> dict:
         "records": records,
     }
 
+
+
+
+def parse_studio_export(filename: str, data: bytes) -> dict:
+    """Parse one CSV/TSV/TXT export or the strongest worksheet in an XLSX workbook.
+
+    Use parse_studio_exports() when every worksheet in a workbook must be processed.
+    """
+    suffix = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
+    if suffix not in {"csv", "tsv", "txt", "xlsx"}:
+        raise StudioExportError("Upload a YouTube Studio CSV, TSV, TXT, or .xlsx workbook.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise StudioExportError("This file exceeds the 10 MB per-file limit. Export a narrower date range or split the report.")
+
+    source_sheet = None
+    if suffix == "xlsx":
+        matrix, source_sheet = _read_xlsx_matrix(data)
+        delimiter = "excel"
+    else:
+        text = _decode_upload(data)
+        if not text.strip():
+            raise StudioExportError("This file is empty.")
+        delimiter = "\\t" if suffix == "tsv" else _detect_delimiter(text)
+        try:
+            matrix = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+        except csv.Error as error:
+            raise StudioExportError("The file could not be parsed as a CSV/TSV report.") from error
+    return _parse_studio_matrix(filename, matrix, delimiter, source_sheet)
+
+
+def parse_studio_exports(filename: str, data: bytes) -> tuple[list[dict], list[dict]]:
+    """Parse all non-empty XLSX worksheets; return worksheet-level reports and errors."""
+    suffix = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
+    if suffix != "xlsx":
+        return [parse_studio_export(filename, data)], []
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise StudioExportError("This file exceeds the 10 MB per-file limit. Export a narrower date range or split the report.")
+
+    worksheets = _read_xlsx_matrices(data)
+    if not worksheets:
+        raise StudioExportError("This Excel workbook contains no non-empty worksheets.")
+
+    reports = []
+    errors = []
+    for sheet_name, matrix in worksheets:
+        try:
+            reports.append(_parse_studio_matrix(filename, matrix, "excel", sheet_name))
+        except Exception as error:
+            errors.append({
+                "filename": str(filename or "uploaded file"),
+                "source_sheet": sheet_name,
+                "error": str(error) or type(error).__name__,
+            })
+    if not reports and errors:
+        summary = "; ".join(
+            f"{item['source_sheet']}: {item['error']}" for item in errors
+        )
+        raise StudioExportError(f"No worksheet in {filename} could be parsed. {summary}")
+    return reports, errors
 
 def _weighted_average(rows, value_key, weight_key):
     values = [(row.get(value_key), row.get(weight_key)) for row in rows]
