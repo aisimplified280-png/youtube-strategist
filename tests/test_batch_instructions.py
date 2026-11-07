@@ -206,6 +206,8 @@ class TestBatchTextInterpretation(unittest.TestCase):
             self.assertEqual(row["tags_intent"], "preserve")
             self.assertEqual(row["context_title"], title)
             self.assertEqual(row["fields_requested"], ["title"])
+            self.assertIn("Optimize TITLE ONLY", row["original_instruction"])
+            self.assertNotIn("Current title:", row["original_instruction"])
 
         snippets = {
             video_id: make_snippet(video_id, title=title)
