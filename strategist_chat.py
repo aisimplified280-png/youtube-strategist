@@ -248,7 +248,7 @@ def fetch_full_video_details(
     """Retrieve complete video snippet, content details, statistics, and ownership state."""
     if youtube is None:
         raise ConnectionError(
-            "YouTube is not connected. Connect your YouTube account in Settings to load channel videos."
+            "YouTube is not connected. Use the YouTube button at the top to connect your channel before loading videos."
         )
 
     try:
@@ -1062,117 +1062,21 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
     """Render a guided batch workflow: add videos, review one proposal at a time, then approve."""
     batch = st.session_state.get("batch_metadata_review")
 
-    # STEP 1 — Add videos. Keep this compact and out of the way once a batch is staged.
     if not batch:
-        with st.expander(
-            "📦 Batch Metadata Manager",
-            expanded=st.session_state.get("show_batch_metadata", False),
-        ):
-            st.caption(
-                "Optimize up to 25 videos in one batch. Add instructions or import a spreadsheet. "
-                "Every change remains staged until you explicitly approve it."
-            )
-            if st.button("← Return to single-video chat", key="batch_exit_to_single_chat"):
-                st.session_state["show_batch_metadata"] = False
-                st.rerun()
-            tab_text, tab_file = st.tabs(["📝 Paste instructions", "📁 Spreadsheet"])
-            with tab_text:
-                st.text_area(
-                    "Batch instructions",
-                    value=st.session_state.get("batch_text_instructions_input", ""),
-                    height=170,
-                    placeholder=(
-                        "VIDEO ID: xxxxxxxxxxx\n"
-                        "New title: \"...\"\n"
-                        "Description: \"\"\"...\"\"\"\n"
-                        "Tags: [\"tag one\", \"tag two\"]"
-                    ),
-                    key="batch_text_input_area",
-                )
-                col_parse, col_hint = st.columns([2, 1])
-                with col_parse:
-                    parse_btn = st.button(
-                        "Prepare batch",
-                        type="primary",
-                        use_container_width=True,
-                        key="btn_parse_batch_instructions",
-                    )
-                with col_hint:
-                    st.caption("Review first. Nothing publishes automatically.")
-
-                if parse_btn:
-                    batch_text = st.session_state.get("batch_text_input_area", "")
-                    if not batch_text.strip():
-                        st.warning("Add video IDs or YouTube links and metadata instructions first.")
-                    elif youtube is None:
-                        st.warning("Connect YouTube with the channel-owner account before staging changes.")
-                    else:
-                        try:
-                            with st.spinner("Identifying videos and preparing metadata proposals..."):
-                                staged = _stage_text_metadata_batch(batch_text, youtube, secrets=secrets)
-                            staged["file_name"] = "Pasted batch instructions"
-                            staged["review_revision"] = 1
-                            staged["is_text_batch"] = True
-                            st.session_state["batch_metadata_review"] = staged
-                            st.session_state["batch_text_instructions_input"] = batch_text
-                            st.session_state["batch_selected_video_ids"] = []
-                            st.session_state["batch_review_index"] = 0
-                            st.session_state["batch_flow_step"] = "review"
-                            st.session_state["show_batch_metadata"] = True
-                            st.rerun()
-                        except Exception as error:
-                            st.error(f"Could not prepare the batch: {error}")
-
-            with tab_file:
-                st.download_button(
-                    "Download CSV template",
-                    data="video_id,title,description,tags\n",
-                    file_name="youtube-metadata-batch-template.csv",
-                    mime="text/csv",
-                    key="batch_metadata_template_download",
-                )
-                st.caption(
-                    "Use video_id or video_url. Separate tags with semicolons or pipes, or use a JSON array. "
-                    "Use [] only when you intend to clear all tags."
-                )
-                uploaded_file = st.file_uploader(
-                    "Upload CSV, TSV or Excel file",
-                    type=["csv", "tsv", "xlsx"],
-                    accept_multiple_files=False,
-                    key="batch_metadata_uploader",
-                )
-                if uploaded_file is not None:
-                    payload = uploaded_file.getvalue()
-                    fingerprint = hashlib.sha256(payload).hexdigest()
-                    active_batch = st.session_state.get("batch_metadata_review")
-                    if not active_batch or active_batch.get("fingerprint") != fingerprint:
-                        st.session_state["batch_metadata_payload"] = payload
-                        st.session_state["batch_metadata_file_name"] = uploaded_file.name
-                        if youtube is None:
-                            st.warning("Connect YouTube with the channel-owner account before staging changes.")
-                        else:
-                            try:
-                                with st.spinner("Checking ownership and preparing proposals..."):
-                                    staged = _stage_uploaded_metadata_batch(uploaded_file.name, payload, youtube)
-                                staged["fingerprint"] = fingerprint
-                                staged["file_name"] = uploaded_file.name
-                                staged["review_revision"] = 1
-                                st.session_state["batch_metadata_review"] = staged
-                                st.session_state["batch_selected_video_ids"] = []
-                                st.session_state["batch_review_index"] = 0
-                                st.session_state["batch_flow_step"] = "review"
-                                st.session_state["show_batch_metadata"] = True
-                                st.rerun()
-                            except Exception as error:
-                                st.error(f"Could not read or stage this file: {error}")
-
-        batch = st.session_state.get("batch_metadata_review")
-        if not batch:
-            return
+        return
 
     rows = batch.get("rows", [])
     if not rows:
-        st.warning("This batch contains no video proposals. Replace it with a valid batch.")
+        st.warning("This batch contains no video proposals. Return to chat to provide a corrected instruction or file.")
+        if st.button("← Back to chat", key="batch_back_to_chat_empty", use_container_width=True):
+            for key in (
+                "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+                "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+                "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+                "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+            ):
+                st.session_state.pop(key, None)
+            st.rerun()
         return
 
     ready_count = sum(row.get("status") == "ready" for row in rows)
@@ -1218,16 +1122,6 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
     metric_cols[2].metric("Failed", failed_count)
     metric_cols[3].metric("Invalid / unchanged", invalid_count + unchanged_count)
 
-    if st.button("＋ Start a new batch", key=f"batch_new_{fingerprint[:10]}"):
-        for key in (
-            "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
-            "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
-            "batch_selected_video_ids", "batch_review_index", "batch_flow_step",
-        ):
-            st.session_state.pop(key, None)
-        st.session_state["show_batch_metadata"] = True
-        st.rerun()
-
     if ready_count == 0 and verified_count == 0:
         st.warning(
             f"There are no publishable proposals in this batch "
@@ -1241,6 +1135,15 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 mime="text/csv",
                 key=f"batch_results_{fingerprint[:12]}",
             )
+        if st.button("← Back to chat", key=f"batch_back_to_chat_invalid_{fingerprint[:10]}", use_container_width=True):
+            for key in (
+                "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+                "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+                "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+                "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+            ):
+                st.session_state.pop(key, None)
+            st.rerun()
         return
 
     if flow_step == "review":
@@ -1259,7 +1162,7 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 use_container_width=True,
             )
         with col_replace:
-            st.caption("Need different videos? Start a new batch above.")
+            st.caption("To replace the list, return to chat and send a new batch instruction or attach another file.")
 
         if refresh_clicked:
             try:
@@ -1634,6 +1537,16 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
             key=f"batch_results_{fingerprint[:12]}",
         )
 
+    if st.button("← Back to chat", key=f"batch_back_to_chat_{fingerprint[:10]}", use_container_width=True):
+        for key in (
+            "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+            "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+            "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+            "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+        ):
+            st.session_state.pop(key, None)
+        st.rerun()
+
 def render_copilot_chat(
     youtube=None,
     secrets=None,
@@ -1658,14 +1571,67 @@ def render_copilot_chat(
 
     context = st.session_state.get("strategist_target_reference")
 
-    render_batch_metadata_import(youtube, subject, secrets=secrets)
+    batch_active = bool(st.session_state.get("batch_metadata_review"))
 
-    # Batch mode is a focused workflow; hide any previously loaded single-video context/proposal.
-    if st.session_state.get("batch_metadata_review") or st.session_state.get("show_batch_metadata"):
-        return
 
-    # 1. Active Video Context Card
-    if context:
+    # 2. Starting State (when chat is empty and no video is active)
+    history = st.session_state.setdefault("strategist_chat_history", [])
+    if not history and not context and not batch_active:
+        st.markdown(
+            """
+            <div style="text-align: center; max-width: 680px; margin: 40px auto 30px auto;">
+                <div style="display: inline-block; background: #FF1E44; color: white; width: 44px; height: 44px; border-radius: 12px; font-size: 22px; font-weight: 900; line-height: 44px; margin-bottom: 16px;">▶</div>
+                <h1 style="font-size: 2.1rem; font-weight: 800; letter-spacing: -0.025em; margin-bottom: 10px; color: #FFFFFF;">
+                    Let's optimize your YouTube video.
+                </h1>
+                <p style="color: #94A3B8; font-size: 1.05rem; line-height: 1.6; margin-bottom: 24px;">
+                    Paste a video or Short link. I'll retrieve its details and help improve the title, description and tags. You can also attach YouTube Studio exports for deeper evidence.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("**Choose a starting point**")
+        starter_actions = (
+            ("title", "🎯 Title angles"),
+            ("description", "📱 Description hook"),
+            ("tags", "🔎 Search tags"),
+            ("review", "✨ Full review"),
+            ("opportunities", "📊 Find videos to optimize"),
+        )
+        starter_cols = st.columns(5)
+        for starter_col, (action_key, action_label) in zip(starter_cols, starter_actions):
+            with starter_col:
+                if st.button(action_label, key=f"starter_focus_{action_key}", use_container_width=True):
+                    if action_key == "opportunities":
+                        st.session_state["strategist_pending_instruction"] = (
+                            "Find the videos on my channel that most need optimization."
+                        )
+                    else:
+                        st.session_state["copilot_initial_optimization"] = action_key
+                    st.rerun()
+
+        selected_action = st.session_state.get("copilot_initial_optimization")
+        if selected_action in QUICK_ACTIONS:
+            selected_label = dict(starter_actions)[selected_action]
+            st.info(
+                f"{selected_label} selected. Paste your YouTube video or Short link in the chat box below; "
+                "I'll use this as the focus for the first analysis."
+            )
+        else:
+            st.caption(
+                "Paste a video or Short link to optimize it, or choose **Find videos to optimize** "
+                "to scan your channel's recent performance."
+            )
+
+    # 4. Conversation History Stream
+    for turn in history:
+        with st.chat_message("user" if turn["role"] == "user" else "assistant"):
+            st.markdown(turn["content"])
+
+    # Active video context follows the message that introduced the selected video.
+    if context and not batch_active:
         target_id = context["target_id"]
         snippet = context["target_snippet"]
         fmt_info = context.get("format_info", {})
@@ -1729,79 +1695,10 @@ def render_copilot_chat(
             if evidence:
                 st.caption(f"📁 **Matched Studio Evidence:** {len(evidence)} observation(s) linked to this video.")
 
-    # 2. Starting State (when chat is empty and no video is active)
-    history = st.session_state.setdefault("strategist_chat_history", [])
-    if not history and not context:
-        st.markdown(
-            """
-            <div style="text-align: center; max-width: 680px; margin: 40px auto 30px auto;">
-                <div style="display: inline-block; background: #FF1E44; color: white; width: 44px; height: 44px; border-radius: 12px; font-size: 22px; font-weight: 900; line-height: 44px; margin-bottom: 16px;">▶</div>
-                <h1 style="font-size: 2.1rem; font-weight: 800; letter-spacing: -0.025em; margin-bottom: 10px; color: #FFFFFF;">
-                    Let's optimize your YouTube video.
-                </h1>
-                <p style="color: #94A3B8; font-size: 1.05rem; line-height: 1.6; margin-bottom: 24px;">
-                    Paste a video or Short link. I'll retrieve its details and help improve the title, description and tags. You can also attach YouTube Studio exports for deeper evidence.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("**Choose a starting point**")
-        starter_actions = (
-            ("title", "🎯 Title angles"),
-            ("description", "📱 Description hook"),
-            ("tags", "🔎 Search tags"),
-            ("review", "✨ Full review"),
-            ("opportunities", "📊 Find videos to optimize"),
-        )
-        starter_cols = st.columns(5)
-        for starter_col, (action_key, action_label) in zip(starter_cols, starter_actions):
-            with starter_col:
-                if st.button(action_label, key=f"starter_focus_{action_key}", use_container_width=True):
-                    if action_key == "opportunities":
-                        st.session_state["strategist_pending_instruction"] = (
-                            "Find the videos on my channel that most need optimization."
-                        )
-                    else:
-                        st.session_state["copilot_initial_optimization"] = action_key
-                    st.rerun()
-
-        selected_action = st.session_state.get("copilot_initial_optimization")
-        if selected_action in QUICK_ACTIONS:
-            selected_label = dict(starter_actions)[selected_action]
-            st.info(
-                f"{selected_label} selected. Paste your YouTube video or Short link in the chat box below; "
-                "I'll use this as the focus for the first analysis."
-            )
-        else:
-            st.caption(
-                "Paste a video or Short link to optimize it, or choose **Find videos to optimize** "
-                "to scan your channel's recent performance."
-            )
-
-    # 3. Studio Export Uploader Drawer (accessible before and after video loading)
-    with st.expander("📎 Studio Export Attachments (CSV, TSV, TXT, XLSX)", expanded=st.session_state.get("show_studio_uploader", False)):
-        st.caption("Upload multiple YouTube Studio reports to extract retention curves and performance evidence (kept in-memory only).")
-        uploaded_files = st.file_uploader(
-            "Upload files",
-            type=["csv", "tsv", "txt", "xlsx"],
-            accept_multiple_files=True,
-            key="studio_file_uploader_copilot",
-            label_visibility="collapsed",
-        )
-        evidence_index, uploader_notice = update_studio_attachments(context, uploaded_files)
-        if uploader_notice:
-            st.success(uploader_notice)
-
-    # 4. Conversation History Stream
-    for turn in history:
-        with st.chat_message("user" if turn["role"] == "user" else "assistant"):
-            st.markdown(turn["content"])
 
     # 4a. Ranked channel opportunities remain inside the same conversation.
     opportunity_scan = st.session_state.get("copilot_channel_opportunities")
-    if opportunity_scan:
+    if opportunity_scan and not batch_active:
         with st.container(border=True):
             period = opportunity_scan.get("period", {})
             st.markdown("### 📊 Videos worth optimizing")
@@ -1859,7 +1756,7 @@ def render_copilot_chat(
 
     # 5. Proposed Metadata Card (Inside conversation stream)
     proposal = st.session_state.get("strategist_chat_proposal")
-    if context and proposal and proposal.get("target_id") == context["target_id"]:
+    if context and not batch_active and proposal and proposal.get("target_id") == context["target_id"]:
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown(
@@ -2048,16 +1945,162 @@ def render_copilot_chat(
                     except Exception as error:
                         st.error(_apply_error_message(error))
 
+    # Batch review is a chronological conversation step, not a separate workspace.
+    if batch_active:
+        render_batch_metadata_import(youtube, subject, secrets=secrets)
+
     # 6. Chat Composer & Follow-up Input
     pending_instruction = st.session_state.pop("strategist_pending_instruction", None)
-    instruction = pending_instruction or st.chat_input(
-        "Paste a YouTube link or message your metadata assistant…",
+    chat_submission = pending_instruction or st.chat_input(
+        "Message, paste a YouTube link, or attach a file…",
+        accept_file="multiple",
+        file_type=["csv", "tsv", "txt", "xlsx"],
         key="copilot_chat_input",
     )
 
-    if instruction:
+    instruction = ""
+    uploaded_files = []
+    if isinstance(chat_submission, str):
+        instruction = chat_submission.strip()
+    elif chat_submission is not None:
+        instruction = str(getattr(chat_submission, "text", "") or "").strip()
+        uploaded_files = list(getattr(chat_submission, "files", []) or [])
+
+    if instruction or uploaded_files:
+        attachment_names = [
+            str(getattr(item, "name", "attached file"))
+            for item in uploaded_files
+        ]
         with st.chat_message("user"):
-            st.markdown(instruction)
+            st.markdown(instruction or "Please review the attached files.")
+            if attachment_names:
+                st.caption("📎 " + " · ".join(attachment_names))
+
+        # The + attachment control accepts either a metadata-change sheet or Studio evidence.
+        metadata_files = []
+        studio_files = []
+        text_context = []
+        unsupported_files = []
+        for uploaded in uploaded_files:
+            file_name = str(getattr(uploaded, "name", "attachment"))
+            payload = uploaded.getvalue() if hasattr(uploaded, "getvalue") else b""
+            suffix = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+            try:
+                batch_metadata.parse_metadata_file(file_name, payload)
+                metadata_files.append((uploaded, payload))
+                continue
+            except Exception:
+                pass
+            try:
+                studio_export_analyzer.parse_studio_export(file_name, payload)
+                studio_files.append(uploaded)
+                continue
+            except Exception:
+                pass
+            if suffix == "txt":
+                try:
+                    decoded = payload.decode("utf-8-sig").strip()
+                    if decoded:
+                        text_context.append(f"Attached text file ({file_name}):\n{decoded[:12000]}")
+                        continue
+                except UnicodeDecodeError:
+                    pass
+            unsupported_files.append(file_name)
+
+        if metadata_files:
+            if studio_files or text_context or unsupported_files or len(metadata_files) > 1:
+                error_message = (
+                    "Please attach one metadata-change spreadsheet at a time, without mixing it with Studio reports or text files. "
+                    "You can attach Studio reports in a separate message."
+                )
+                _append_history(history, "user", instruction or "Attached metadata files.")
+                _append_history(history, "assistant", error_message)
+                st.rerun()
+            if youtube is None:
+                error_message = "Connect YouTube before staging a metadata spreadsheet. No changes have been published."
+                _append_history(history, "user", instruction or f"Attached {metadata_files[0][0].name}.")
+                _append_history(history, "assistant", error_message)
+                st.rerun()
+            try:
+                uploaded, payload = metadata_files[0]
+                with st.spinner("Checking video ownership and preparing the spreadsheet proposals…"):
+                    staged = _stage_uploaded_metadata_batch(uploaded.name, payload, youtube)
+                staged["file_name"] = uploaded.name
+                staged["review_revision"] = 1
+                staged["is_text_batch"] = False
+                st.session_state["batch_metadata_review"] = staged
+                st.session_state["batch_metadata_payload"] = payload
+                st.session_state["batch_metadata_file_name"] = uploaded.name
+                st.session_state["batch_selected_video_ids"] = []
+                st.session_state["batch_review_index"] = 0
+                st.session_state["batch_flow_step"] = "review"
+                st.session_state["show_batch_metadata"] = True
+                _append_history(history, "user", instruction or f"Attached metadata spreadsheet: {uploaded.name}")
+                _append_history(
+                    history,
+                    "assistant",
+                    f"I prepared {len(staged.get('rows', []))} video proposal(s) from **{uploaded.name}**. "
+                    "Review them below, one video at a time. Nothing has been published.",
+                )
+                st.rerun()
+            except Exception as error:
+                _append_history(history, "user", instruction or f"Attached metadata spreadsheet: {metadata_files[0][0].name}")
+                _append_history(history, "assistant", f"I couldn't prepare that metadata spreadsheet: {error}")
+                st.rerun()
+
+        if studio_files:
+            evidence_index, attachment_notice = update_studio_attachments(context, studio_files)
+            st.session_state["studio_export_evidence_index"] = evidence_index
+        else:
+            attachment_notice = None
+
+        if text_context:
+            text_instruction = "\n\n".join(text_context)
+            instruction = (instruction + "\n\n" + text_instruction).strip()
+
+        if unsupported_files:
+            warning = "I couldn't recognize these attachment(s) as a metadata sheet or YouTube Studio report: " + ", ".join(unsupported_files)
+            if not instruction and not studio_files:
+                _append_history(history, "user", "Attached: " + ", ".join(attachment_names))
+                _append_history(history, "assistant", warning)
+                st.rerun()
+            st.warning(warning)
+
+        if studio_files and not instruction:
+            _append_history(history, "user", "Attached Studio report(s): " + ", ".join(
+                str(getattr(item, "name", "report")) for item in studio_files
+            ))
+            _append_history(
+                history,
+                "assistant",
+                (attachment_notice or "I processed the attached YouTube Studio report(s).")
+                + " Tell me whether to scan the channel for videos to optimize, or paste a video link for a focused review. "
+                "The report data stays in this session.",
+            )
+            st.rerun()
+
+        if instruction and st.session_state.get("batch_metadata_review"):
+            urls_in_batch_message = _youtube_references_from_message(instruction)
+            is_new_channel_scan = _is_channel_opportunity_request(instruction) and not urls_in_batch_message
+            if not _is_batch_intent(instruction, urls_in_batch_message) and (urls_in_batch_message or is_new_channel_scan):
+                # Starting a new single-video or channel-scan task from chat exits the current batch.
+                for key in (
+                    "batch_metadata_review", "batch_metadata_payload", "batch_metadata_file_name",
+                    "batch_text_instructions_input", "batch_text_input_area", "batch_metadata_uploader",
+                    "batch_selected_video_ids", "batch_review_index", "batch_flow_step", "show_batch_metadata",
+                    "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+                ):
+                    st.session_state.pop(key, None)
+                context = None
+            elif not _is_batch_intent(instruction, urls_in_batch_message):
+                batch_message = (
+                    "The current batch is still in review. Use **Previous** and **Next**, then the explicit approval control. "
+                    "To return to normal chat while keeping this conversation, click **Back to chat** below the batch. "
+                    "A chat message cannot approve or publish a batch."
+                )
+                _append_history(history, "user", instruction)
+                _append_history(history, "assistant", batch_message)
+                st.rerun()
 
         urls = _youtube_references_from_message(instruction)
         title_reference = _quoted_title_reference(instruction)
@@ -2067,7 +2110,7 @@ def render_copilot_chat(
             try:
                 if youtube is None or analytics is None:
                     raise ConnectionError(
-                        "Connect or reconnect YouTube in Settings before scanning channel performance."
+                        "Connect YouTube with the button at the top before scanning channel performance."
                     )
                 with st.spinner("Scanning your recent uploads and comparing real channel analytics…"):
                     scan = connector.discover_video_opportunities(
@@ -2096,7 +2139,7 @@ def render_copilot_chat(
                 status = getattr(getattr(error, "resp", None), "status", None)
                 if status in (401, 403):
                     summary = (
-                        "YouTube Analytics denied this scan. Reconnect YouTube in Settings to grant the "
+                        "YouTube Analytics denied this scan. Use the YouTube button at the top to reconnect and grant the "
                         "current read permissions, then try the scan again."
                     )
                 else:
@@ -2110,32 +2153,17 @@ def render_copilot_chat(
                 st.markdown(summary)
             st.rerun()
 
-        # Detect target video switch or fresh target load
-        # Check if batch approval is being attempted via conversational chat while a batch is active
-        active_batch = st.session_state.get("batch_metadata_review")
-        if active_batch and not urls and not title_reference and not _is_batch_intent(instruction, urls):
-            low_inst = instruction.lower().strip()
-            if any(term in low_inst for term in ("ok go ahead", "approve", "publish", "apply changes", "publish all", "confirm", "go ahead")):
-                batch_msg = (
-                    "To publish batch proposals, please use the explicit approval controls in the "
-                    "**📦 Batch Metadata Manager** section above. Select the checkboxes for the videos you wish to "
-                    "publish, review the exact values, and click **Approve & Publish Selected Videos**. "
-                    "Chat messages cannot bypass the exact cryptographic approval gate."
-                )
-                _append_history(history, "user", instruction)
-                _append_history(history, "assistant", batch_msg)
-                with st.chat_message("assistant"):
-                    st.warning(batch_msg)
-                st.rerun()
-
         # Check if user message indicates batch request
         if _is_batch_intent(instruction, urls):
             try:
                 staged = _stage_text_metadata_batch(instruction, youtube, secrets=secrets)
                 st.session_state["batch_metadata_review"] = staged
                 st.session_state["batch_text_instructions_input"] = instruction
+                st.session_state["batch_selected_video_ids"] = []
+                st.session_state["batch_review_index"] = 0
+                st.session_state["batch_flow_step"] = "review"
                 st.session_state["show_batch_metadata"] = True
-                msg = f"Identified batch request for {len(staged['rows'])} videos. Proposals have been staged in the Batch Metadata section above for your review."
+                msg = f"Identified batch request for {len(staged['rows'])} videos. Proposals are ready below for sequential review."
                 _append_history(history, "user", instruction)
                 _append_history(history, "assistant", msg)
                 st.rerun()

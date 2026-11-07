@@ -356,6 +356,19 @@ def inject_theme():
             box-shadow: 0 6px 18px rgba(255, 30, 68, 0.45) !important;
         }
 
+        /* Single-chat composer with native attachment (+) control */
+        [data-testid="stChatInput"] {
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            border-radius: 16px;
+            background: #151923;
+        }
+        [data-testid="stChatInput"] textarea {
+            line-height: 1.45;
+        }
+        [data-testid="stChatInput"] button {
+            border-radius: 12px;
+        }
+
         /* Mobile Adjustments (360px - 768px) */
         @media (max-width: 768px) {
             .block-container {
