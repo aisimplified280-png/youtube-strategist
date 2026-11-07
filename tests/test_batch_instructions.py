@@ -345,7 +345,7 @@ class TestAIResponseValidation(unittest.TestCase):
             "tags": ["tag1", "tag2"],
             "title_angles": [
                 {"angle": "curiosity", "title": "Angle 1 Curiosity Title"},
-                {"angle": "direct_value", "title": "Angle 2 Value Title"},
+                {"angle": "value", "title": "Angle 2 Value Title"},
                 {"angle": "search", "title": "Angle 3 Search Title"},
             ],
         }
@@ -359,7 +359,7 @@ class TestAIResponseValidation(unittest.TestCase):
             "tags": ["tag1"],
             "title_angles": [
                 {"angle": "curiosity", "title": "Angle 1"},
-                {"angle": "direct_value", "title": "Angle 2"},
+                {"angle": "value", "title": "Angle 2"},
             ],  # Only 2 angles
         }
         is_valid, err = strategist_chat._validate_proposal_payload(payload, preserve_title=False)
@@ -573,9 +573,11 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         mock_gen = MagicMock()
         mock_gen.return_value = {
             "title": "AI Optimized Title",
+            "recommended_title": "AI Optimized Title",
+            "recommendation_reason": "The title states the useful outcome clearly.",
             "title_angles": [
                 {"angle": "curiosity", "label": "Curiosity", "title": "Did You Know AI Could App?"},
-                {"angle": "value", "label": "Value", "title": "Build Apps With AI Fast"},
+                {"angle": "value", "label": "Value", "title": "AI Optimized Title"},
                 {"angle": "search", "label": "Search", "title": "How To Build Apps With AI"},
             ],
             "description": "AI Optimized Description",
@@ -609,9 +611,11 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         mock_gemini.return_value = (
             json.dumps({
                 "title": "Gemini Fallback Title",
+                "recommended_title": "Gemini Fallback Title",
+                "recommendation_reason": "The fallback title is concise and clearly searchable.",
                 "title_angles": [
                     {"angle": "curiosity", "label": "Curiosity", "title": "Curious Title"},
-                    {"angle": "value", "label": "Value", "title": "Value Title"},
+                    {"angle": "value", "label": "Value", "title": "Gemini Fallback Title"},
                     {"angle": "search", "label": "Search", "title": "Search Title"},
                 ],
                 "description": "Gemini Description",
@@ -639,9 +643,11 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         mock_gen = MagicMock()
         mock_gen.return_value = {
             "title": "Neural Networks Guide",
+            "recommended_title": "Neural Networks Guide",
+            "recommendation_reason": "The title describes the subject directly.",
             "title_angles": [
                 {"angle": "curiosity", "label": "Curiosity", "title": "A1"},
-                {"angle": "value", "label": "Value", "title": "A2"},
+                {"angle": "value", "label": "Value", "title": "Neural Networks Guide"},
                 {"angle": "search", "label": "Search", "title": "A3"},
             ],
             "description": "Desc",
@@ -1034,6 +1040,7 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
             return {
                 "title": f"New Title {video_id}",
                 "recommended_title": f"New Title {video_id}",
+                "recommendation_reason": "The title describes the practical outcome.",
                 "title_angles": [
                     {"angle": "curiosity", "title": f"Curiosity {video_id}"},
                     {"angle": "value", "title": f"New Title {video_id}"},
@@ -1063,6 +1070,7 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
             return {
                 "title": "Optimized RAG Architecture Breakdown",
                 "recommended_title": "Optimized RAG Architecture Breakdown",
+                "recommendation_reason": "The title directly communicates the tutorial's value.",
                 "title_angles": [
                     {"angle": "curiosity", "title": "Why RAG Fails in Production"},
                     {"angle": "value", "title": "Optimized RAG Architecture Breakdown"},
@@ -1103,6 +1111,7 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
                 return {
                     "title": "The 3 Fatal Flaws in Production RAG",
                     "recommended_title": "The 3 Fatal Flaws in Production RAG",
+                    "recommendation_reason": "The title adds a concrete production-focused hook.",
                     "title_angles": [
                         {"angle": "curiosity", "title": "Why 90% of RAG Pipelines Fail Silent"},
                         {"angle": "value", "title": "The 3 Fatal Flaws in Production RAG"},
@@ -1151,6 +1160,7 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         def mock_gen(video_id, before, instruction="", fields=None, transcript=""):
             return {
                 "title": "New High CTR Title",
+                "recommendation_reason": "The title communicates the intended learning outcome.",
                 "title_angles": [
                     {"angle": "curiosity", "title": "Curiosity RAG Title"},
                     {"angle": "value", "title": "New High CTR Title"},
@@ -1205,6 +1215,8 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         def mock_gen(video_id, before, instruction="", fields=None, transcript=""):
             return {
                 "title": "Title Choice A",
+                "recommended_title": "Title Choice A",
+                "recommendation_reason": "The curiosity angle is the strongest opening hook.",
                 "title_angles": [
                     {"angle": "curiosity", "title": "Title Choice A"},
                     {"angle": "value", "title": "Title Choice B"},
@@ -1261,6 +1273,8 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         def mock_gen(video_id, before, instruction="", fields=None, transcript=""):
             return {
                 "title": f"New Title {video_id}",
+                "recommended_title": f"New Title {video_id}",
+                "recommendation_reason": "The title states the topic outcome plainly.",
                 "title_angles": [
                     {"angle": "curiosity", "title": f"Curiosity {video_id}"},
                     {"angle": "value", "title": f"New Title {video_id}"},
@@ -1369,6 +1383,184 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         row = staged["rows"][0]
         self.assertEqual(row["status"], "invalid")
         self.assertTrue(any("Ownership check failed" in err for err in row["errors"]))
+
+
+    def _ready_publish_row(self, video_id=None):
+        video_id = video_id or self.VIDEOS_4[0]
+        before = make_snippet(video_id, title="Original approved title")
+        proposed = copy.deepcopy(before)
+        proposed["title"] = "A genuinely new approved title"
+        return {
+            "video_id": video_id,
+            "before": before,
+            "proposed": proposed,
+            "proposed_title": proposed["title"],
+            "status": "ready",
+            "attempted": False,
+            "digest": connector.metadata_proposal_digest(video_id, before, proposed),
+        }
+
+    def test_19_title_angle_validation_requires_exactly_three_categories(self):
+        current = "Original production RAG title"
+        valid_angles = [
+            {"angle": "curiosity", "title": "Why Production RAG Fails Quietly"},
+            {"angle": "value", "title": "Fix the Three Biggest RAG Retrieval Problems"},
+            {"angle": "search", "title": "Production RAG Pipeline Troubleshooting Guide"},
+        ]
+        self.assertEqual(batch_metadata.validate_title_angles_quality(current, valid_angles), (True, ""))
+        self.assertFalse(batch_metadata.validate_title_angles_quality(current, valid_angles + [
+            {"angle": "value", "title": "An extra title angle"}
+        ])[0])
+        duplicate_category = [
+            valid_angles[0],
+            {"angle": "value", "title": "A different direct-value title"},
+            {"angle": "value", "title": "Another direct-value title"},
+        ]
+        self.assertFalse(batch_metadata.validate_title_angles_quality(current, duplicate_category)[0])
+        wrong_category = [
+            valid_angles[0],
+            {"angle": "direct_value", "title": "A direct-value title"},
+            valid_angles[2],
+        ]
+        self.assertFalse(batch_metadata.validate_title_angles_quality(current, wrong_category)[0])
+
+    def test_20_recommended_title_must_be_one_of_the_three_angles(self):
+        vid = self.VIDEOS_4[0]
+        youtube = FakeYoutube({vid: make_snippet(vid, title="Original RAG Title")})
+        calls = []
+
+        def bad_generator(video_id, before, instruction="", fields=None, transcript=""):
+            calls.append(instruction)
+            return {
+                "title": "Recommended but unlisted title",
+                "recommended_title": "Recommended but unlisted title",
+                "recommendation_reason": "This should be rejected because it is not a selectable angle.",
+                "title_angles": [
+                    {"angle": "curiosity", "title": "Why RAG Retrieval Fails"},
+                    {"angle": "value", "title": "Three Ways to Improve RAG Retrieval"},
+                    {"angle": "search", "title": "RAG Retrieval Pipeline Guide"},
+                ],
+            }
+
+        plan = batch_instructions.parse_batch_instructions(f"1. {vid}\\nOptimize title.")
+        staged = batch_metadata.prepare_metadata_batch(
+            youtube,
+            batch_metadata.create_batch_from_text_plan(plan),
+            ai_generator=bad_generator,
+        )
+        self.assertEqual(len(calls), 2)  # One initial generation plus one controlled repair.
+        self.assertEqual(staged["rows"][0]["status"], "invalid")
+
+    def test_21_publish_requires_explicit_approval_and_current_fingerprint(self):
+        youtube = FakeYoutube({self.VIDEOS_4[0]: make_snippet(self.VIDEOS_4[0])})
+        row = self._ready_publish_row()
+        rows = [row]
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
+
+        blocked = batch_metadata.publish_approved_batch_rows(
+            youtube, rows, [row["video_id"]],
+            approved=False,
+            approval_fingerprint=fingerprint,
+            review_revision=1,
+        )
+        self.assertTrue(blocked["blocked"])
+        self.assertEqual(youtube._videos.update_calls, [])
+        self.assertFalse(row["attempted"])
+
+        stale = batch_metadata.publish_approved_batch_rows(
+            youtube, rows, [row["video_id"]],
+            approved=True,
+            approval_fingerprint="stale-fingerprint",
+            review_revision=1,
+        )
+        self.assertTrue(stale["blocked"])
+        self.assertEqual(youtube._videos.update_calls, [])
+
+    def test_22_publish_helper_executes_approved_write_and_verifies_all_fields(self):
+        vid = self.VIDEOS_4[0]
+        youtube = FakeYoutube({vid: make_snippet(vid, title="Original approved title")})
+        row = self._ready_publish_row(vid)
+        rows = [row]
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=4)
+
+        result = batch_metadata.publish_approved_batch_rows(
+            youtube, rows, [vid],
+            approved=True,
+            approval_fingerprint=fingerprint,
+            review_revision=4,
+            audit_callback=lambda entry: None,
+        )
+
+        self.assertFalse(result["blocked"])
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(row["status"], "verified")
+        self.assertEqual(youtube._videos.update_calls.__len__(), 1)
+        read_back = connector.fetch_video_snippet(youtube, vid)
+        self.assertEqual(batch_metadata.batch_metadata_readback_mismatches(read_back, row["proposed"]), [])
+
+    def test_23_matching_title_but_mismatched_description_is_not_verified(self):
+        row = self._ready_publish_row()
+        actual = copy.deepcopy(row["proposed"])
+        actual["description"] = "Different description on YouTube"
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint([row], review_revision=1)
+        with patch.object(connector, "apply_approved_dashboard_proposal", return_value={"result": "success"}), patch.object(
+            connector, "fetch_video_snippet", return_value=actual
+        ):
+            result = batch_metadata.publish_approved_batch_rows(
+                object(), [row], [row["video_id"]],
+                approved=True, approval_fingerprint=fingerprint, review_revision=1,
+            )
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("description", row["result_message"])
+
+    def test_24_matching_title_but_mismatched_tags_is_not_verified(self):
+        row = self._ready_publish_row()
+        actual = copy.deepcopy(row["proposed"])
+        actual["tags"] = ["different", "tags"]
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint([row], review_revision=1)
+        with patch.object(connector, "apply_approved_dashboard_proposal", return_value={"result": "success"}), patch.object(
+            connector, "fetch_video_snippet", return_value=actual
+        ):
+            result = batch_metadata.publish_approved_batch_rows(
+                object(), [row], [row["video_id"]],
+                approved=True, approval_fingerprint=fingerprint, review_revision=1,
+            )
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("tags", row["result_message"])
+
+    def test_25_unavailable_readback_is_not_reported_as_verified(self):
+        row = self._ready_publish_row()
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint([row], review_revision=1)
+        with patch.object(connector, "apply_approved_dashboard_proposal", return_value={"result": "success"}), patch.object(
+            connector, "fetch_video_snippet", side_effect=RuntimeError("YouTube is temporarily unavailable")
+        ):
+            result = batch_metadata.publish_approved_batch_rows(
+                object(), [row], [row["video_id"]],
+                approved=True, approval_fingerprint=fingerprint, review_revision=1,
+            )
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(row["status"], "verification_unavailable")
+        self.assertIn("read-back was unavailable", row["result_message"])
+
+    def test_26_edit_after_fingerprint_invalidates_publish_attempt(self):
+        youtube = FakeYoutube({self.VIDEOS_4[0]: make_snippet(self.VIDEOS_4[0])})
+        row = self._ready_publish_row()
+        rows = [row]
+        approved_fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
+
+        row["proposed"]["title"] = "Edited after approval"
+        batch_metadata.revalidate_batch_row(row)
+        result = batch_metadata.publish_approved_batch_rows(
+            youtube, rows, [row["video_id"]],
+            approved=True,
+            approval_fingerprint=approved_fingerprint,
+            review_revision=1,
+        )
+        self.assertTrue(result["blocked"])
+        self.assertEqual(youtube._videos.update_calls, [])
 
 
 if __name__ == "__main__":
