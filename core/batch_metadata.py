@@ -96,11 +96,11 @@ def validate_title_optimization_result(cur_title: str, result: Dict[str, Any]) -
         return False, error
 
     title = result.get("title")
-    recommended = result.get("recommended_title") or title
+    recommended = result.get("recommended_title")
     if not isinstance(title, str) or not title.strip():
-        return False, "AI title optimization did not provide a recommended title."
+        return False, "AI title optimization did not provide a primary title."
     if not isinstance(recommended, str) or not recommended.strip():
-        return False, "AI title optimization did not provide recommended_title."
+        return False, "AI title optimization did not provide the required recommended_title."
     title = title.strip()
     recommended = recommended.strip()
 
