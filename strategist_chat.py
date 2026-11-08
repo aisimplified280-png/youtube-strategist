@@ -975,9 +975,9 @@ def _is_explicit_video_pairing_request(message: str) -> bool:
     explicit_pairing_patterns = (
         # A direct comparison instruction joining two supplied items.
         r"\bcompare\b[\s\S]{0,200}\b(?:versus|vs\.?|against)\b",
-        r"\bcompare\s+(?:(?:the\s+)?(?:two|both|these|supplied|listed)\s+)?(?:youtube\s+)?videos?\b",
+        r"\bcompare\s+(?:(?:these|the|both|supplied|listed|following)\s+)?(?:(?:two|both|of\s+these)\s+)?(?:youtube\s+)?videos?\b",
         # A supplied video is explicitly designated as the reference for another.
-        r"\b(?:use|treat|take|make)\b[\s\S]{0,100}\bas\s+(?:a\s+)?reference\s+for\b",
+        r"\b(?:use|treat|take|make)\b[\s\S]{0,100}\bas\s+(?:(?:a|the)\s+)?reference\s+for\b",
         r"\btarget\s+and\s+reference\b",
         # Explicitly asking to model one supplied video after another.
         r"\bmodel\b[\s\S]{0,100}\bafter\s+(?:the\s+)?(?:reference|other|first|second)\s+(?:video|upload)\b",
