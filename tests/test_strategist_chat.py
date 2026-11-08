@@ -168,31 +168,21 @@ class StrategistChatTests(unittest.TestCase):
         self.assertIn("[01:01:01] Hour caption", text)
         self.assertIn("Timestamped transcript available", status)
 
-    def test_prompt_includes_studio_metrics_as_numeric_context_not_causal_proof(self):
-        evidence = [{
-            "source_file": "content.csv",
-            "report_type": "video_performance",
-            "views": 1200,
-            "impressions": 5000,
-            "ctr_percent": 2.4,
-            "date_start": "2026-09-01",
-            "date_end": "2026-09-28",
-        }]
+    def test_prompt_focuses_on_target_metadata_and_transcript_without_studio_hallucinations(self):
         prompt = strategist_chat._build_prompt(
-            {"title": "Target", "description": "Existing description", "tags": []},
+            {"title": "Target Video", "description": "Existing description", "tags": ["tag1"]},
             {},
             "",
             "No reference transcript.",
             [],
             "Review this metadata",
-            target_transcript="",
-            target_transcript_status="Unavailable",
-            studio_evidence=evidence,
+            target_transcript="0:00 Introduction to the concept",
+            target_transcript_status="Available",
         )
-        self.assertIn("content.csv", prompt)
-        self.assertIn("5000", prompt)
-        self.assertIn("numeric performance context", prompt)
-        self.assertIn("never treat it as proof of causation", prompt)
+        self.assertIn("Target Video", prompt)
+        self.assertIn("0:00 Introduction to the concept", prompt)
+        self.assertIn("NEVER claim that you watched video visuals", prompt)
+        self.assertIn("Never guarantee CTR, views, virality", prompt)
 
     def test_apply_error_message_explains_stale_metadata_without_hiding_reason(self):
         message = strategist_chat._apply_error_message(

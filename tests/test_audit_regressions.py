@@ -19,7 +19,6 @@ from core.analytics_logic import calculate_custom_period, get_period_preset
 from core.llm import LLMRouter, LLMError, parse_proposal_json
 from core.metadata_apply import compute_proposal_digest
 from core.oauth import MEMORY_SCOPES, YOUTUBE_SCOPES, create_purpose_state
-import studio_export_analyzer
 import youtube_analytics_connector as connector
 
 
@@ -98,7 +97,6 @@ class TestAuditRegressions(unittest.TestCase):
         dest_map = {
             "home": mock_home,
             "analyze": mock_analyze,
-            "pages/studio_analysis.py": mock_analyze,
             "strategist": mock_strategist,
             "pages/strategist.py": mock_strategist,
             "dashboard": mock_dashboard,
@@ -130,14 +128,7 @@ class TestAuditRegressions(unittest.TestCase):
         self.assertNotEqual(yt_state, mem_state, "YouTube and Memory states must use purpose-bound secrets.")
         self.assertNotEqual(yt_verifier, mem_verifier)
 
-    # 5. High — deployed help link points to no local file
-    def test_studio_analysis_contains_no_local_file_links(self):
-        with open("pages/studio_analysis.py", "r", encoding="utf-8") as f:
-            content = f.read()
-        self.assertNotIn("file:///", content, "pages/studio_analysis.py must not contain local machine file:/// links.")
-        self.assertIn("STUDIO_EXPORT_GUIDE.md", content)
-
-    # 6. High — video switching state isolation
+    # 5. High — video switching state isolation
     def test_compute_proposal_digest_isolated_per_video_id(self):
         before = {"title": "Old", "description": "Desc", "tags": [], "categoryId": "28"}
         proposed = {"title": "New", "description": "Desc", "tags": [], "categoryId": "28"}
@@ -260,64 +251,6 @@ class TestAuditRegressions(unittest.TestCase):
 
 
 
-    def test_studio_export_keeps_lifetime_metrics_and_exact_video_id(self):
-        csv_data = (
-            "Video title,Video ID,Views,Watch time (minutes),Impressions,"
-            "Impressions click-through rate (%),Average percentage viewed (%)\n"
-            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",'
-            "Cp0TzsGEbB0,883,36,11205,2.01,51.22\n"
-        ).encode("utf-8")
-        parsed = studio_export_analyzer.parse_studio_export("Table data.csv", csv_data)
-        report = studio_export_analyzer.analyze_studio_export(parsed)
-        index = studio_export_analyzer.build_evidence_index([report])
-        evidence = studio_export_analyzer.find_video_evidence(
-            index,
-            "Cp0TzsGEbB0",
-            "FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",
-        )
-        self.assertEqual(report["video_count"], 1)
-        self.assertEqual(report["video_rows"][0]["video_id"], "Cp0TzsGEbB0")
-        self.assertEqual(report["video_rows"][0]["views"], 883)
-        self.assertEqual(report["video_rows"][0]["impressions"], 11205)
-        self.assertAlmostEqual(report["video_rows"][0]["ctr_percent"], 2.01)
-        self.assertEqual(evidence[0]["views"], 883)
-        self.assertIsNone(evidence[0]["date_start"])
-        self.assertIsNone(evidence[0]["date_end"])
-
-    def test_studio_content_title_is_not_misclassified_as_video_id(self):
-        csv_data = (
-            "Content,Video title,Views,Impressions,Impressions click-through rate (%)\n"
-            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",'
-            '"FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",883,11205,2.01\n'
-        ).encode("utf-8")
-        parsed = studio_export_analyzer.parse_studio_export("Reach export.csv", csv_data)
-        report = studio_export_analyzer.analyze_studio_export(parsed)
-        self.assertIsNone(report["video_rows"][0]["video_id"])
-        self.assertEqual(
-            report["video_rows"][0]["video_title"],
-            "FREE ChatGPT Pro for 1 Year in India! 🔥 No Payment Needed",
-        )
-
-    def test_studio_content_column_preserves_valid_video_id(self):
-        csv_data = (
-            "Content,Video title,Views,Impressions,Impressions click-through rate (%)\n"
-            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",883,11205,2.01\n'
-        ).encode("utf-8")
-        parsed = studio_export_analyzer.parse_studio_export("Content table.csv", csv_data)
-        report = studio_export_analyzer.analyze_studio_export(parsed)
-        self.assertEqual(report["video_rows"][0]["video_id"], "Cp0TzsGEbB0")
-        self.assertEqual(report["video_rows"][0]["video_title"], "FREE ChatGPT Pro for 1 Year in India!")
-
-    def test_studio_upload_parser_returns_per_file_errors(self):
-        result = studio_export_analyzer.analyze_uploaded_files([
-            ("good.csv", b"Video title,Views\nExample,5\n"),
-            ("bad.csv", b"not a report\n"),
-        ])
-        self.assertEqual(len(result["reports"]), 1)
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertEqual(result["errors"][0]["filename"], "bad.csv")
-        self.assertTrue(result["errors"][0]["error"])
-
     def test_opportunity_scan_separates_lifetime_and_period_views(self):
         video_id = "Cp0TzsGEbB0"
         detail = {
@@ -340,17 +273,6 @@ class TestAuditRegressions(unittest.TestCase):
             "shares": 0,
             "subscribersGained": 0,
         }
-        studio_index = {
-            f"id:{video_id}": [{
-                "source_file": "Reach export.csv",
-                "report_type": "video_performance",
-                "views": 883,
-                "impressions": 11205,
-                "ctr_percent": 2.01,
-                "date_start": None,
-                "date_end": None,
-            }]
-        }
         with (
             patch.object(connector, "_list_recent_upload_ids", return_value=[video_id]),
             patch.object(connector, "_fetch_video_details", return_value={video_id: detail}),
@@ -358,134 +280,13 @@ class TestAuditRegressions(unittest.TestCase):
             patch.object(connector, "rank_channel_video_opportunities", side_effect=lambda rows, limit=10: rows),
         ):
             scan = connector.discover_video_opportunities(
-                object(), object(), studio_index, days=28, limit=10
+                object(), object(), days=28, limit=10
             )
         self.assertEqual(len(scan["recommendations"]), 1)
         item = scan["recommendations"][0]
         self.assertEqual(item["views"], 0)
         self.assertEqual(item["lifetime_views"], 883)
         self.assertIsNone(item["average_view_percentage"])
-        self.assertEqual(item["impressions"], 11205)
-        self.assertAlmostEqual(item["ctr_percent"], 2.01)
-        self.assertFalse(item["ctr_period_known"])
-
-
-    def test_xlsx_upload_parses_all_three_studio_worksheets(self):
-        from io import BytesIO
-        from openpyxl import Workbook
-
-        workbook = Workbook()
-        table = workbook.active
-        table.title = "Table data"
-        table.append(["Video ID", "Video title", "Views", "Impressions", "CTR"])
-        table.append(["Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!", 883, 11205, 2.01])
-
-        chart = workbook.create_sheet("Chart data")
-        chart.append(["Date", "Views"])
-        chart.append(["2026-11-01", 12])
-        chart.append(["2026-11-02", 15])
-
-        totals = workbook.create_sheet("Totals")
-        totals.append(["Video ID", "Video title", "Views", "Impressions", "CTR"])
-        totals.append(["Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!", 883, 11205, 2.01])
-
-        buffer = BytesIO()
-        workbook.save(buffer)
-        workbook.close()
-
-        result = studio_export_analyzer.analyze_uploaded_files([
-            ("Untitled spreadsheet (1).xlsx", buffer.getvalue())
-        ])
-        reports = result["reports"]
-        self.assertEqual(result["errors"], [])
-        self.assertEqual(len(reports), 3)
-        self.assertEqual(
-            {report["source_sheet"] for report in reports},
-            {"Table data", "Chart data", "Totals"},
-        )
-        by_sheet = {report["source_sheet"]: report for report in reports}
-        self.assertEqual(by_sheet["Table data"]["report_type"], "video_performance")
-        self.assertEqual(by_sheet["Table data"]["video_count"], 1)
-        self.assertEqual(by_sheet["Chart data"]["report_type"], "daily_trend")
-        self.assertEqual(by_sheet["Totals"]["video_count"], 1)
-
-        index = studio_export_analyzer.build_video_evidence_index(reports)
-        evidence = studio_export_analyzer.find_video_evidence(
-            index, "Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!"
-        )
-        self.assertEqual(len(evidence), 2)
-        self.assertEqual({item["source_sheet"] for item in evidence}, {"Table data", "Totals"})
-        self.assertEqual({item["source_file"] for item in evidence}, {"Untitled spreadsheet (1).xlsx"})
-
-    def test_xlsx_upload_reports_unreadable_nonempty_worksheet(self):
-        from io import BytesIO
-        from openpyxl import Workbook
-
-        workbook = Workbook()
-        workbook.active.title = "Table data"
-        workbook.active.append(["Video ID", "Video title", "Views"])
-        workbook.active.append(["Cp0TzsGEbB0", "Sample", 5])
-        notes = workbook.create_sheet("Notes")
-        notes.append(["Owner", "Comment"])
-        notes.append(["AI Simplified Lab", "No analytics data here"])
-
-        buffer = BytesIO()
-        workbook.save(buffer)
-        workbook.close()
-
-        result = studio_export_analyzer.analyze_uploaded_files([
-            ("Studio workbook.xlsx", buffer.getvalue())
-        ])
-        self.assertEqual(len(result["reports"]), 1)
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertEqual(result["errors"][0]["source_sheet"], "Notes")
-        self.assertIn("report header", result["errors"][0]["error"])
-
-    def test_video_publish_time_is_not_report_period(self):
-        csv_data = (
-            "Video ID,Video title,Video publish time,Views,Impressions,CTR\n"
-            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\n'
-        ).encode("utf-8")
-        parsed = studio_export_analyzer.parse_studio_export("Video data.csv", csv_data)
-        report = studio_export_analyzer.analyze_studio_export(parsed)
-        index = studio_export_analyzer.build_evidence_index([report])
-        evidence = studio_export_analyzer.find_video_evidence(
-            index, "Cp0TzsGEbB0", "FREE ChatGPT Pro for 1 Year in India!"
-        )
-        row = report["video_rows"][0]
-        self.assertEqual(row["published_at"], "2025-10-28")
-        self.assertIsNone(row["date_start"])
-        self.assertIsNone(row["date_end"])
-        self.assertIsNone(evidence[0]["date_start"])
-        self.assertIsNone(evidence[0]["date_end"])
-        self.assertFalse(evidence[0]["report_period_known"])
-
-    def test_date_published_alias_is_also_not_report_period(self):
-        csv_data = (
-            "Video ID,Video title,Date published,Views,Impressions,CTR\n"
-            'Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2025-10-28,883,11205,2.01\n'
-        ).encode("utf-8")
-        parsed = studio_export_analyzer.parse_studio_export("Video data.csv", csv_data)
-        report = studio_export_analyzer.analyze_studio_export(parsed)
-        row = report["video_rows"][0]
-        self.assertEqual(row["published_at"], "2025-10-28")
-        self.assertIsNone(row["date_start"])
-        self.assertIsNone(row["date_end"])
-
-    def test_actual_date_dimension_still_builds_studio_report_period(self):
-        csv_data = (
-            "Date,Video ID,Video title,Views,Impressions,CTR\n"
-            '2026-11-01,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",2,100,2.0\n'
-            '2026-11-02,Cp0TzsGEbB0,"FREE ChatGPT Pro for 1 Year in India!",3,150,4.0\n'
-        ).encode("utf-8")
-        parsed = studio_export_analyzer.parse_studio_export("Daily video data.csv", csv_data)
-        report = studio_export_analyzer.analyze_studio_export(parsed)
-        row = report["video_rows"][0]
-        self.assertEqual(row["date_start"], "2026-11-01")
-        self.assertEqual(row["date_end"], "2026-11-02")
-        self.assertEqual(row["views"], 5)
-        self.assertEqual(row["impressions"], 250)
-        self.assertAlmostEqual(row["ctr_percent"], 3.2)
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,7 +49,39 @@ LIST_OR_BARE_ID_PATTERN = re.compile(
 EXCLUDED_ID_TOKENS = {
     "description", "instruction", "suggestions", "conclusions", "preferences",
     "information", "replacement", "categorized", "spreadsheet", "performance",
+    "programming", "development", "placeholder", "optimization", "interactive",
+    "application", "transformer", "engineering", "environment", "architecture",
+    "distributed", "reinforce", "integration",
 }
+
+
+def _is_probable_video_id(token: str) -> bool:
+    """Determine if an 11-char token is a likely base64 YouTube video ID rather than an English word."""
+    if len(token) != 11 or not VIDEO_ID_RE.fullmatch(token):
+        return False
+    if token.lower() in EXCLUDED_ID_TOKENS:
+        return False
+    # Hyphenated or underscored English words without digits (e.g. "Exact-Match", "multi-agent")
+    if "-" in token or "_" in token:
+        parts = re.split(r"[-_]", token)
+        if not any(c.isdigit() for c in token) and all(
+            p.isalpha() and (p.islower() or p.istitle() or p.isupper())
+            for p in parts if p
+        ):
+            return False
+    # If it contains digits, it has high entropy distinguishing it from normal English words
+    if any(c.isdigit() for c in token):
+        return True
+    # If it contains underscores or dashes alongside mixed-case letters
+    if any(c in "_-" for c in token):
+        return True
+    # If it contains interior uppercase letters with sufficient casing entropy
+    # (e.g. JlxukCkusZc has uppercase 'J', 'C', 'Z' and lowercase 'lxuk', 'kus', 'c')
+    upper_count = sum(1 for c in token if c.isupper())
+    lower_count = sum(1 for c in token if c.islower())
+    if upper_count >= 2 and lower_count >= 2 and any(c.isupper() for c in token[1:]):
+        return True
+    return False
 
 
 def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
@@ -60,58 +92,58 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
     found_refs = []
     seen_spans = set()
 
+    def _add_ref(raw_ref: str, vid: Optional[str], ref_type: str, start: int, end: int):
+        span = (start, end)
+        if any(s[0] <= start and end <= s[1] for s in seen_spans):
+            return
+        seen_spans.add(span)
+        found_refs.append({
+            "raw_reference": raw_ref,
+            "video_id": vid,
+            "type": ref_type,
+            "start": start,
+            "end": end,
+        })
+
+    # 1. YouTube URLs
     for match in YOUTUBE_URL_PATTERN.finditer(text):
         url = match.group(0).rstrip(".,;!?:")
-        span = (match.start(), match.end())
-        if span in seen_spans:
-            continue
-        seen_spans.add(span)
         try:
             vid = parse_video_reference(url)
-            found_refs.append({
-                "raw_reference": url,
-                "video_id": vid,
-                "type": "url",
-                "start": match.start(),
-                "end": match.end(),
-            })
+            _add_ref(url, vid, "url", match.start(), match.end())
         except ValueError:
-            found_refs.append({
-                "raw_reference": url,
-                "video_id": None,
-                "type": "unresolved_url",
-                "start": match.start(),
-                "end": match.end(),
-            })
+            _add_ref(url, None, "unresolved_url", match.start(), match.end())
 
+    # 2. Explicit ID labels (e.g. "VIDEO ID: JlxukCkusZc", "id: JlxukCkusZc")
     for match in EXPLICIT_ID_PATTERN.finditer(text):
         vid = match.group(1)
-        span = (match.start(), match.end())
-        if span not in seen_spans and vid.lower() not in EXCLUDED_ID_TOKENS:
-            seen_spans.add(span)
-            found_refs.append({
-                "raw_reference": vid,
-                "video_id": vid,
-                "type": "id",
-                "start": match.start(),
-                "end": match.end(),
-            })
+        if vid.lower() not in EXCLUDED_ID_TOKENS:
+            _add_ref(vid, vid, "id", match.start(1), match.end(1))
 
+    # 3. Labeled or separated IDs (e.g. "JlxukCkusZc CURRENT TITLE:", "JlxukCkusZc - title")
+    field_pattern = re.compile(
+        r"\b([A-Za-z0-9_-]{11})\b\s*(?:[-—:]|current\s+title|new\s+title|title\s*:|description\s*:|tags\s*:)",
+        re.IGNORECASE,
+    )
+    for match in field_pattern.finditer(text):
+        vid = match.group(1)
+        if vid.lower() not in EXCLUDED_ID_TOKENS and VIDEO_ID_RE.fullmatch(vid):
+            _add_ref(vid, vid, "id", match.start(1), match.end(1))
+
+    # 4. Line-anchored bare IDs
     for match in LIST_OR_BARE_ID_PATTERN.finditer(text):
         vid = match.group(1)
-        # Find exact span of the ID group
-        span = match.span(1)
-        if span not in seen_spans and vid.lower() not in EXCLUDED_ID_TOKENS and VIDEO_ID_RE.fullmatch(vid):
-            # Check if this span was already covered by another match
-            if not any(s[0] <= span[0] and span[1] <= s[1] for s in seen_spans):
-                seen_spans.add(span)
-                found_refs.append({
-                    "raw_reference": vid,
-                    "video_id": vid,
-                    "type": "id",
-                    "start": span[0],
-                    "end": span[1],
-                })
+        if vid.lower() not in EXCLUDED_ID_TOKENS and VIDEO_ID_RE.fullmatch(vid):
+            _add_ref(vid, vid, "id", match.start(1), match.end(1))
+
+    # 5. Probable YouTube IDs in lists or paragraphs (e.g. "JlxukCkusZc and uBH2f6sKZcc", "JlxukCkusZc, uBH2f6sKZcc")
+    list_pattern = re.compile(
+        r"(?:^|[\s,;*•\[\]\(\)])(?:\d+[\.\)]\s*)?([A-Za-z0-9_-]{11})(?=(?:[\s,;*•\[\]\(\)]|$))",
+    )
+    for match in list_pattern.finditer(text):
+        vid = match.group(1)
+        if _is_probable_video_id(vid):
+            _add_ref(vid, vid, "id", match.start(1), match.end(1))
 
     found_refs.sort(key=lambda r: r["start"])
     return found_refs
@@ -193,16 +225,33 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
     tags_intent = "unmentioned"
     exact_tags = None
 
+    NEXT_FIELD_LOOKAHEAD = (
+        r"(?=\s*(?:"
+        r"\b(?:new|proposed|current|existing|original|target|old)\s+titles?\s*[:=]|"
+        r"(?<!current\s)(?<!existing\s)(?<!original\s)(?<!target\s)(?<!old\s)\btitles?\s*[:=]|"
+        r"\bdescriptions?\s*[:=]|"
+        r"\btags\s*[:=]|"
+        r"\b(?:video|target|reference)\s*(?:id|#)?\s*[:=]|"
+        r"[\r\n]|$"
+        r"))"
+    )
+
     # 1. Title intent & extraction
     context_title = None
     # Identify context/current title labels:
     # Lines labelled "Current title:", "Existing title:", or "<ID> — <Title>" provide
     # existing metadata for context. They must NOT be interpreted as exact replacement titles.
     ctx_match = re.search(
-        r"\b(?:current|existing|original|target|old)\s+titles?\s*[:=]\s*([^\n\r]+)",
+        r"\b(?:current|existing|original|target|old)\s+titles?\s*[:=]\s*['\"“”]{0,3}(.+?)(?:['\"“”]{0,3}\s*" + NEXT_FIELD_LOOKAHEAD + r")",
         text_content,
         re.IGNORECASE,
     )
+    if not ctx_match:
+        ctx_match = re.search(
+            r"\b(?:current|existing|original|target|old)\s+titles?\s*[:=]\s*([^\n\r]+)",
+            text_content,
+            re.IGNORECASE,
+        )
     if ctx_match:
         context_title = ctx_match.group(1).strip().strip("'\"“”")
     else:
@@ -249,13 +298,13 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
     )
     if not exact_title_match:
         exact_title_match = re.search(
-            r"\b(?:new|proposed)\s+title\s*[:=]\s*['\"“”]{0,3}([\s\S]*?)['\"“”]{0,3}(?=\n|$)",
+            r"\b(?:new|proposed)\s+title\s*[:=]\s*['\"“”]{0,3}(.+?)(?:['\"“”]{0,3}\s*" + NEXT_FIELD_LOOKAHEAD + r")",
             text_content,
             re.IGNORECASE,
         )
     if not exact_title_match and not context_title:
         bare_title_match = re.search(
-            r"(?<!current\s)(?<!existing\s)(?<!original\s)(?<!target\s)(?<!old\s)\bTitle\s*:\s*([^\n\r]+)",
+            r"(?<!current\s)(?<!existing\s)(?<!original\s)(?<!target\s)(?<!old\s)\bTitle\s*:\s*['\"“”]{0,3}(.+?)(?:['\"“”]{0,3}\s*" + NEXT_FIELD_LOOKAHEAD + r")",
             text_content,
             re.IGNORECASE,
         )
@@ -294,7 +343,7 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
             re.IGNORECASE,
         )
         desc_block = re.search(
-            r"\bDescription\s*:\s*([\s\S]+?)(?=\n\s*(?:Tags:|Title:|Video\s*\d+:|https?://|$))",
+            r"\bDescription\s*:\s*([\s\S]+?)(?=\s*(?:\bTags\s*[:=]|\bTitle\s*[:=]|\bNew\s+title\s*[:=]|\bVideo\s*(?:id|\d+)\s*[:=]|https?://|[\r\n]{2,}|$))",
             text_content,
             re.IGNORECASE,
         )
@@ -326,10 +375,16 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
         # Check JSON array first
         tags_json_match = re.search(r"(?:tags\s*[:=]|use\s+tags\s*[:=]?)\s*(\[[^\]]*\])", text_content, re.IGNORECASE)
         tags_text_match = re.search(
-            r"(?:use\s+(?:these\s+)?tags|tags\s*[:=]|set\s+tags\s+to)\s*[:=]?\s*([^\n\r]+)",
+            r"(?:use\s+(?:these\s+)?tags|tags\s*[:=]|set\s+tags\s+to)\s*[:=]?\s*(.+?)(?=\s*(?:\bTitle\s*[:=]|\bDescription\s*[:=]|\bVideo\s*(?:id|\d+)\s*[:=]|[\r\n]|$))",
             text_content,
             re.IGNORECASE,
         )
+        if not tags_text_match:
+            tags_text_match = re.search(
+                r"(?:use\s+(?:these\s+)?tags|tags\s*[:=]|set\s+tags\s+to)\s*[:=]?\s*([^\n\r]+)",
+                text_content,
+                re.IGNORECASE,
+            )
         if tags_json_match:
             try:
                 parsed_t = parse_tags_cell(tags_json_match.group(1))

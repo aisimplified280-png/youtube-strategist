@@ -237,47 +237,28 @@ class UXRefactorAcceptanceTests(unittest.TestCase):
         self.assertEqual(len(session_state["strategist_chat_history"]), 2)
         self.assertEqual(session_state["strategist_chat_history"][0]["role"], "user")
 
-    def test_recommendation_displays_actual_title_not_video_id(self):
-        """Studio exports with video IDs must never display raw video IDs as recommendation titles."""
-        import studio_export_analyzer as studio
-        from streamlit_app import _resolve_video_title
-        from unittest.mock import patch
+    def test_do_it_preserves_target_video(self):
+        """Selecting a video carries correct video URL, ID, and loads conversation target."""
+        import strategist_chat
+        from unittest.mock import patch, Mock
 
-        # Simulate Studio export where Video ID is present but Title is missing / only ID
-        payload = (
-            "Content,Views,Impressions,Impressions click-through rate\n"
-            "WCJF5TmXpuU,100,2000,1.2%\n"
-            "aaaaaaaaaaa,300,5000,4.5%\n"
-            "bbbbbbbbbbb,400,6000,5.0%\n"
-        ).encode("utf-8")
-        parsed = studio.parse_studio_export("content.csv", payload)
-        report = studio.analyze_studio_export(parsed)
-
-        # In studio_export_analyzer, the parsed video_title must NOT be the video_id
-        wcjf_row = next(r for r in report["video_rows"] if r["video_id"] == "WCJF5TmXpuU")
-        self.assertIsNone(wcjf_row["video_title"])
-        self.assertEqual(wcjf_row["video_id"], "WCJF5TmXpuU")
-
-        # The recommendation title from analyzer must use friendly fallback, not the ID
-        low_ctr_rec = next(r for r in report["recommendations"] if r.get("video_id") == "WCJF5TmXpuU")
-        self.assertNotIn("WCJF5TmXpuU", low_ctr_rec["title"])
-        self.assertIn("Video title unavailable", low_ctr_rec["title"])
-
-        # When resolved in app with catalogue data, the recommendation displays the real title
         session_state = {
-            "video_title_cache": {},
-            "dashboard_data": {
-                "video_rows": [
-                    {"video_id": "WCJF5TmXpuU", "title": "Top 10 AI Secrets for 2026"}
-                ]
-            }
+            "strategist_chat_history": [{"role": "user", "content": "hello"}],
         }
-        with patch("streamlit_app.st.session_state", session_state):
-            resolved = _resolve_video_title("WCJF5TmXpuU")
-            self.assertEqual(resolved, "Top 10 AI Secrets for 2026")
-            rec_title = low_ctr_rec["title"].replace("Video title unavailable", resolved)
-            self.assertEqual(rec_title, "Review title/thumbnail alignment: Top 10 AI Secrets for 2026")
-            self.assertNotIn("WCJF5TmXpuU", rec_title)
+        target_snippet = make_snippet(title="Real Title")
+        with patch("strategist_chat.st.session_state", session_state), patch(
+            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
+        ), patch(
+            "strategist_chat._transcript_text", return_value=("transcript text", "Available")
+        ):
+            context, error = strategist_chat._load_conversation_videos(
+                Mock(), {}, "https://www.youtube.com/watch?v=WCJF5TmXpuU"
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(context["target_id"], "WCJF5TmXpuU")
+        self.assertEqual(context["title"], "Real Title")
+        self.assertEqual(len(session_state["strategist_chat_history"]), 1)
 
     def test_title_lookup_works_when_title_in_loaded_catalogue(self):
         """Title lookup must resolve from session cache, dashboard catalogue, opportunity data, or live API."""
@@ -335,45 +316,6 @@ class UXRefactorAcceptanceTests(unittest.TestCase):
             self.assertEqual(_resolve_video_title("WCJF5TmXpuU", youtube=youtube_mock), "Video title unavailable")
             self.assertEqual(_resolve_video_title("WCJF5TmXpuU", title_hint="WCJF5TmXpuU", youtube=youtube_mock), "Video title unavailable")
             self.assertEqual(_resolve_video_title(None, title_hint="https://youtu.be/WCJF5TmXpuU"), "Video title unavailable")
-
-    def test_do_it_preserves_target_video_and_evidence(self):
-        """Clicking 'Do it' carries correct video URL, ID, and attaches Studio export evidence."""
-        import studio_export_analyzer as studio
-        import strategist_chat
-        from unittest.mock import patch, Mock
-
-        payload = (
-            "Video ID,Views,Impressions,Impressions click-through rate\n"
-            "WCJF5TmXpuU,100,2000,1.2%\n"
-        ).encode("utf-8")
-        parsed = studio.parse_studio_export("content.csv", payload)
-        report = studio.analyze_studio_export(parsed)
-        evidence_index = studio.build_evidence_index([report])
-
-        evidence = studio.find_video_evidence(evidence_index, "WCJF5TmXpuU", "Real Title")
-        self.assertEqual(len(evidence), 1)
-        self.assertEqual(evidence[0]["source_file"], "content.csv")
-        self.assertEqual(evidence[0]["ctr_percent"], 1.2)
-
-        session_state = {
-            "strategist_chat_history": [{"role": "user", "content": "hello"}],
-            "studio_export_evidence_index": evidence_index,
-        }
-        target_snippet = make_snippet(title="Real Title")
-        with patch("strategist_chat.st.session_state", session_state), patch(
-            "strategist_chat.connector.fetch_video_snippet", return_value=target_snippet
-        ), patch(
-            "strategist_chat._transcript_text", return_value=("transcript text", "Available")
-        ):
-            context, error = strategist_chat._load_conversation_videos(
-                Mock(), {}, "https://www.youtube.com/watch?v=WCJF5TmXpuU"
-            )
-
-        self.assertIsNone(error)
-        self.assertEqual(context["target_id"], "WCJF5TmXpuU")
-        self.assertEqual(len(context["studio_performance_evidence"]), 1)
-        self.assertEqual(context["studio_performance_evidence"][0]["ctr_percent"], 1.2)
-        self.assertEqual(len(session_state["strategist_chat_history"]), 1)
 
     def test_proposal_and_audit_log_display_human_readable_titles(self):
         """Proposal rendering and session audit logs must display resolved titles, never raw IDs."""
