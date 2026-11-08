@@ -833,18 +833,10 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertTrue(is_owner)
         self.assertEqual(status, "Owner Channel (Editable)")
 
-    # Studio Attachment Context: Retired Stub
+    # Studio Attachment Context: Completely Removed
     def test_30_studio_attachments_lifecycle(self):
-        """Studio export attachments are retired; update_studio_attachments returns empty."""
-        context = {
-            "target_id": "AbCdEfGhI12",
-            "title": "Agent Tutorial",
-            "studio_performance_evidence": [],
-        }
-        empty_index, empty_notice = strategist_chat.update_studio_attachments(context, [])
-        self.assertEqual(empty_index, {})
-        self.assertIsNone(empty_notice)
-        self.assertEqual(context["studio_performance_evidence"], [])
+        """Studio export attachments and update_studio_attachments are completely removed."""
+        self.assertFalse(hasattr(strategist_chat, "update_studio_attachments"))
 
 
 if __name__ == "__main__":

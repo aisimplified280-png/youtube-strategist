@@ -69,6 +69,9 @@ def _is_probable_video_id(token: str) -> bool:
             for p in parts if p
         ):
             return False
+    # Title-cased alphabetical English words without digits (e.g. "Placeholder", "Development")
+    if token.istitle() and token.isalpha():
+        return False
     # If it contains digits, it has high entropy distinguishing it from normal English words
     if any(c.isdigit() for c in token):
         return True
@@ -78,8 +81,10 @@ def _is_probable_video_id(token: str) -> bool:
     # If it contains interior uppercase letters with sufficient casing entropy
     # (e.g. JlxukCkusZc has uppercase 'J', 'C', 'Z' and lowercase 'lxuk', 'kus', 'c')
     upper_count = sum(1 for c in token if c.isupper())
-    lower_count = sum(1 for c in token if c.islower())
-    if upper_count >= 2 and lower_count >= 2 and any(c.isupper() for c in token[1:]):
+    if upper_count >= 2 and any(c.isupper() for c in token[1:]):
+        return True
+    # Isolated all-lowercase non-dictionary candidate IDs (e.g. bare test ID abcdefghijk)
+    if token.islower() and token.isalpha() and token not in EXCLUDED_ID_TOKENS:
         return True
     return False
 
@@ -127,13 +132,13 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
     )
     for match in field_pattern.finditer(text):
         vid = match.group(1)
-        if vid.lower() not in EXCLUDED_ID_TOKENS and VIDEO_ID_RE.fullmatch(vid):
+        if _is_probable_video_id(vid):
             _add_ref(vid, vid, "id", match.start(1), match.end(1))
 
     # 4. Line-anchored bare IDs
     for match in LIST_OR_BARE_ID_PATTERN.finditer(text):
         vid = match.group(1)
-        if vid.lower() not in EXCLUDED_ID_TOKENS and VIDEO_ID_RE.fullmatch(vid):
+        if _is_probable_video_id(vid):
             _add_ref(vid, vid, "id", match.start(1), match.end(1))
 
     # 5. Probable YouTube IDs in lists or paragraphs (e.g. "JlxukCkusZc and uBH2f6sKZcc", "JlxukCkusZc, uBH2f6sKZcc")

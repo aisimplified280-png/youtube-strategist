@@ -669,8 +669,8 @@ class MetadataConnectorTests(unittest.TestCase):
             ({"title": "x" * 101}, "100 characters"),
             ({"description_append": "x" * 5001}, "5000 characters"),
             (
-                {"description_append": " ".join(f"#tag{i}" for i in range(16))},
-                "15 hashtags",
+                {"description_append": " ".join(f"#tag{i}" for i in range(61))},
+                "60 hashtags",
             ),
             (
                 {"description_append": "#invalid-tag"},

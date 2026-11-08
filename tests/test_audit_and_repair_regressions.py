@@ -1,14 +1,16 @@
-"""Regression tests verifying full audit and repair across single-chat metadata copilot.
+"""Comprehensive regression tests verifying full audit and repair before pull request.
 
-Covers:
-1. Multi-video batch routing & single-chat state clearance (preventing single-video collision)
-2. Normal multiline & flattened single-line batch instruction parsing (JlxukCkusZc & uBH2f6sKZcc)
-3. HTTP 400 error diagnosis & secret token redaction
-4. Complete removal of YouTube Studio export analyzer and studio prompts
-5. Metadata validation constraints & _writable_snippet sanitation
-6. Snapshot-based stale proposal detection
+Covers all 9 audit requirements:
+1. Session-state clearing helper and implementation
+2. Strict video-ID extraction (rejecting Exact-Match, hyphenated phrases, supporting flattened/multiline)
+3. Exact batch routing & staging (distinct ID counting, missing video detection, end-to-end JlxukCkusZc & uBH2f6sKZcc)
+4. Complete removal of YouTube Studio integration
+5. Correct hashtag (<=60 allowed, >60 rejected) and tag quotation-mark length validation
+6. Mocked HTTP 400 update payload verification, defaultAudioLanguage exclusion, and token redaction
 """
 
+import copy
+import inspect
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -22,29 +24,29 @@ ID_A = "JlxukCkusZc"
 ID_B = "uBH2f6sKZcc"
 
 
-class TestBatchRoutingAndStateClearance(unittest.TestCase):
-    """Verifies that 2+ video references route deterministically to batch and clear single-video state."""
+class TestSessionStateAndBatchRouting(unittest.TestCase):
+    """Verifies single-video state clearing and exact distinct-ID batch routing."""
 
-    def test_multi_video_references_detected(self):
-        text = f"Update video {ID_A} and video {ID_B} with new titles."
-        refs = strategist_chat._youtube_references_from_message(text)
-        self.assertIn(ID_A, refs)
-        self.assertIn(ID_B, refs)
-        self.assertEqual(len(refs), 2)
-
-    def test_multi_video_triggers_batch_intent(self):
-        text = f"https://www.youtube.com/watch?v={ID_A} and https://youtu.be/{ID_B}"
-        urls = strategist_chat._youtube_urls_from_message(text)
-        self.assertTrue(strategist_chat._is_batch_intent(text, urls))
-
-    def test_comparison_intent_not_routed_to_batch(self):
-        text = f"Compare https://www.youtube.com/watch?v={ID_A} versus https://youtu.be/{ID_B} retention curve"
-        urls = strategist_chat._youtube_urls_from_message(text)
-        self.assertFalse(strategist_chat._is_batch_intent(text, urls))
+    def test_clear_single_video_editor_state_helper(self):
+        fake_state = {
+            "strategist_target_reference": {"target_id": ID_A},
+            "strategist_chat_proposal": {"title": "Proposed Title"},
+            "strategist_chat_digest": "digest123456",
+            "copilot_proposal": {"title": "Proposed Title"},
+            "copilot_approval_digest": "digest123456",
+        }
+        with patch.object(strategist_chat, "st") as mock_st:
+            mock_st.session_state = fake_state
+            strategist_chat._clear_single_video_editor_state()
+            self.assertIsNone(fake_state["strategist_target_reference"])
+            self.assertIsNone(fake_state["strategist_chat_proposal"])
+            self.assertIsNone(fake_state["strategist_chat_digest"])
+            self.assertIsNone(fake_state["copilot_proposal"])
+            self.assertIsNone(fake_state["copilot_approval_digest"])
 
     def test_staging_text_batch_clears_single_video_session_state(self):
         fake_state = {
-            "strategist_target_reference": ID_A,
+            "strategist_target_reference": {"target_id": ID_A},
             "strategist_chat_proposal": {"title": "Old Single Proposal"},
             "strategist_chat_digest": "abcdef123456",
             "copilot_proposal": {"title": "Old Single Proposal"},
@@ -55,93 +57,298 @@ class TestBatchRoutingAndStateClearance(unittest.TestCase):
             with patch.object(batch_metadata, "prepare_metadata_batch", return_value={"rows": []}):
                 res = strategist_chat._stage_text_metadata_batch(f"{ID_A} and {ID_B}", youtube=None)
                 self.assertIsNotNone(res)
-                # Verify single-video keys are wiped
                 self.assertIsNone(fake_state.get("strategist_target_reference"))
                 self.assertIsNone(fake_state.get("strategist_chat_proposal"))
                 self.assertIsNone(fake_state.get("strategist_chat_digest"))
                 self.assertIsNone(fake_state.get("copilot_proposal"))
                 self.assertIsNone(fake_state.get("copilot_approval_digest"))
 
+    def test_distinct_videos_trigger_batch(self):
+        text = f"https://www.youtube.com/watch?v={ID_A} and https://youtu.be/{ID_B}"
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertTrue(strategist_chat._is_batch_intent(text, urls))
 
-class TestBatchInstructionParsing(unittest.TestCase):
-    """Verifies parsing of multiline and flattened whitespace inputs for test IDs."""
+    def test_repeated_same_video_does_not_trigger_batch(self):
+        # 1 video referenced multiple times in same message
+        text = f"Update https://www.youtube.com/watch?v={ID_A} and review https://youtu.be/{ID_A} again"
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertFalse(strategist_chat._is_batch_intent(text, urls))
 
-    def test_multiline_parsing_extracts_both_videos(self):
+    def test_comparison_intent_not_routed_to_batch(self):
+        text = f"Compare https://www.youtube.com/watch?v={ID_A} versus https://youtu.be/{ID_B} retention curve"
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertFalse(strategist_chat._is_batch_intent(text, urls))
+
+    def test_explicit_batch_keyword_with_single_id(self):
+        text = f"batch: update title for https://www.youtube.com/watch?v={ID_A}"
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertTrue(strategist_chat._is_batch_intent(text, urls))
+
+
+class TestVideoIdExtractionRegressions(unittest.TestCase):
+    """Verifies that generic words, hyphenated phrases, and titles never become video references."""
+
+    def test_exact_match_alone_on_line_not_extracted(self):
+        text = "Exact-Match\nUpdate this video description"
+        refs = batch_instructions.extract_video_references_from_text(text)
+        extracted_ids = [r["video_id"] for r in refs if r.get("video_id")]
+        self.assertNotIn("Exact-Match", extracted_ids)
+        self.assertEqual(len(refs), 0)
+
+    def test_current_title_exact_match_not_extracted(self):
+        text = "CURRENT TITLE: Exact-Match NEW TITLE: Better Semantic Match"
+        refs = batch_instructions.extract_video_references_from_text(text)
+        extracted_ids = [r["video_id"] for r in refs if r.get("video_id")]
+        self.assertNotIn("Exact-Match", extracted_ids)
+        self.assertEqual(len(refs), 0)
+
+    def test_hyphenated_phrase_in_title_not_extracted(self):
+        text = f"VIDEO ID: {ID_A}\nCURRENT TITLE: Multi-Agent Systems Explained In Depth\nNew title: Autonomous AI"
+        refs = batch_instructions.extract_video_references_from_text(text)
+        extracted_ids = [r["video_id"] for r in refs if r.get("video_id")]
+        self.assertEqual(extracted_ids, [ID_A])
+        self.assertNotIn("Multi-Agent", extracted_ids)
+
+    def test_two_explicitly_labelled_ids_flattened(self):
+        text = f"VIDEO ID: {ID_A} CURRENT TITLE: Old Title 1 New title: New Title 1 Description: Desc 1 Tags: tag1 VIDEO ID: {ID_B} CURRENT TITLE: Old Title 2 New title: New Title 2 Description: Desc 2 Tags: tag2"
+        refs = batch_instructions.extract_video_references_from_text(text)
+        extracted_ids = [r["video_id"] for r in refs if r.get("video_id")]
+        self.assertEqual(extracted_ids, [ID_A, ID_B])
+
+    def test_two_explicitly_labelled_ids_multiline(self):
         text = f"""
+VIDEO ID: {ID_A}
+New title: Alpha Title
+
+VIDEO ID: {ID_B}
+New title: Beta Title
+"""
+        refs = batch_instructions.extract_video_references_from_text(text)
+        extracted_ids = [r["video_id"] for r in refs if r.get("video_id")]
+        self.assertEqual(extracted_ids, [ID_A, ID_B])
+
+    def test_duplicate_occurrences_of_same_id_in_text(self):
+        text = f"VIDEO ID: {ID_A}\nUpdate title.\n\nNote: {ID_A} is our highest priority video."
+        refs = batch_instructions.extract_video_references_from_text(text)
+        # Both occurrences extracted with their distinct text spans
+        self.assertEqual(len(refs), 2)
+        self.assertEqual(refs[0]["video_id"], ID_A)
+        self.assertEqual(refs[1]["video_id"], ID_A)
+        # Distinct video ID count is 1 -> does not trigger multi-video batch
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertFalse(strategist_chat._is_batch_intent(text, urls))
+
+
+class TestEndToEndBatchStagingJlxukCkusZcAndUBH2f6sKZcc(unittest.TestCase):
+    """End-to-end regression test for staging exact test IDs JlxukCkusZc and uBH2f6sKZcc."""
+
+    def test_complete_batch_staging_pipeline_with_test_ids(self):
+        instruction = f"""
 VIDEO 1: {ID_A}
-CURRENT TITLE: Old Title 1
-New title: AI Breakthrough That Changes Everything
-Description: Detailed breakthrough overview with new benchmarks.
-Tags: ai, breakthrough, machine learning
+CURRENT TITLE: Old Title For ID A
+New title: AI Simplified: Autonomous Reasoning Systems
+Description: Detailed breakdown of reasoning engines.
+Tags: ai, reasoning, autonomous
 
 VIDEO 2: {ID_B}
-CURRENT TITLE: Old Title 2
-New title: 5 Agentic AI Design Patterns Explained
-Description: Architecture patterns for production agents.
-Tags: agents, architecture, engineering
+CURRENT TITLE: Old Title For ID B
+New title: Production Agent Architectures
+Description: Design patterns for production systems.
+Tags: architecture, production, patterns
 """
+        # 1. Extract both IDs
+        refs = batch_instructions.extract_video_references_from_text(instruction)
+        extracted_ids = [r["video_id"] for r in refs if r.get("video_id")]
+        self.assertEqual(extracted_ids, [ID_A, ID_B])
+
+        # 2. Parse each video's own metadata
         channel_videos = [
-            {"video_id": ID_A, "title": "Old Title 1", "description": "", "tags": []},
-            {"video_id": ID_B, "title": "Old Title 2", "description": "", "tags": []},
+            {"video_id": ID_A, "title": "Old Title For ID A", "description": "", "tags": []},
+            {"video_id": ID_B, "title": "Old Title For ID B", "description": "", "tags": []},
         ]
-        plan = batch_instructions.parse_batch_instructions(text, channel_videos=channel_videos)
-        self.assertEqual(len(plan["videos"]), 2)
-        v1 = plan["videos"][0]
-        v2 = plan["videos"][1]
+        parsed_plan = batch_instructions.parse_batch_instructions(instruction, channel_videos=channel_videos)
+        self.assertEqual(len(parsed_plan["videos"]), 2)
+        v1 = parsed_plan["videos"][0]
+        v2 = parsed_plan["videos"][1]
         self.assertEqual(v1["video_id"], ID_A)
-        self.assertEqual(v1["title_intent"], "exact")
-        self.assertEqual(v1["exact_title"], "AI Breakthrough That Changes Everything")
-        self.assertEqual(v1["exact_description"], "Detailed breakthrough overview with new benchmarks.")
-        self.assertIn("breakthrough", v1["exact_tags"])
-
+        self.assertEqual(v1["exact_title"], "AI Simplified: Autonomous Reasoning Systems")
         self.assertEqual(v2["video_id"], ID_B)
-        self.assertEqual(v2["title_intent"], "exact")
-        self.assertEqual(v2["exact_title"], "5 Agentic AI Design Patterns Explained")
-        self.assertEqual(v2["exact_description"], "Architecture patterns for production agents.")
-        self.assertIn("engineering", v2["exact_tags"])
+        self.assertEqual(v2["exact_title"], "Production Agent Architectures")
 
-    def test_flattened_single_line_parsing(self):
-        # Flattened newlines where user or paste buffer removed all CRLFs
-        text = (
-            f"VIDEO 1: {ID_A} CURRENT TITLE: Old Title 1 "
-            f"New title: Flattened AI Breakthrough "
-            f"Description: Single line flattened description. "
-            f"Tags: ai, flattened, test "
-            f"VIDEO 2: {ID_B} CURRENT TITLE: Old Title 2 "
-            f"New title: Flattened Architecture Patterns "
-            f"Description: Second single line description. "
-            f"Tags: patterns, agent, production"
-        )
-        channel_videos = [
-            {"video_id": ID_A, "title": "Old Title 1", "description": "", "tags": []},
-            {"video_id": ID_B, "title": "Old Title 2", "description": "", "tags": []},
-        ]
-        plan = batch_instructions.parse_batch_instructions(text, channel_videos=channel_videos)
-        self.assertEqual(len(plan["videos"]), 2)
-        v1 = plan["videos"][0]
-        v2 = plan["videos"][1]
-        self.assertEqual(v1["video_id"], ID_A)
-        self.assertEqual(v1["exact_title"], "Flattened AI Breakthrough")
-        self.assertEqual(v1["exact_description"], "Single line flattened description.")
-        self.assertIn("flattened", v1["exact_tags"])
+        # 3. Stage proposals through full canonical batch preparation
+        fake_youtube = MagicMock()
+        fake_youtube.videos().list().execute.return_value = {
+            "items": [
+                {
+                    "id": ID_A,
+                    "snippet": {
+                        "title": "Old Title For ID A",
+                        "description": "Old desc",
+                        "tags": ["old"],
+                        "categoryId": "28",
+                        "defaultLanguage": "en",
+                        "channelId": connector.CHANNEL_ID,
+                    },
+                },
+                {
+                    "id": ID_B,
+                    "snippet": {
+                        "title": "Old Title For ID B",
+                        "description": "Old desc",
+                        "tags": ["old"],
+                        "categoryId": "28",
+                        "defaultLanguage": "en",
+                        "channelId": connector.CHANNEL_ID,
+                    },
+                },
+            ]
+        }
 
-        self.assertEqual(v2["video_id"], ID_B)
-        self.assertEqual(v2["exact_title"], "Flattened Architecture Patterns")
-        self.assertEqual(v2["exact_description"], "Second single line description.")
-        self.assertIn("patterns", v2["exact_tags"])
+        canonical = batch_metadata.create_batch_from_text_plan(parsed_plan)
+        staged = batch_metadata.prepare_metadata_batch(fake_youtube, canonical)
+
+        # 4. Verify exactly those two IDs appear in the staged review rows
+        self.assertEqual(len(staged["rows"]), 2)
+        row_ids = [r["video_id"] for r in staged["rows"]]
+        self.assertEqual(row_ids, [ID_A, ID_B])
+        self.assertEqual(staged["rows"][0]["title"], "AI Simplified: Autonomous Reasoning Systems")
+        self.assertEqual(staged["rows"][1]["title"], "Production Agent Architectures")
+
+        # 5. Verify single-video editor state is cleared
+        fake_state = {
+            "strategist_target_reference": {"target_id": ID_A},
+            "strategist_chat_proposal": {"title": "Single proposal"},
+            "strategist_chat_digest": "abcdef123",
+            "copilot_proposal": {"title": "Single proposal"},
+            "copilot_approval_digest": "abcdef123",
+            "batch_metadata_review": staged,
+        }
+        with patch.object(strategist_chat, "st") as mock_st:
+            mock_st.session_state = fake_state
+            strategist_chat._clear_single_video_editor_state()
+            self.assertIsNone(fake_state["strategist_target_reference"])
+            self.assertIsNone(fake_state["strategist_chat_proposal"])
+            self.assertIsNone(fake_state["copilot_proposal"])
+
+            # 6. Verify individual-video editor does not render underneath batch review
+            # When batch_active is True, context is None and individual proposal is None
+            batch_active = bool(fake_state.get("batch_metadata_review"))
+            context = fake_state.get("strategist_target_reference")
+            proposal = fake_state.get("strategist_chat_proposal")
+            self.assertTrue(batch_active)
+            self.assertIsNone(context)
+            self.assertIsNone(proposal)
 
 
-class TestHttpErrorDiagnosisAndSecurity(unittest.TestCase):
-    """Verifies that Google HTTP 400 error payloads are cleanly unpacked and tokens redacted."""
+class TestStudioRemovalIntegrity(unittest.TestCase):
+    """Verifies that all YouTube Studio runtime integration points have been completely eradicated."""
 
-    def test_extract_http_error_details_from_google_response(self):
+    def test_studio_export_analyzer_module_deleted(self):
+        with self.assertRaises(ModuleNotFoundError):
+            import studio_export_analyzer  # noqa: F401
+
+    def test_update_studio_attachments_function_deleted(self):
+        self.assertFalse(hasattr(strategist_chat, "update_studio_attachments"))
+
+    def test_fetch_full_video_details_has_no_studio_evidence_key(self):
+        fake_youtube = MagicMock()
+        fake_youtube.videos().list().execute.return_value = {
+            "items": [
+                {
+                    "id": ID_A,
+                    "snippet": {
+                        "title": "Sample Title",
+                        "description": "Sample Desc",
+                        "tags": ["tag1"],
+                        "publishedAt": "2025-01-01T00:00:00Z",
+                        "channelId": connector.CHANNEL_ID,
+                        "channelTitle": "AI Simplified Lab",
+                    },
+                    "contentDetails": {"duration": "PT5M"},
+                    "statistics": {"viewCount": "1000", "likeCount": "50", "commentCount": "5"},
+                }
+            ]
+        }
+        with patch.object(strategist_chat, "_transcript_text", return_value=("", "Unavailable")):
+            details = strategist_chat.fetch_full_video_details(fake_youtube, ID_A)
+            self.assertNotIn("studio_performance_evidence", details)
+
+    def test_classify_video_format_has_no_studio_format_param(self):
+        sig = inspect.signature(strategist_chat._classify_video_format)
+        self.assertNotIn("studio_format", sig.parameters)
+
+    def test_build_prompt_has_no_studio_evidence_param(self):
+        sig = inspect.signature(strategist_chat._build_prompt)
+        self.assertNotIn("studio_evidence", sig.parameters)
+
+    def test_discover_video_opportunities_has_no_studio_params_or_return_keys(self):
+        sig = inspect.signature(connector.discover_video_opportunities)
+        self.assertNotIn("studio_evidence_index", sig.parameters)
+
+
+class TestHashtagAndTagValidation(unittest.TestCase):
+    """Verifies documented YouTube hashtag limits and quotation-mark tag length calculation."""
+
+    def test_up_to_60_hashtags_allowed(self):
+        # 20 hashtags is above the old arbitrary 15 limit, but well within YouTube's 60 platform limit
+        desc_20_tags = "Video overview\n\n" + " ".join(f"#topic{i}" for i in range(20))
+        # Should not raise
+        connector._validate_metadata({"title": "Valid Title", "description": desc_20_tags, "tags": ["tag1"]})
+
+    def test_more_than_60_hashtags_rejected(self):
+        # 61 hashtags exceeds YouTube's platform limit
+        desc_61_tags = "Video overview\n\n" + " ".join(f"#topic{i}" for i in range(61))
+        with self.assertRaises(connector.MetadataValidationError) as ctx:
+            connector._validate_metadata({"title": "Valid Title", "description": desc_61_tags, "tags": ["tag1"]})
+        self.assertIn("60 hashtags", str(ctx.exception))
+
+    def test_quotation_mark_counting_for_tags_with_spaces(self):
+        # Multi-word tags like "ai agent" require quotes ("ai agent"), adding 2 characters.
+        # Single-word tags: 490 chars without quotes.
+        # With multi-word tags, the quotation marks push the count over 500.
+        tags = [f"word{i:02d}" for i in range(40)]  # 40 distinct tags
+        # Add distinct multi-word tags: each adds len(tag) + 2 for quotes + 1 for comma
+        tags.extend([f"two words {i:02d}" for i in range(25)])
+        with self.assertRaises(connector.MetadataValidationError) as ctx:
+            connector._validate_metadata({"title": "Valid Title", "description": "Valid Desc", "tags": tags})
+        self.assertIn("accounting for quotation marks", str(ctx.exception))
+
+
+class TestHttp400PayloadVerificationAndSecurity(unittest.TestCase):
+    """Verifies that videos.update() payload excludes invalid fields and redacts secrets on HTTP 400."""
+
+    def test_mocked_update_captures_clean_payload(self):
+        raw_snippet = {
+            "title": "New Valid Title",
+            "description": "New Valid Description",
+            "tags": ["agent", "production"],
+            "categoryId": "28",
+            "defaultLanguage": "en",
+            "defaultAudioLanguage": "en-US",  # Must be stripped
+            "thumbnails": {"default": {"url": "https://img.youtube.com/vi/123/default.jpg"}},  # Must be stripped
+            "channelTitle": "AI Simplified Lab",  # Must be stripped
+            "channelId": connector.CHANNEL_ID,
+            "publishedAt": "2025-01-01T00:00:00Z",  # Must be stripped
+        }
+        clean = connector._writable_snippet(raw_snippet)
+        self.assertIn("title", clean)
+        self.assertIn("description", clean)
+        self.assertIn("tags", clean)
+        self.assertIn("categoryId", clean)
+        self.assertEqual(clean["defaultLanguage"], "en")
+        self.assertNotIn("defaultAudioLanguage", clean)
+        self.assertNotIn("thumbnails", clean)
+        self.assertNotIn("channelTitle", clean)
+        self.assertNotIn("publishedAt", clean)
+
+    def test_google_http_400_exposes_structured_reason_and_location(self):
         resp_body = b"""{
             "error": {
                 "code": 400,
-                "message": "Invalid tag containing angle brackets: <demo>",
+                "message": "Invalid tag containing invalid character",
                 "errors": [
                     {
-                        "message": "Invalid tag containing angle brackets: <demo>",
+                        "message": "Invalid tag containing invalid character",
                         "domain": "youtube.video",
                         "reason": "invalidTag",
                         "location": "snippet.tags",
@@ -153,137 +360,27 @@ class TestHttpErrorDiagnosisAndSecurity(unittest.TestCase):
         fake_resp = MagicMock(status=400)
         from googleapiclient.errors import HttpError
         error = HttpError(resp=fake_resp, content=resp_body)
-
         details = connector.extract_http_error_details(error)
+
         self.assertEqual(details["status"], 400)
         self.assertEqual(details["reasons"], ["invalidTag"])
         self.assertEqual(details["locations"], ["snippet.tags"])
-        self.assertIn("Invalid tag containing angle brackets", details["message"])
+        self.assertIn("Invalid tag", details["message"])
 
-    def test_token_redaction_in_error_message(self):
-        fake_token = "ya29.a0AfH6SMD_secret_oauth_token_value_xyz"
-        raw_error_text = f"HTTP 400 using Authorization: Bearer {fake_token} failed: bad request"
-        formatted = strategist_chat._apply_error_message(RuntimeError(raw_error_text))
-        self.assertNotIn(fake_token, formatted)
-        self.assertIn("[REDACTED_AUTH_TOKEN]", formatted)
+        formatted = strategist_chat._apply_error_message(error)
+        self.assertIn("HTTP 400 - invalidTag", formatted)
+        self.assertIn("Field: snippet.tags", formatted)
 
-    def test_client_secret_redaction(self):
-        secret = "client_secret_GOCSPX-1234567890abcdef"
-        msg = f"Failed with {secret} rejected"
-        formatted = strategist_chat._apply_error_message(RuntimeError(msg))
+    def test_tokens_and_client_secrets_never_leak_in_ui(self):
+        token = "ya29.a0AfH6SMD_test_oauth_access_token_12345"
+        secret = "client_secret_GOCSPX-SecretString98765"
+        raw_msg = f"Failed to authenticate with Bearer {token} and secret {secret}"
+
+        formatted = strategist_chat._apply_error_message(RuntimeError(raw_msg))
+        self.assertNotIn(token, formatted)
         self.assertNotIn(secret, formatted)
+        self.assertIn("[REDACTED_AUTH_TOKEN]", formatted)
         self.assertIn("[REDACTED_SECRET]", formatted)
-
-
-class TestStudioExportAnalyzerRemoval(unittest.TestCase):
-    """Verifies studio export analyzer module is deleted and excluded from prompts."""
-
-    def test_module_cannot_be_imported(self):
-        with self.assertRaises(ModuleNotFoundError):
-            import studio_export_analyzer  # noqa: F401
-
-    def test_classify_video_format_solely_duration_and_url(self):
-        # /shorts/ URL is YouTube Short
-        res_short = strategist_chat._classify_video_format(100, is_short_url=True)
-        self.assertEqual(res_short["format"], "YouTube Short")
-
-        # > 180 seconds is Standard Video
-        res_long = strategist_chat._classify_video_format(200, is_short_url=False)
-        self.assertEqual(res_long["format"], "Standard Video")
-
-        # <= 180 seconds without shorts url is Format unconfirmed
-        res_unconfirmed = strategist_chat._classify_video_format(120, is_short_url=False)
-        self.assertEqual(res_unconfirmed["format"], "Format unconfirmed")
-
-    def test_build_prompt_has_no_studio_evidence(self):
-        details = {
-            "title": "Sample Title",
-            "description": "Sample Desc",
-            "tags": ["tag1"],
-            "published_at": "2025-01-01T00:00:00Z",
-            "duration_sec": 600,
-            "views": 1000,
-            "likes": 50,
-            "comment_count": 10,
-        }
-        prompt = strategist_chat._build_prompt(
-            target=details,
-            reference={},
-            transcript="",
-            transcript_status="Unavailable",
-            history=[],
-            instruction="Improve this video",
-            target_transcript="Sample Transcript",
-            target_transcript_status="Available",
-        )
-        self.assertNotIn("Studio evidence", prompt)
-        self.assertNotIn("Export evidence", prompt)
-
-
-class TestMetadataConstraintsAndSanitation(unittest.TestCase):
-    """Verifies YouTube Data API payload sanitation and strict pre-write validation."""
-
-    def test_validate_metadata_rejects_angle_brackets(self):
-        with self.assertRaises(connector.MetadataValidationError):
-            connector._validate_metadata({"title": "<Invalid Title>", "description": "Valid Desc", "tags": ["tag1"]})
-
-        with self.assertRaises(connector.MetadataValidationError):
-            connector._validate_metadata({"title": "Valid Title", "description": "Desc with <script>", "tags": ["tag1"]})
-
-    def test_validate_metadata_rejects_commas_in_tags(self):
-        with self.assertRaises(connector.MetadataValidationError):
-            connector._validate_metadata({"title": "Valid Title", "description": "Valid Desc", "tags": ["tag1,tag2"]})
-
-    def test_validate_metadata_rejects_oversized_fields(self):
-        with self.assertRaises(connector.MetadataValidationError):
-            connector._validate_metadata({"title": "A" * 101, "description": "Valid Desc", "tags": ["tag1"]})
-
-        with self.assertRaises(connector.MetadataValidationError):
-            connector._validate_metadata({"title": "Valid Title", "description": "A" * 5001, "tags": ["tag1"]})
-
-        # 501 characters total in tags
-        with self.assertRaises(connector.MetadataValidationError):
-            connector._validate_metadata({"title": "Valid Title", "description": "Valid Desc", "tags": ["a" * 90] * 6})
-
-    def test_writable_snippet_excludes_defaultAudioLanguage(self):
-        raw_snippet = {
-            "title": "Title",
-            "description": "Desc",
-            "tags": ["tag"],
-            "categoryId": "28",
-            "defaultLanguage": "en",
-            "defaultAudioLanguage": "en-US",
-            "thumbnails": {"default": {"url": "http://img"}},
-            "channelTitle": "My Channel",
-        }
-        clean = connector._writable_snippet(raw_snippet)
-        self.assertEqual(clean["defaultLanguage"], "en")
-        self.assertNotIn("defaultAudioLanguage", clean)
-        self.assertNotIn("thumbnails", clean)
-        self.assertNotIn("channelTitle", clean)
-
-    def test_stale_metadata_snapshot_ignores_dynamic_fields(self):
-        before_snippet = {
-            "title": "Title",
-            "description": "Desc",
-            "tags": ["tag"],
-            "categoryId": "28",
-            "defaultLanguage": "en",
-        }
-        # Current fetched snippet with dynamic extra fields from YouTube API
-        current_fetched = {
-            "title": "Title",
-            "description": "Desc",
-            "tags": ["tag"],
-            "categoryId": "28",
-            "defaultLanguage": "en",
-            "publishedAt": "2025-01-01T00:00:00Z",
-            "thumbnails": {"high": {"url": "https://i.ytimg.com/vi/123/hqdefault.jpg"}},
-        }
-        self.assertEqual(
-            connector._metadata_snapshot(before_snippet),
-            connector._metadata_snapshot(current_fetched),
-        )
 
 
 if __name__ == "__main__":

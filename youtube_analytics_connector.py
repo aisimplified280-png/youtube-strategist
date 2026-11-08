@@ -561,7 +561,7 @@ def rank_channel_video_opportunities(video_rows, *, limit=10):
     return ranked[:max(1, min(int(limit), 25))]
 
 
-def discover_video_opportunities(youtube, analytics, studio_evidence_index=None, *, days=28, limit=10):
+def discover_video_opportunities(youtube, analytics, *, days=28, limit=10):
     """Scan recent owned uploads and rank below-benchmark performance using real channel data."""
     if youtube is None:
         raise ConnectionError("YouTube is not connected. Connect your channel before scanning opportunities.")
@@ -665,7 +665,6 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
         "scanned_uploads": len(upload_ids),
         "videos_with_analytics": len(enriched),
         "recommendations": recommendations,
-        "studio_ctr_available": False,
         "format_classification_note": (
             "The Data API does not expose the Shorts designation or orientation. "
             "Uploads up to 180 seconds remain unconfirmed unless referenced via a /shorts/ URL."
@@ -918,9 +917,9 @@ def _validate_hashtags(title, description):
         raise MetadataValidationError(
             "Hashtags must contain only letters, numbers, or underscores, with no spaces."
         )
-    if len(hashtags) > 15:
+    if len(hashtags) > 60:
         raise MetadataValidationError(
-            "A video may have at most 15 hashtags in its title and description."
+            "A video may have at most 60 hashtags; YouTube ignores all hashtags on content exceeding 60 hashtags."
         )
 
 
@@ -961,11 +960,15 @@ def _validate_metadata(snippet):
             raise MetadataValidationError(f"Tag '{tag}' must not contain commas; commas are used by YouTube to separate tags.")
     if len({tag.casefold() for tag in tags}) != len(tags):
         raise MetadataValidationError("Tags must not contain duplicates.")
-    combined_tags = ",".join(tags)
+    # YouTube Data API tag length calculation:
+    # Multi-word tags containing spaces are enclosed in quotation marks by YouTube,
+    # which adds 2 characters per multi-word tag to the 500-character / byte limit.
+    formatted_tags = [f'"{tag}"' if " " in tag else tag for tag in tags]
+    combined_tags = ",".join(formatted_tags)
     combined_bytes = len(combined_tags.encode("utf-8"))
     if len(combined_tags) > 500 or combined_bytes > 500:
         raise MetadataValidationError(
-            f"Combined tags must be no longer than 500 characters and 500 UTF-8 bytes (currently {len(combined_tags)} chars, {combined_bytes} bytes)."
+            f"Combined tags must be no longer than 500 characters and 500 UTF-8 bytes accounting for quotation marks on multi-word tags (currently {len(combined_tags)} chars, {combined_bytes} bytes)."
         )
 
     _validate_hashtags(title, description)

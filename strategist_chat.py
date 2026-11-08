@@ -104,8 +104,8 @@ def _parse_iso_duration(duration_str: str) -> Tuple[Optional[int], str]:
 
 def _classify_video_format(
     duration_seconds: Optional[int],
+    *,
     is_short_url: bool = False,
-    studio_format: Optional[str] = None,
     upload_date: Optional[str] = None,
 ) -> Dict[str, str]:
     """Classify video vs short only using reliable available evidence with strict precedence.
@@ -302,7 +302,6 @@ def fetch_full_video_details(
             "is_short_url": is_short_url,
             "target_transcript": transcript_text,
             "target_transcript_status": transcript_status,
-            "studio_performance_evidence": [],
             "reference_id": None,
             "reference_snippet": {},
             "transcript": "",
@@ -519,7 +518,6 @@ def _instruction_preserves_title(instruction: str) -> bool:
 def _build_prompt(
     target, reference, transcript, transcript_status, history, instruction,
     *, target_transcript="", target_transcript_status="Target transcript not supplied.",
-    studio_evidence=None,
 ):
     """Construct rigorous metadata formulation prompt adhering to AI Simplified Lab standards."""
     recent = history[-MAX_HISTORY_TURNS:]
@@ -708,35 +706,50 @@ def _is_channel_opportunity_request(message: str) -> bool:
     return has_video_scope and has_opportunity_intent
 
 
+def _redact_sensitive_tokens(text: str) -> str:
+    """Strip OAuth bearer tokens, Google API keys, and client secrets from display text."""
+    if not isinstance(text, str):
+        text = str(text)
+    text = re.sub(r"(?i)ya29\.[A-Za-z0-9_\-\.]+", "[REDACTED_AUTH_TOKEN]", text)
+    text = re.sub(r"(?i)bearer\s+[A-Za-z0-9_\-\.]+", "bearer [REDACTED_AUTH_TOKEN]", text)
+    text = re.sub(r"(?i)key=[A-Za-z0-9_\-]+", "key=[REDACTED]", text)
+    text = re.sub(r"(?i)client_secret[_\-=A-Za-z0-9]+", "[REDACTED_SECRET]", text)
+    return text
+
+
 def _apply_error_message(error: Exception) -> str:
     """Convert apply/verification failures into safe, actionable UI messages."""
+    msg = ""
     if isinstance(error, connector.MetadataValidationError):
-        return f"The proposal failed validation and was not applied: {error}"
-    if isinstance(error, RuntimeError):
-        return str(error)
-    if isinstance(error, connector.HttpError):
+        msg = f"The proposal failed validation and was not applied: {error}"
+    elif isinstance(error, RuntimeError):
+        msg = str(error)
+    elif isinstance(error, connector.HttpError):
         details = connector.extract_http_error_details(error)
         status = details.get("status")
         if status == 401:
-            return "YouTube rejected the request (HTTP 401 - Unauthorized). Reconnect YouTube, then reload the video before approving again."
-        if status == 403:
+            msg = "YouTube rejected the request (HTTP 401 - Unauthorized). Reconnect YouTube, then reload the video before approving again."
+        elif status == 403:
             reason_str = f" ({', '.join(details['reasons'])})" if details.get("reasons") else ""
-            return (
+            msg = (
                 f"YouTube rejected the request (HTTP 403 - Forbidden{reason_str}): {details.get('message')}. "
                 "Check that the connected Google account owns/manages this channel and has YouTube edit permissions."
             )
-        if status == 400:
+        elif status == 400:
             parts = [f"YouTube rejected the proposed metadata (HTTP 400 - {', '.join(details.get('reasons', [])) or 'Bad Request'}): {details.get('message')}"]
             if details.get("locations"):
                 parts.append(f"Field: {', '.join(details['locations'])}")
             if details.get("sub_messages"):
                 parts.append(f"Details: {'; '.join(details['sub_messages'])}")
             parts.append("Review title, description, and tags before trying again.")
-            return " · ".join(parts)
-        return f"YouTube returned HTTP {status if status is not None else 'unknown'}: {details.get('message')}. Reload metadata before retrying."
-    if isinstance(error, (connector.GoogleAuthError, connector.httplib2.HttpLib2Error, OSError)):
-        return "The request could not reach Google reliably. Reload the video metadata before retrying; do not approve blindly."
-    return f"The update could not be confirmed ({type(error).__name__}). Reload metadata before retrying."
+            msg = " · ".join(parts)
+        else:
+            msg = f"YouTube returned HTTP {status if status is not None else 'unknown'}: {details.get('message')}. Reload metadata before retrying."
+    elif isinstance(error, (connector.GoogleAuthError, connector.httplib2.HttpLib2Error, OSError)):
+        msg = "The request could not reach Google reliably. Reload the video metadata before retrying; do not approve blindly."
+    else:
+        msg = f"The update could not be confirmed ({type(error).__name__}). Reload metadata before retrying."
+    return _redact_sensitive_tokens(msg)
 
 
 def _extract_title_angles(structured_angles: Any) -> List[Dict[str, str]]:
@@ -774,16 +787,16 @@ def _extract_title_angles(structured_angles: Any) -> List[Dict[str, str]]:
     ]
 
 
-def update_studio_attachments(
-    context: Optional[Dict[str, Any]],
-    uploaded_files: Any,
-) -> Tuple[Dict[str, Any], Optional[str]]:
-    """Legacy stub; Studio export attachments are retired."""
-    st.session_state.pop("studio_export_evidence_index", None)
-    if context:
-        context["studio_performance_evidence"] = []
-    return {}, None
-
+def _clear_single_video_editor_state():
+    """Clear single-video target and proposal state to prevent collision with batch views."""
+    for k in (
+        "strategist_target_reference",
+        "strategist_chat_proposal",
+        "strategist_chat_digest",
+        "copilot_proposal",
+        "copilot_approval_digest",
+    ):
+        st.session_state[k] = None
 
 
 def _batch_audit_callback(entry):
@@ -793,6 +806,7 @@ def _batch_audit_callback(entry):
 
 
 def _stage_uploaded_metadata_batch(file_name, payload, youtube):
+    _clear_single_video_editor_state()
     parsed = batch_metadata.parse_metadata_file(file_name, payload)
     return batch_metadata.prepare_metadata_batch(youtube, parsed)
 
@@ -933,6 +947,7 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
 
 
 def _stage_text_metadata_batch(text, youtube, secrets=None):
+    _clear_single_video_editor_state()
     channel_videos = []
     if youtube:
         try:
@@ -957,19 +972,32 @@ def _stage_text_metadata_batch(text, youtube, secrets=None):
 def _is_batch_intent(message: str, urls: List[str]) -> bool:
     """Determine if user chat message has batch intent rather than single target (+ optional ref)."""
     all_refs = batch_instructions.extract_video_references_from_text(message)
-    total_refs = max(len(all_refs), len(urls))
-    if total_refs >= 2:
-        lower = message.casefold()
-        # Only treat as single target + reference video if explicit comparison / benchmark intent is present
+    distinct_vids = {r["video_id"] for r in all_refs if r.get("video_id")}
+    for u in urls:
+        try:
+            vid = parse_video_id(u)
+            if vid:
+                distinct_vids.add(vid)
+        except Exception:
+            pass
+
+    distinct_count = len(distinct_vids)
+    lower = message.casefold()
+
+    if distinct_count >= 2:
         comparison_terms = ("reference", "compare", "benchmark", "versus", "vs", "model after", "like this", "target and reference")
         if any(term in lower for term in comparison_terms):
             return False
-        # Multiple distinct videos to modify or optimize are ALWAYS a batch
         return True
-    if total_refs == 1:
-        lower = message.casefold()
-        if any(term in lower for term in ("batch", "for all videos", "all listed videos", "every video", "each video", "optimize title only")):
+
+    if distinct_count == 1:
+        if any(term in lower for term in ("batch:", "batch import", "for all videos", "all listed videos", "every video", "each video", "optimize title only for all")):
             return True
+        return False
+
+    if any(term in lower for term in ("batch:", "batch import", "for all videos", "all listed videos", "every video", "each video")):
+        return True
+
     return False
 
 
@@ -1500,7 +1528,7 @@ def render_copilot_chat(
                     Let's optimize your YouTube video.
                 </h1>
                 <p style="color: #94A3B8; font-size: 1.05rem; line-height: 1.6; margin-bottom: 24px;">
-                    Paste a video or Short link. I'll retrieve its details and help improve the title, description and tags. You can also attach YouTube Studio exports for deeper evidence.
+                    Paste a video or Short link. I'll retrieve its details and help improve the title, description and tags. You can also paste batch instructions or upload metadata spreadsheets.
                 </p>
             </div>
             """,
@@ -1651,7 +1679,7 @@ def render_copilot_chat(
                     else:
                         st.caption(f"Average percentage viewed: Not returned • {item.get('format_group', 'Format unconfirmed')}")
                     if item.get("ctr_source"):
-                        reach_scope = item.get("ctr_period") or "date range not stated in the uploaded Studio export"
+                        reach_scope = item.get("ctr_period") or "date range not stated"
                         st.caption(
                             f"Reach metrics source: {item.get('ctr_source')} ({reach_scope})"
                         )
@@ -2047,22 +2075,47 @@ def render_copilot_chat(
         # Check if user message indicates batch request
         if _is_batch_intent(instruction, urls):
             try:
-                # Clear single-video target state so single-video editor never renders underneath active batch review
-                for k in (
-                    "strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
-                    "copilot_proposal", "copilot_approval_digest",
-                ):
-                    st.session_state.pop(k, None)
+                _clear_single_video_editor_state()
                 context = None
 
                 staged = _stage_text_metadata_batch(instruction, youtube, secrets=secrets)
+                all_refs = batch_instructions.extract_video_references_from_text(instruction)
+                requested_vids = {r["video_id"] for r in all_refs if r.get("video_id")}
+                for u in urls:
+                    try:
+                        v = parse_video_id(u)
+                        if v:
+                            requested_vids.add(v)
+                    except Exception:
+                        pass
+
+                staged_rows = staged.get("rows", [])
+                staged_vids = {r.get("video_id") for r in staged_rows if r.get("video_id")}
+                missing_vids = requested_vids - staged_vids
+                invalid_rows = [r for r in staged_rows if r.get("status") == "invalid" or r.get("errors")]
+
                 st.session_state["batch_metadata_review"] = staged
                 st.session_state["batch_text_instructions_input"] = instruction
                 st.session_state["batch_selected_video_ids"] = []
                 st.session_state["batch_review_index"] = 0
                 st.session_state["batch_flow_step"] = "review"
                 st.session_state["show_batch_metadata"] = True
-                msg = f"Identified batch request for {len(staged['rows'])} videos. Proposals are ready below for sequential review."
+
+                if missing_vids or invalid_rows:
+                    issue_details = []
+                    if missing_vids:
+                        issue_details.append(f"Missing target videos: {', '.join(sorted(missing_vids))}")
+                    if invalid_rows:
+                        row_errs = [f"{r.get('video_id') or r.get('reference')}: {'; '.join(r.get('errors', []))}" for r in invalid_rows]
+                        issue_details.append(f"Validation errors: {', '.join(row_errs)}")
+                    msg = (
+                        f"Batch staged with issues ({len(staged_rows)} videos identified). "
+                        f"Issues found: {'. '.join(issue_details)}. "
+                        "Review individual proposals below before approving."
+                    )
+                else:
+                    msg = f"Identified batch request for {len(staged_rows)} videos. Proposals are ready below for sequential review."
+
                 _append_history(history, "user", instruction)
                 _append_history(history, "assistant", msg)
                 st.rerun()
