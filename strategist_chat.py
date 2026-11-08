@@ -976,6 +976,8 @@ def _is_explicit_video_pairing_request(message: str) -> bool:
         # A direct comparison instruction joining two supplied items.
         r"\bcompare\b[\s\S]{0,200}\b(?:versus|vs\.?|against)\b",
         r"\bcompare\s+(?:(?:these|the|both|supplied|listed|following)\s+)?(?:(?:two|both|of\s+these)\s+)?(?:youtube\s+)?videos?\b",
+        # Legacy target/reference wording: "compare [target] to reference [video/URL]".
+        r"\bcompare\b[\s\S]{0,180}\bto\s+(?:the\s+)?reference(?:\s+video)?\s*[:=]?\s*(?:https?://|[A-Za-z0-9_-]{11}\b)",
         # A supplied video is explicitly designated as the reference for another.
         r"\b(?:use|treat|take|make)\b[\s\S]{0,100}\bas\s+(?:(?:a|the)\s+)?reference\s+for\b",
         r"\btarget\s+and\s+reference\b",
