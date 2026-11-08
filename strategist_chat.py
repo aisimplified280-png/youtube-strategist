@@ -969,6 +969,24 @@ def _stage_text_metadata_batch(text, youtube, secrets=None):
     )
 
 
+def _is_explicit_video_pairing_request(message: str) -> bool:
+    """Return True only when the user explicitly assigns or compares supplied videos."""
+    text = str(message or "").casefold()
+    explicit_pairing_patterns = (
+        # A direct comparison instruction joining two supplied items.
+        r"\bcompare\b[\s\S]{0,200}\b(?:versus|vs\.?|against)\b",
+        r"\bcompare\s+(?:(?:these|the|both|supplied|listed|following)\s+)?(?:(?:two|both|of\s+these)\s+)?(?:youtube\s+)?videos?\b",
+        # Legacy target/reference wording: "compare [target] to reference [video/URL]".
+        r"\bcompare\b[\s\S]{0,180}\bto\s+(?:the\s+)?reference(?:\s+video)?\s*[:=]?\s*(?:https?://|[A-Za-z0-9_-]{11}\b)",
+        # A supplied video is explicitly designated as the reference for another.
+        r"\b(?:use|treat|take|make)\b[\s\S]{0,100}\bas\s+(?:(?:a|the)\s+)?reference\s+for\b",
+        r"\btarget\s+and\s+reference\b",
+        # Explicitly asking to model one supplied video after another.
+        r"\bmodel\b[\s\S]{0,100}\bafter\s+(?:the\s+)?(?:reference|other|first|second)\s+(?:video|upload)\b",
+    )
+    return any(re.search(pattern, text) for pattern in explicit_pairing_patterns)
+
+
 def _is_batch_intent(message: str, urls: List[str]) -> bool:
     """Determine if user chat message has batch intent rather than single target (+ optional ref)."""
     all_refs = batch_instructions.extract_video_references_from_text(message)
@@ -985,10 +1003,10 @@ def _is_batch_intent(message: str, urls: List[str]) -> bool:
     lower = message.casefold()
 
     if distinct_count >= 2:
-        comparison_terms = ("reference", "compare", "benchmark", "versus", "vs", "model after", "like this", "target and reference")
-        if any(term in lower for term in comparison_terms):
-            return False
-        return True
+        # Content words such as "benchmark", "comparison", and "reference" are
+        # common inside video-specific instructions. Only an explicit pairing
+        # request should divert multiple supplied IDs to the target/reference flow.
+        return not _is_explicit_video_pairing_request(message)
 
     if distinct_count == 1:
         if any(term in lower for term in ("batch:", "batch import", "for all videos", "all listed videos", "every video", "each video", "optimize title only for all")):

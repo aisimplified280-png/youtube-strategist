@@ -79,6 +79,61 @@ class TestSessionStateAndBatchRouting(unittest.TestCase):
         urls = strategist_chat._youtube_urls_from_message(text)
         self.assertFalse(strategist_chat._is_batch_intent(text, urls))
 
+    def test_seven_video_batch_with_gemini_benchmark_direction_stays_batch(self):
+        video_ids = [
+            "k3xdJjSgxDI",
+            "fd2R6huwt6c",
+            "ukWlOlGKLGk",
+            "hbE_iKV-F4k",
+            "GUqU59FotlQ",
+            "kLK0N14PT1Y",
+            "FDKLZ-g9TLk",
+        ]
+        text = "\n".join(
+            f"VIDEO ID: {video_id} CURRENT TITLE: Existing title {index}"
+            for index, video_id in enumerate(video_ids, start=1)
+        )
+        text += (
+            "\nOptimize each video independently. Identify the actual Gemini 3 Pro "
+            "comparison or benchmark shown. Only claim advantages supported by the video."
+        )
+        refs = batch_instructions.extract_video_references_from_text(text)
+        self.assertEqual(
+            {ref["video_id"] for ref in refs if ref.get("video_id")},
+            set(video_ids),
+        )
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertTrue(strategist_chat._is_batch_intent(text, urls))
+
+    def test_benchmark_as_video_topic_does_not_cancel_batch(self):
+        text = (
+            f"VIDEO ID: {ID_A} VIDEO ID: {ID_B} "
+            "Explain the benchmark demonstrated in each video."
+        )
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertTrue(strategist_chat._is_batch_intent(text, urls))
+
+    def test_reference_as_content_context_does_not_cancel_batch(self):
+        text = (
+            f"VIDEO ID: {ID_A} VIDEO ID: {ID_B} "
+            "Check the research references mentioned in each video's explanation."
+        )
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertTrue(strategist_chat._is_batch_intent(text, urls))
+
+    def test_compare_these_two_videos_remains_reference_flow(self):
+        text = f"VIDEO ID: {ID_A} VIDEO ID: {ID_B} Compare these two videos."
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertFalse(strategist_chat._is_batch_intent(text, urls))
+
+    def test_explicit_video_reference_pairing_remains_reference_flow(self):
+        text = (
+            f"VIDEO ID: {ID_A} VIDEO ID: {ID_B} "
+            "Use video B as the reference for video A."
+        )
+        urls = strategist_chat._youtube_urls_from_message(text)
+        self.assertFalse(strategist_chat._is_batch_intent(text, urls))
+
     def test_explicit_batch_keyword_with_single_id(self):
         text = f"batch: update title for https://www.youtube.com/watch?v={ID_A}"
         urls = strategist_chat._youtube_urls_from_message(text)
