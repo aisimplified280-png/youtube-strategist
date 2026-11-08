@@ -29,7 +29,6 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 import strategist_chat
-import studio_export_analyzer
 import youtube_analytics_connector as connector
 from core.linter import lint_description
 from core.creator_db import record_proposal_decision, get_recent_proposal_history
@@ -92,39 +91,23 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertEqual(fmt_90s_old_short_url["format"], "Standard Video")
         self.assertEqual(fmt_90s_old_short_url["badge"], "Video (>60s Pre-Oct 2024)")
 
-        # 3. Studio Shorts evidence with impossible duration (>180s or >60s pre-Oct 2024)
-        fmt_studio_impossible_180 = strategist_chat._classify_video_format(
-            240, studio_format="Shorts"
-        )
-        self.assertEqual(fmt_studio_impossible_180["format"], "Standard Video")
-        self.assertEqual(fmt_studio_impossible_180["badge"], "Video (>3m)")
+        # 3. Impossible duration (>180s or >60s pre-Oct 2024)
+        fmt_impossible_180 = strategist_chat._classify_video_format(240)
+        self.assertEqual(fmt_impossible_180["format"], "Standard Video")
+        self.assertEqual(fmt_impossible_180["badge"], "Video (>3m)")
 
-        fmt_studio_impossible_old = strategist_chat._classify_video_format(
-            90, studio_format="Shorts", upload_date="2024-04-10"
+        fmt_impossible_old = strategist_chat._classify_video_format(
+            90, upload_date="2024-04-10"
         )
-        self.assertEqual(fmt_studio_impossible_old["format"], "Standard Video")
-        self.assertEqual(fmt_studio_impossible_old["badge"], "Video (>60s Pre-Oct 2024)")
+        self.assertEqual(fmt_impossible_old["format"], "Standard Video")
+        self.assertEqual(fmt_impossible_old["badge"], "Video (>60s Pre-Oct 2024)")
 
-        # 4. Conflicting Studio Standard Video and Shorts URL evidence
-        fmt_conflict = strategist_chat._classify_video_format(
-            50, is_short_url=True, studio_format="Videos"
-        )
-        self.assertEqual(fmt_conflict["format"], "Format unconfirmed")
-        self.assertEqual(fmt_conflict["badge"], "Format unconfirmed")
-        self.assertIn("Conflicting format evidence", fmt_conflict["note"])
-
-        # 5. Valid post-October 15, 2024 Short evidence
+        # 4. Valid post-October 15, 2024 Short evidence
         fmt_post_oct_url = strategist_chat._classify_video_format(
             120, is_short_url=True, upload_date="2024-11-01"
         )
         self.assertEqual(fmt_post_oct_url["format"], "YouTube Short")
         self.assertEqual(fmt_post_oct_url["badge"], "Short")
-
-        fmt_post_oct_studio = strategist_chat._classify_video_format(
-            120, studio_format="Shorts", upload_date="2024-11-01"
-        )
-        self.assertEqual(fmt_post_oct_studio["format"], "YouTube Short")
-        self.assertEqual(fmt_post_oct_studio["badge"], "Short")
 
         # 6. Existing standard-video and unconfirmed cases
         fmt_standard_long = strategist_chat._classify_video_format(620, is_short_url=False)
@@ -258,89 +241,66 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertNotIn("copilot_proposal", session_state)
         self.assertNotIn("copilot_approval_digest", session_state)
 
-    # Criterion 8: Multi-file Studio upload in-memory
-    def test_08_multi_file_studio_upload_in_memory(self):
-        """User can attach multiple CSV/TSV/XLSX files simultaneously in memory."""
-        csv1 = (
-            "Video,Video title,Video publish time,Views,Impressions,Impressions click-through rate (%)\n"
-            "vid11111111,First Title,May 1 2026,100,2000,5.0\n"
-        ).encode("utf-8")
-        csv2 = (
-            "Video,Video title,Video publish time,Views,Average percentage viewed (%)\n"
-            "vid22222222,Second Title,May 2 2026,500,45.2\n"
+    # Criterion 8: Multi-row metadata spreadsheet upload in-memory
+    def test_08_multi_row_metadata_upload_in_memory(self):
+        """User can attach CSV metadata spreadsheets in memory."""
+        import core.batch_metadata as batch_meta
+        csv_content = (
+            "Video ID,New Title,New Description,New Tags\n"
+            "vid11111111,First Title,First Description,\"tag1, tag2\"\n"
+            "vid22222222,Second Title,Second Description,\"tag3, tag4\"\n"
         ).encode("utf-8")
 
-        mock_file1 = Mock(name="content.csv", spec=["name", "getvalue"])
-        mock_file1.name = "content.csv"
-        mock_file1.getvalue.return_value = csv1
+        parsed = batch_meta.parse_metadata_file("updates.csv", csv_content)
+        self.assertEqual(len(parsed["rows"]), 2)
+        self.assertEqual(parsed["rows"][0]["video_id"], "vid11111111")
+        self.assertEqual(parsed["rows"][1]["video_id"], "vid22222222")
 
-        mock_file2 = Mock(name="totals.csv", spec=["name", "getvalue"])
-        mock_file2.name = "totals.csv"
-        mock_file2.getvalue.return_value = csv2
+    # Criterion 9: Metadata spreadsheet field validation
+    def test_09_metadata_spreadsheet_field_validation(self):
+        """Metadata changes from spreadsheet are parsed with valid tags and fields."""
+        import core.batch_metadata as batch_meta
+        csv_content = (
+            "Video ID,Title,Description,Tags\n"
+            "targetid111,Valid New Title,New mobile-friendly description,\"tag1, tag2\"\n"
+        ).encode("utf-8")
 
-        index, notices = studio_export_analyzer.index_uploaded_studio_files([mock_file1, mock_file2])
-        self.assertIn("id:vid11111111", index)
-        self.assertIn("id:vid22222222", index)
-        self.assertEqual(len(notices), 2)
+        parsed = batch_meta.parse_metadata_file("test.csv", csv_content)
+        row = parsed["rows"][0]
+        self.assertEqual(row["video_id"], "targetid111")
+        self.assertEqual(row["title"], "Valid New Title")
+        self.assertEqual(row["tags"], ["tag1", "tag2"])
 
-    # Criterion 9: Exact ID matching with title fallback
-    def test_09_exact_id_matching_with_title_fallback(self):
-        """Studio data is matched to active video by exact ID first, with title fallback second."""
-        evidence_index = {
-            "id:targetid111": [{"source_file": "file1.csv", "views": 1000}],
-            "title:my exact video title": [{"source_file": "file2.csv", "views": 2000}],
-        }
-        # Exact ID match
-        ev1 = studio_export_analyzer.find_video_evidence(evidence_index, "targetid111", "Different Title")
-        self.assertEqual(len(ev1), 1)
-        self.assertEqual(ev1[0]["views"], 1000)
-
-        # Title fallback match
-        ev2 = studio_export_analyzer.find_video_evidence(evidence_index, "unknownid22", "My Exact Video Title")
-        self.assertEqual(len(ev2), 1)
-        self.assertEqual(ev2[0]["views"], 2000)
-
-    # Criterion 10: Date ranges separated (never summed or averaged)
-    def test_10_date_ranges_separated_never_summed(self):
-        """Metrics from different timeframes are reported independently, never summed together."""
-        evidence = [
-            {"source_file": "sep.csv", "date_start": "2026-09-01", "date_end": "2026-09-07", "views": 100},
-            {"source_file": "oct.csv", "date_start": "2026-10-01", "date_end": "2026-10-07", "views": 200},
-        ]
+    # Criterion 10: AI prompt uses target transcript and metadata
+    def test_10_prompt_uses_target_transcript_and_metadata(self):
+        """Prompt instructs model using target metadata and transcript."""
         prompt = strategist_chat._build_prompt(
-            {"title": "Target", "description": "", "tags": []},
+            {"title": "Target Video", "description": "Existing desc", "tags": ["tag1"]},
             {},
             "",
             "",
             [],
             "Optimize metadata",
-            studio_evidence=evidence,
+            target_transcript="0:00 In this video we build an agent",
+            target_transcript_status="Available",
         )
-        self.assertIn("2026-09-01", prompt)
-        self.assertIn("2026-10-01", prompt)
-        self.assertIn("never sum them unless the report itself represents non-overlapping rows", prompt)
+        self.assertIn("Target Video", prompt)
+        self.assertIn("0:00 In this video we build an agent", prompt)
+        self.assertIn("TARGET TRANSCRIPT", prompt)
 
-    # Criterion 11: Studio evidence in LLM prompt
-    def test_11_studio_evidence_in_llm_prompt(self):
-        """Extracted metrics (CTR, retention, APV) are incorporated into the LLM optimization prompt."""
-        evidence = [{
-            "source_file": "retention.csv",
-            "ctr_percent": 3.8,
-            "average_percentage_viewed": 52.4,
-            "impressions": 12000,
-        }]
+    # Criterion 11: Prompt enforces strict non-hallucination rules
+    def test_11_prompt_enforces_strict_rules(self):
+        """Prompt forbids visual hallucination and requiring conservative metadata."""
         prompt = strategist_chat._build_prompt(
             {"title": "Target", "description": "", "tags": []},
             {},
             "",
             "",
             [],
-            "Review performance",
-            studio_evidence=evidence,
+            "Review metadata",
         )
-        self.assertIn("3.8", prompt)
-        self.assertIn("52.4", prompt)
-        self.assertIn("12000", prompt)
+        self.assertIn("NEVER claim that you watched video visuals", prompt)
+        self.assertIn("Never guarantee CTR, views, virality", prompt)
 
     # Criterion 12: Metadata proposal formulation with 3 title angles
     def test_12_metadata_proposal_formulation_three_angles(self):
@@ -873,45 +833,10 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertTrue(is_owner)
         self.assertEqual(status, "Owner Channel (Editable)")
 
-    # Studio Attachment Context: Lifecycle and Format Recalculation
+    # Studio Attachment Context: Completely Removed
     def test_30_studio_attachments_lifecycle(self):
-        """Attaching files refreshes evidence and format; removing files clears evidence and index."""
-        # Active video loaded with standard watch URL and duration 50s (initially Format unconfirmed)
-        context = {
-            "target_id": "AbCdEfGhI12",
-            "title": "Agent Tutorial",
-            "duration_seconds": 50,
-            "duration_formatted": "0:50",
-            "published_at": "2024-11-01",
-            "is_short_url": False,
-            "format_info": {"format": "Format unconfirmed", "badge": "Format unconfirmed"},
-            "studio_performance_evidence": [],
-        }
-
-        # 1. Attach a Studio file that classifies video as Shorts
-        csv_content = (
-            "Video ID,Video Title,Content Type,Views,Watch time (hours)\n"
-            "AbCdEfGhI12,Agent Tutorial,Shorts,1500,20.5\n"
-        ).encode("utf-8")
-
-        mock_file = MagicMock()
-        mock_file.name = "totals_report.csv"
-        mock_file.getvalue.return_value = csv_content
-
-        evidence_index, notice = strategist_chat.update_studio_attachments(context, [mock_file])
-        self.assertIn("id:AbCdEfGhI12", evidence_index)
-        self.assertIn("Parsed 1 Studio report", notice)
-        self.assertEqual(len(context["studio_performance_evidence"]), 1)
-        self.assertEqual(context["format_info"]["format"], "YouTube Short")
-        self.assertEqual(context["format_info"]["badge"], "Short")
-
-        # 2. Remove all uploaded files (empty list)
-        empty_index, empty_notice = strategist_chat.update_studio_attachments(context, [])
-        self.assertEqual(empty_index, {})
-        self.assertIsNone(empty_notice)
-        self.assertEqual(len(context["studio_performance_evidence"]), 0)
-        self.assertEqual(context["format_info"]["format"], "Format unconfirmed")
-        self.assertEqual(context["format_info"]["badge"], "Format unconfirmed")
+        """Studio export attachments and update_studio_attachments are completely removed."""
+        self.assertFalse(hasattr(strategist_chat, "update_studio_attachments"))
 
 
 if __name__ == "__main__":

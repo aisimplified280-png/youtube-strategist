@@ -511,6 +511,19 @@ def publish_approved_batch_rows(
             row["result_message"] = str(error) or "The metadata update may have succeeded, but YouTube read-back verification was unavailable."
             result["failure_count"] += 1
             continue
+        except connector.HttpError as error:
+            details = connector.extract_http_error_details(error)
+            status = details.get("status")
+            err_msg = f"HTTP {status}" if status else "HTTP error"
+            if details.get("reasons"):
+                err_msg += f" ({', '.join(details['reasons'])})"
+            err_msg += f": {details.get('message')}"
+            if details.get("locations"):
+                err_msg += f" [Field: {', '.join(details['locations'])}]"
+            row["status"] = "failed"
+            row["result_message"] = err_msg
+            result["failure_count"] += 1
+            continue
         except Exception as error:
             message = str(error)
             lowered = message.casefold()

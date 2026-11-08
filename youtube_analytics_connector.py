@@ -12,6 +12,7 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import httplib2
@@ -53,6 +54,54 @@ class MetadataVerificationUnavailableError(RuntimeError):
 
 class VideoNotFoundError(LookupError):
     """Raised when the YouTube API does not return the requested video."""
+
+
+def extract_http_error_details(error: HttpError) -> Dict[str, Any]:
+    """Extract structured details from a Google HttpError response safely without leaking credentials."""
+    status = getattr(getattr(error, "resp", None), "status", None)
+    content = getattr(error, "content", b"")
+    parsed = {}
+    if isinstance(content, (bytes, bytearray)):
+        try:
+            parsed = json.loads(content.decode("utf-8"))
+        except Exception:
+            pass
+    elif isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            pass
+
+    err_container = parsed.get("error", {}) if isinstance(parsed, dict) else {}
+    main_message = err_container.get("message") or str(error)
+    # Sanitize bearer tokens or query keys
+    main_message = re.sub(r"(?i)bearer\s+[A-Za-z0-9_\-\.]+", "bearer [REDACTED]", main_message)
+    main_message = re.sub(r"(?i)key=[A-Za-z0-9_\-]+", "key=[REDACTED]", main_message)
+
+    reasons = []
+    locations = []
+    domains = []
+    sub_messages = []
+    for item in err_container.get("errors", []):
+        if isinstance(item, dict):
+            if item.get("reason"):
+                reasons.append(str(item["reason"]))
+            if item.get("location"):
+                locations.append(str(item["location"]))
+            if item.get("domain"):
+                domains.append(str(item["domain"]))
+            if item.get("message") and item.get("message") != main_message:
+                sub_msg = re.sub(r"(?i)bearer\s+[A-Za-z0-9_\-\.]+", "bearer [REDACTED]", str(item["message"]))
+                sub_messages.append(sub_msg)
+
+    return {
+        "status": status,
+        "message": main_message,
+        "reasons": reasons,
+        "locations": locations,
+        "domains": domains,
+        "sub_messages": sub_messages,
+    }
 
 
 def authorize():
@@ -134,9 +183,14 @@ def fetch_video_transcript(youtube, video_id: str) -> str:
 
 
 def _parse_video_reference(reference):
-    value = reference.strip()
+    value = reference.strip().strip("'\"“”")
     if not value:
         raise ValueError("Provide a YouTube video URL, video ID, or exact title.")
+
+    # Strip common leading labels like "VIDEO ID:", "id:", "video:"
+    m_label = re.match(r"^(?:(?:video|target|reference)\s+id|id|video)\s*[:=]\s*([A-Za-z0-9_-]{11})\b", value, flags=re.I)
+    if m_label:
+        return m_label.group(1)
 
     url_value = value
     if re.match(r"^(?:www\.)?(?:youtube\.com|youtu\.be)/", value, flags=re.I):
@@ -164,6 +218,12 @@ def _parse_video_reference(reference):
 
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", value):
         return value
+
+    # Check for "<ID> - <Title>" pattern
+    dash_m = re.match(r"^([A-Za-z0-9_-]{11})\s*[-—:]\s*", value)
+    if dash_m:
+        return dash_m.group(1)
+
     return None
 
 
@@ -501,7 +561,7 @@ def rank_channel_video_opportunities(video_rows, *, limit=10):
     return ranked[:max(1, min(int(limit), 25))]
 
 
-def discover_video_opportunities(youtube, analytics, studio_evidence_index=None, *, days=28, limit=10):
+def discover_video_opportunities(youtube, analytics, *, days=28, limit=10):
     """Scan recent owned uploads and rank below-benchmark performance using real channel data."""
     if youtube is None:
         raise ConnectionError("YouTube is not connected. Connect your channel before scanning opportunities.")
@@ -533,12 +593,6 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
         if isinstance(row.get("video"), str) and row.get("video")
     }
 
-    try:
-        import studio_export_analyzer as studio_analyzer
-    except Exception:
-        studio_analyzer = None
-
-    evidence_index = studio_evidence_index or {}
     enriched = []
     for video_id in upload_ids:
         video = details.get(video_id)
@@ -548,101 +602,27 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
         snippet = video.get("snippet", {})
         title = snippet.get("title") or "Untitled video"
 
-        evidence = []
-        if studio_analyzer:
-            try:
-                evidence = studio_analyzer.find_video_evidence(evidence_index, video_id, title)
-            except Exception:
-                evidence = []
-
-        def latest_value(field):
-            records = [
-                item for item in evidence
-                if isinstance(item.get(field), (int, float)) and not isinstance(item.get(field), bool)
-            ]
-            if not records:
-                return None, None
-            # Prefer exports with explicit row-level dates. When dates are absent,
-            # preserve upload order: the last uploaded report is the freshest evidence.
-            dated_records = [
-                item for item in records if item.get("date_end") or item.get("date_start")
-            ]
-            if dated_records:
-                selected = max(dated_records, key=lambda item: (
-                    str(item.get("date_end") or ""),
-                    str(item.get("date_start") or ""),
-                ))
-            else:
-                selected = records[-1]
-            period = None
-            if selected.get("date_start") or selected.get("date_end"):
-                period = f"{selected.get('date_start') or '?'} to {selected.get('date_end') or '?'}"
-            return selected.get(field), {
-                "source_file": selected.get("source_file"),
-                "source_sheet": selected.get("source_sheet"),
-                "period": period,
-                "period_known": bool(period),
-            }
-
         duration_seconds = None
         try:
             duration_seconds = _parse_duration_seconds(video.get("contentDetails", {}).get("duration", ""))
         except (TypeError, ValueError):
             pass
 
-        content_type = next(
-            (str(item.get("content_type")).strip() for item in evidence if item.get("content_type")),
-            "",
-        )
-        if "short" in content_type.casefold():
-            format_group = "Shorts (Studio classified)"
-        elif "video" in content_type.casefold():
-            format_group = "Standard videos (Studio classified)"
-        elif duration_seconds is not None and duration_seconds > YOUTUBE_MAX_SHORT_DURATION_SECONDS:
+        if duration_seconds is not None and duration_seconds > YOUTUBE_MAX_SHORT_DURATION_SECONDS:
             format_group = "Standard videos"
         else:
             format_group = "Under-3-minute uploads (format unconfirmed)"
-
-        # CTR and impressions must come from the same Studio report row; never mix periods/files.
-        reach_records = [
-            item for item in evidence
-            if isinstance(item.get("ctr_percent"), (int, float))
-            and isinstance(item.get("impressions"), (int, float))
-        ]
-        def reach_source_rank(item):
-            sheet = str(item.get("source_sheet") or "").casefold()
-            sheet_preference = (
-                3 if "table" in sheet else
-                2 if "chart" in sheet else
-                1 if "total" in sheet else
-                0
-            )
-            return (
-                bool(item.get("date_end") or item.get("date_start")),
-                item.get("report_type") == "video_performance",
-                sheet_preference,
-                str(item.get("date_end") or ""),
-                str(item.get("date_start") or ""),
-            )
-
-        reach_record = max(reach_records, key=reach_source_rank) if reach_records else {}
-        impressions = reach_record.get("impressions")
-        ctr_percent = reach_record.get("ctr_percent")
-        reach_period = None
-        if reach_record.get("date_start") or reach_record.get("date_end"):
-            reach_period = f"{reach_record.get('date_start') or '?'} to {reach_record.get('date_end') or '?'}"
 
         views = metrics.get("views")
         if not isinstance(views, (int, float)):
             continue
 
-        # A zero-view period has no meaningful average-viewed percentage. Some API
-        # responses return 0.0 for that empty window; surface this as unavailable.
+        # A zero-view period has no meaningful average-viewed percentage.
         average_view_percentage = None
         if views > 0:
             average_view_percentage = metrics.get("averageViewPercentage")
             if not isinstance(average_view_percentage, (int, float)):
-                average_view_percentage, _ = latest_value("average_view_percentage")
+                average_view_percentage = None
 
         statistics = video.get("statistics", {}) or {}
         lifetime_views = statistics.get("viewCount")
@@ -667,14 +647,11 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
             "comments": metrics.get("comments"),
             "shares": metrics.get("shares"),
             "subscribers_gained": metrics.get("subscribersGained"),
-            "impressions": impressions,
-            "ctr_percent": ctr_percent,
-            "ctr_source": (
-                f"{reach_record.get('source_file')}"
-                + (f" · {reach_record.get('source_sheet')}" if reach_record.get('source_sheet') else "")
-            ) if reach_record else None,
-            "ctr_period": reach_period,
-            "ctr_period_known": bool(reach_period),
+            "impressions": None,
+            "ctr_percent": None,
+            "ctr_source": None,
+            "ctr_period": None,
+            "ctr_period_known": False,
         })
 
     recommendations = rank_channel_video_opportunities(enriched, limit=limit)
@@ -688,14 +665,9 @@ def discover_video_opportunities(youtube, analytics, studio_evidence_index=None,
         "scanned_uploads": len(upload_ids),
         "videos_with_analytics": len(enriched),
         "recommendations": recommendations,
-        "studio_ctr_available": any(
-            isinstance(row.get("ctr_percent"), (int, float))
-            and isinstance(row.get("impressions"), (int, float))
-            for row in enriched
-        ),
         "format_classification_note": (
             "The Data API does not expose the Shorts designation or orientation. "
-            "Only Studio Content Type evidence is labelled as Shorts; other uploads up to 180 seconds remain unconfirmed."
+            "Uploads up to 180 seconds remain unconfirmed unless referenced via a /shorts/ URL."
         ),
     }
 
@@ -945,9 +917,9 @@ def _validate_hashtags(title, description):
         raise MetadataValidationError(
             "Hashtags must contain only letters, numbers, or underscores, with no spaces."
         )
-    if len(hashtags) > 15:
+    if len(hashtags) > 60:
         raise MetadataValidationError(
-            "A video may have at most 15 hashtags in its title and description."
+            "A video may have at most 60 hashtags; YouTube ignores all hashtags on content exceeding 60 hashtags."
         )
 
 
@@ -962,6 +934,9 @@ def _validate_metadata(snippet):
         )
     if len(title) > 100:
         raise MetadataValidationError("Title must be no longer than 100 characters.")
+    if "<" in title or ">" in title:
+        raise MetadataValidationError("Title must not contain '<' or '>' characters.")
+
     if not isinstance(description, str):
         raise MetadataValidationError("Description must be text.")
     desc_bytes = len(description.encode("utf-8"))
@@ -969,15 +944,31 @@ def _validate_metadata(snippet):
         raise MetadataValidationError(
             f"Description must be no longer than 5000 characters and 5000 UTF-8 bytes (currently {len(description)} chars, {desc_bytes} bytes)."
         )
+    if "<" in description or ">" in description:
+        raise MetadataValidationError("Description must not contain '<' or '>' characters.")
+
     if not isinstance(tags, list) or any(
         not isinstance(tag, str) or not tag.strip() for tag in tags
     ):
         raise MetadataValidationError("Tags must be a list of non-empty strings.")
+    for tag in tags:
+        if len(tag) > 100:
+            raise MetadataValidationError(f"Tag '{tag[:30]}...' exceeds maximum tag length of 100 characters.")
+        if "<" in tag or ">" in tag:
+            raise MetadataValidationError(f"Tag '{tag}' must not contain '<' or '>' characters.")
+        if "," in tag:
+            raise MetadataValidationError(f"Tag '{tag}' must not contain commas; commas are used by YouTube to separate tags.")
     if len({tag.casefold() for tag in tags}) != len(tags):
         raise MetadataValidationError("Tags must not contain duplicates.")
-    if len(",".join(tags)) > 500:
+    # YouTube Data API tag length calculation:
+    # Multi-word tags containing spaces are enclosed in quotation marks by YouTube,
+    # which adds 2 characters per multi-word tag to the 500-character / byte limit.
+    formatted_tags = [f'"{tag}"' if " " in tag else tag for tag in tags]
+    combined_tags = ",".join(formatted_tags)
+    combined_bytes = len(combined_tags.encode("utf-8"))
+    if len(combined_tags) > 500 or combined_bytes > 500:
         raise MetadataValidationError(
-            "Combined tags must be no longer than 500 characters."
+            f"Combined tags must be no longer than 500 characters and 500 UTF-8 bytes accounting for quotation marks on multi-word tags (currently {len(combined_tags)} chars, {combined_bytes} bytes)."
         )
 
     _validate_hashtags(title, description)
@@ -1375,6 +1366,8 @@ def apply_approved_dashboard_proposal(
 
     if "defaultLanguage" not in proposed_snippet and "defaultLanguage" in before_snippet:
         proposed_snippet["defaultLanguage"] = before_snippet["defaultLanguage"]
+    if "defaultAudioLanguage" not in proposed_snippet and "defaultAudioLanguage" in before_snippet:
+        proposed_snippet["defaultAudioLanguage"] = before_snippet["defaultAudioLanguage"]
 
     for field in before_snippet:
         if field in ("defaultAudioLanguage",):
@@ -1393,7 +1386,7 @@ def apply_approved_dashboard_proposal(
     _validate_metadata(proposed_snippet)
 
     current = fetch_video_snippet(youtube, video_id)
-    if current != before_snippet:
+    if _metadata_snapshot(current) != _metadata_snapshot(before_snippet):
         raise RuntimeError(
             "Video metadata changed after review. Reload the video and approve a new proposal."
         )

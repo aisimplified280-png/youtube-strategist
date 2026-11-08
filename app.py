@@ -3,9 +3,8 @@
 Single chat assistant for optimizing existing YouTube videos and Shorts:
 1. Pastes YouTube link / ID -> automatically loads video details, real metrics, and transcript.
 2. Formulates metadata improvements (Title with 3 distinct angles, Description with mobile hook, Hashtags, Tags).
-3. In-memory YouTube Studio export attachments (CSV/TSV/TXT/XLSX) for empirical evidence.
-4. Conversational revisions that invalidate previous approval digests.
-5. Exact-proposal approval gate with pre-write stale check and post-write verification.
+3. Conversational revisions that invalidate previous approval digests.
+4. Exact-proposal approval gate with pre-write stale check and post-write verification.
 """
 
 import json
@@ -213,8 +212,7 @@ def render_app():
                 "copilot_channel_opportunities", "batch_metadata_review", "batch_metadata_payload",
                 "batch_metadata_file_name", "batch_text_instructions_input", "batch_text_input_area",
                 "batch_metadata_uploader", "batch_selected_video_ids", "batch_review_index",
-                "batch_flow_step", "show_batch_metadata", "studio_export_evidence_index",
-                "show_studio_uploader",
+                "batch_flow_step", "show_batch_metadata",
             ):
                 st.session_state.pop(key, None)
             st.rerun()

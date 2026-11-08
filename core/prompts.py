@@ -49,7 +49,6 @@ def build_strategist_prompt(
     instruction: str,
     target_transcript: str = "",
     target_transcript_status: str = "Unavailable",
-    studio_evidence: Optional[List[Dict[str, Any]]] = None,
     reference_snippet: Optional[Dict[str, Any]] = None,
     reference_transcript: str = "",
     chat_history: Optional[List[Dict[str, str]]] = None,
@@ -68,15 +67,6 @@ def build_strategist_prompt(
         sections.append(f"TRANSCRIPT EXCERPT (WITH TIMESTAMPS):\n{clipped}")
     else:
         sections.append("TRANSCRIPT: Unavailable. NOTE: Ground your suggestions strictly in current metadata and do not infer unseen video visuals.")
-
-    if studio_evidence:
-        sections.append("\nMEASURED PERFORMANCE EVIDENCE (From Studio Reports):")
-        for ev in studio_evidence:
-            views_str = f"Views: {ev.get('views', 'N/A')}"
-            ctr_str = f"CTR: {ev.get('ctr_percent', 'N/A')}%" if ev.get('ctr_percent') is not None else "CTR: Unavailable"
-            apv_str = f"Avg % Viewed: {ev.get('average_view_percentage', 'N/A')}%" if ev.get('average_view_percentage') is not None else ""
-            cliff_str = f"Retention cliff: {ev.get('retention_cliff', 'N/A')}" if ev.get('retention_cliff') else ""
-            sections.append(f"- Report '{ev.get('source_file', 'Export')}': {views_str}, {ctr_str}, {apv_str} {cliff_str} (Use as review signal, not causal proof)")
 
     if reference_snippet:
         sections.append("\nOPTIONAL REFERENCE VIDEO:")
