@@ -856,7 +856,12 @@ def build_results_csv(batch: Dict[str, Any]) -> str:
         changed = ", ".join(row.get("changed_fields", []))
         status = row.get("status", "")
 
-        verif_result = "Verified" if status == "verified" else ("Failed" if status == "failed" else "Pending")
+        verif_result = (
+            "Verified" if status == "verified"
+            else "Blocked by YouTube" if status == "blocked"
+            else "Failed" if status == "failed"
+            else "Pending"
+        )
         details = "; ".join(row.get("errors", [])) or row.get("result_message", "")
 
         writer.writerow([
