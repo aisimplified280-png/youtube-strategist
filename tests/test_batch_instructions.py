@@ -143,6 +143,72 @@ class TestBatchTextInterpretation(unittest.TestCase):
         exported = list(csv.DictReader(io.StringIO(batch_metadata.build_results_csv(staged))))[0]
         self.assertEqual(exported["proposed_description"], description)
 
+    def test_full_user_format_triple_quoted_description_survives_ai_reconciliation_and_csv(self):
+        description = (
+            "See how Google Mixboard can turn rough ideas into visual concepts on an AI canvas. "
+            "This tutorial covers five practical use cases, from concept art to product mockups and presentations.\n\n"
+            "What the video shows: • Concept art and inpainting • Product mockups using a logo and 3D object "
+            "• Interior design planning • Fashion styling with mood-board items • Turning a canvas into slides\n\n"
+            "The video describes Mixboard as an experimental Google Labs tool powered by Gemini models. "
+            "It also shows style transfer and ways to edit visual ideas on the canvas.\n\n"
+            "Try Google Mixboard through Google Labs.\n\n"
+            "Chapters: 00:00 Introduction to Google Mixboard 00:31 Concept art and inpainting 02:00 Product mockups "
+            "03:22 Interior design planning 06:12 Fashion styling 08:58 Transform to slides 09:38 Final verdict"
+            "\n\nSubscribe to AI Simplified Lab for clear AI tool tutorials and practical workflows."
+            "\n\n#GoogleMixboard #GoogleLabs #AITools #GenerativeAI #AIProductDesign #InteriorDesignAI #AISimplifiedLab"
+        )
+        video_id = "P4b60v30GuM"
+        text = (
+            "Stage the exact values below for each VIDEO ID. Change only the title, full description, "
+            "and separate YouTube tags.\n\n"
+            f"VIDEO ID: {video_id} CURRENT TITLE: Google Mixboard Finally in India! Full Tutorial & Use Cases "
+            'New title: "Google Mixboard Tutorial: 5 AI Use Cases for Design" '
+            f'Description: """{description}""" '
+            'Tags: ["Google Mixboard", "Google Mixboard tutorial", "Google Labs", "Gemini AI", '
+            '"AI tools", "AI design", "AI concept art", "AI inpainting", "AI style transfer", '
+            '"AI product mockups", "AI interior design", "AI fashion styling", "AI presentations", '
+            '"generative AI", "AI Simplified Lab"]'
+        )
+        ai_plan = {
+            "shared_instructions": "",
+            "videos": [{
+                "reference": video_id,
+                "video_id": video_id,
+                "title_intent": "unmentioned",
+                "exact_title": None,
+                "description_intent": "unmentioned",
+                "exact_description": None,
+                "tags_intent": "unmentioned",
+                "exact_tags": None,
+                "video_specific_instructions": "",
+            }],
+        }
+        with patch.object(
+            batch_instructions,
+            "_interpret_batch_instructions_with_ai",
+            return_value=ai_plan,
+        ):
+            plan = batch_instructions.parse_batch_instructions(text, groq_key="test-key")
+
+        self.assertEqual(plan["total_identified"], 1)
+        video = plan["videos"][0]
+        self.assertEqual(video["video_id"], video_id)
+        self.assertEqual(video["description_intent"], "exact")
+        self.assertEqual(video["exact_description"], description)
+        self.assertEqual(video["exact_tags"][0], "Google Mixboard")
+
+        youtube = FakeYoutube({video_id: make_snippet(video_id, title="Google Mixboard Finally in India! Full Tutorial & Use Cases")})
+        staged = batch_metadata.prepare_metadata_batch(
+            youtube,
+            batch_metadata.create_batch_from_text_plan(plan),
+        )
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["proposed"]["description"], description)
+        self.assertIn("description", row["changed_fields"])
+        exported = list(csv.DictReader(io.StringIO(batch_metadata.build_results_csv(staged))))[0]
+        self.assertEqual(exported["proposed_description"], description)
+
     def test_multiple_videos_independent_instructions(self):
         text = (
             f"1. https://www.youtube.com/watch?v={VIDEO_ID_1}\n"
