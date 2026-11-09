@@ -1471,8 +1471,9 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
                 elif publish_result.get("failure_count"):
                     st.warning(
                         f"Batch finished: {publish_result.get('success_count', 0)} verified, "
-                        f"{publish_result.get('failure_count', 0)} not verified. "
-                        "Review failed rows before retrying."
+                        f"{publish_result.get('failure_count', 0)} not verified "
+                        f"({publish_result.get('blocked_count', 0)} blocked by YouTube). "
+                        "Review the retained proposals before retrying."
                     )
                 else:
                     st.success(f"Batch complete: all {publish_result.get('success_count', 0)} selected updates were verified.")
@@ -1481,8 +1482,11 @@ def render_batch_metadata_import(youtube, subject=None, secrets=None):
     elif flow_step == "complete":
         st.markdown("#### Step 3 of 3 · Batch results")
         st.success(f"{verified_count} videos verified on YouTube.")
-        if failed_count or unavail_count:
-            st.warning(f"{failed_count} failed · {unavail_count} with verification unavailable.")
+        if failed_count or blocked_count or unavail_count:
+            st.warning(
+                f"{failed_count} failed · {blocked_count} blocked by YouTube · "
+                f"{unavail_count} with verification unavailable."
+            )
         for idx, result_row in enumerate(rows, start=1):
             result_title = result_row.get("proposed", {}).get("title") or result_row.get("before", {}).get("title") or "Untitled"
             with st.container(border=True):
