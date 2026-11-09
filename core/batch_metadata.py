@@ -658,6 +658,19 @@ def prepare_metadata_batch(
         d_intent = row.get("description_intent")
         tags_intent = row.get("tags_intent")
 
+        # Fail closed: an exact description must contain the user's supplied
+        # non-empty value. Never turn a missing parser payload into an empty
+        # description and risk publishing an unintended clear operation.
+        if d_intent == "exact":
+            exact_description = row.get("exact_description")
+            if not isinstance(exact_description, str) or not exact_description.strip():
+                row["status"] = "invalid"
+                row["errors"].append(
+                    "An exact description was requested, but no description text was extracted. "
+                    "Nothing was staged for this video; check the pasted Description: block."
+                )
+                continue
+
         fields_to_optimize = []
         if t_intent == "optimize":
             fields_to_optimize.append("title")
