@@ -8,6 +8,7 @@ Covers:
 """
 
 import copy
+import csv
 import io
 import json
 import unittest
@@ -1731,6 +1732,8 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
 
     def test_test_and_compare_title_restriction_is_reported_as_blocked(self):
         row = self._ready_publish_row()
+        row["proposed"]["description"] = "Proposed description"
+        batch_metadata.revalidate_batch_row(row)
         rows = [row]
         fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
         error = connector.HttpError(
