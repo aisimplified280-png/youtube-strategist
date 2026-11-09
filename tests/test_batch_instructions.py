@@ -109,20 +109,20 @@ class TestBatchTextInterpretation(unittest.TestCase):
     def test_multiline_description_keeps_blank_paragraphs_and_stages_exactly(self):
         description = (
             "See how Google Mixboard can turn rough ideas into visual concepts on an AI canvas. "
-            "This tutorial covers five practical use cases, from concept art to product mockups and presentations.\\n\\n"
+            "This tutorial covers five practical use cases, from concept art to product mockups and presentations.\n\n"
             "What the video shows: • Concept art and inpainting • Product mockups using a logo and 3D object "
-            "• Interior design planning • Fashion styling with mood-board items • Turning a canvas into slides\\n\\n"
+            "• Interior design planning • Fashion styling with mood-board items • Turning a canvas into slides\n\n"
             "The video describes Mixboard as an experimental Google Labs tool powered by Gemini models. "
-            "It also shows style transfer and ways to edit visual ideas on the canvas.\\n\\n"
-            "Try Google Mixboard through Google Labs.\\n\\n"
+            "It also shows style transfer and ways to edit visual ideas on the canvas.\n\n"
+            "Try Google Mixboard through Google Labs.\n\n"
             "Chapters: 00:00 Introduction to Google Mixboard 00:31 Concept art and inpainting 02:00 Product mockups"
-            "\\n\\nSubscribe to AI Simplified Lab for clear AI tool tutorials and practical workflows."
-            "\\n\\n#GoogleMixboard #GoogleLabs #AITools #GenerativeAI #AISimplifiedLab"
+            "\n\nSubscribe to AI Simplified Lab for clear AI tool tutorials and practical workflows."
+            "\n\n#GoogleMixboard #GoogleLabs #AITools #GenerativeAI #AISimplifiedLab"
         )
         text = (
-            f"Video 1: https://www.youtube.com/watch?v={VIDEO_ID_1}\\n"
-            "New title: Google Mixboard Tutorial: 5 AI Use Cases for Design\\n"
-            f"Description: {description}\\n"
+            f"Video 1: https://www.youtube.com/watch?v={VIDEO_ID_1}\n"
+            "New title: Google Mixboard Tutorial: 5 AI Use Cases for Design\n"
+            f"Description: {description}\n"
             "Tags: Google Mixboard tutorial; Google Labs; Gemini AI; AI tools; AI design; AI Simplified Lab"
         )
         plan = batch_instructions.parse_batch_instructions(text)
