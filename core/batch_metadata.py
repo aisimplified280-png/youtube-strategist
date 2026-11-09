@@ -446,6 +446,7 @@ def publish_approved_batch_rows(
     result = {
         "success_count": 0,
         "failure_count": 0,
+        "blocked_count": 0,
         "blocked": False,
         "message": "",
     }
@@ -520,8 +521,24 @@ def publish_approved_batch_rows(
             err_msg += f": {details.get('message')}"
             if details.get("locations"):
                 err_msg += f" [Field: {', '.join(details['locations'])}]"
-            row["status"] = "failed"
-            row["result_message"] = err_msg
+
+            # YouTube rejects title edits while a Test & Compare experiment owns
+            # the title. Keep the complete proposal visible and do not retry
+            # description/tags as a second, separate write.
+            error_text = f"{details.get('message', '')} {error}".upper()
+            if "UPDATE_TITLE_NOT_ALLOWED_DURING_TEST_AND_COMPARE" in error_text:
+                row["status"] = "blocked"
+                row["result_message"] = (
+                    "YouTube blocked this metadata request because a Test & Compare title experiment "
+                    "is preventing title changes. The request was rejected; no successful metadata "
+                    "update was confirmed. End or resolve the experiment in YouTube Studio, then "
+                    "refresh this batch and review the proposal again. Description and tags will not "
+                    "be retried separately."
+                )
+                result["blocked_count"] += 1
+            else:
+                row["status"] = "failed"
+                row["result_message"] = err_msg
             result["failure_count"] += 1
             continue
         except Exception as error:
@@ -839,7 +856,12 @@ def build_results_csv(batch: Dict[str, Any]) -> str:
         changed = ", ".join(row.get("changed_fields", []))
         status = row.get("status", "")
 
-        verif_result = "Verified" if status == "verified" else ("Failed" if status == "failed" else "Pending")
+        verif_result = (
+            "Verified" if status == "verified"
+            else "Blocked by YouTube" if status == "blocked"
+            else "Failed" if status == "failed"
+            else "Pending"
+        )
         details = "; ".join(row.get("errors", [])) or row.get("result_message", "")
 
         writer.writerow([
