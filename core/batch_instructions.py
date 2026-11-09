@@ -332,7 +332,7 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
         exact_title = None
 
     # 2. Description intent & extraction
-    if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:the\s+)?descriptions?\b", lower) or re.search(r"\bdescription\s*:\s*(?:""(?!")|''(?!'))", lower):
+    if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:the\s+)?descriptions?\b", lower) or re.search(r"\bdescription\s*:\s*(?:\"\"(?!\")|''(?!'))", lower):
         desc_intent = "clear"
         exact_desc = ""
     else:
