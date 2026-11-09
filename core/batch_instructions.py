@@ -332,7 +332,7 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
         exact_title = None
 
     # 2. Description intent & extraction
-    if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:the\s+)?descriptions?\b", lower) or 'description: ""' in lower or "description: ''" in lower:
+    if re.search(r"\b(?:clear|empty|remove|delete)\s+(?:the\s+)?descriptions?\b", lower) or re.search(r"\bdescription\s*:\s*(?:""(?!")|''(?!'))", lower):
         desc_intent = "clear"
         exact_desc = ""
     else:
@@ -697,25 +697,41 @@ def parse_batch_instructions(
             local_intent = local_context.get("intent", {})
 
             def _merged_field_intent(intent_key: str, exact_key: str):
-                # Prefer deterministic extraction of user-supplied exact values.
-                # If a source labels a field exact but has lost its payload, do not
-                # let that empty value shadow a complete value from another source.
-                for source in (local_intent, shared_intent):
-                    candidate = source.get(intent_key, "unmentioned")
+                # AI is the primary interpreter of natural-language intent.
+                # Deterministic extraction is a safety/recovery layer: when it has
+                # captured a literal exact value, that original user text wins over
+                # any AI paraphrase. Empty "exact" payloads are never accepted.
+                sources = (item, local_intent, shared_intent)
+                valid_exact = []
+                for source_index, source in enumerate(sources):
+                    candidate = source.get(intent_key, "unmentioned") or "unmentioned"
                     value = source.get(exact_key)
-                    if candidate and candidate != "unmentioned":
-                        if candidate == "exact" and (
-                            value is None or (isinstance(value, str) and not value.strip())
-                        ):
-                            continue
-                        return candidate, value
-                candidate = item.get(intent_key, "unmentioned") or "unmentioned"
-                value = item.get(exact_key)
-                if candidate == "exact" and (
-                    value is None or (isinstance(value, str) and not value.strip())
-                ):
-                    return "unmentioned", None
-                return candidate, value
+                    has_value = (
+                        value is not None
+                        and (not isinstance(value, str) or bool(value.strip()))
+                    )
+                    if candidate == "exact" and has_value:
+                        valid_exact.append((source_index, value))
+
+                if valid_exact:
+                    # Prefer literal text extracted from the user's input (local,
+                    # then shared) over an AI-normalized or shortened copy.
+                    deterministic_values = [entry for entry in valid_exact if entry[0] in (1, 2)]
+                    _, exact_value = (deterministic_values or valid_exact)[0]
+                    return "exact", exact_value
+
+                # With no exact payload, let AI intent lead, then use deterministic
+                # intent as a fallback. This supports ordinary language without
+                # making the user conform to a rigid text template.
+                for source in sources:
+                    candidate = source.get(intent_key, "unmentioned") or "unmentioned"
+                    value = source.get(exact_key)
+                    if candidate == "unmentioned":
+                        continue
+                    if candidate == "exact":
+                        continue
+                    return candidate, value
+                return "unmentioned", None
 
             title_intent, exact_title = _merged_field_intent("title_intent", "exact_title")
             description_intent, exact_description = _merged_field_intent(
