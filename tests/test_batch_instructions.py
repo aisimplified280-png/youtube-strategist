@@ -209,6 +209,34 @@ class TestBatchTextInterpretation(unittest.TestCase):
         exported = list(csv.DictReader(io.StringIO(batch_metadata.build_results_csv(staged))))[0]
         self.assertEqual(exported["proposed_description"], description)
 
+    def test_exact_description_missing_payload_fails_closed_instead_of_staging_blank(self):
+        video_id = VIDEO_ID_1
+        plan = {
+            "raw_text": "exact description missing payload",
+            "videos": [{
+                "reference": video_id,
+                "video_id": video_id,
+                "title_intent": "preserve",
+                "exact_title": None,
+                "description_intent": "exact",
+                "exact_description": None,
+                "tags_intent": "preserve",
+                "exact_tags": None,
+                "fields_requested": ["description"],
+                "original_instruction": "Description: \"\"\"",
+                "errors": [],
+            }],
+        }
+        youtube = FakeYoutube({video_id: make_snippet(video_id)})
+        staged = batch_metadata.prepare_metadata_batch(
+            youtube,
+            batch_metadata.create_batch_from_text_plan(plan),
+        )
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "invalid")
+        self.assertTrue(any("no description text was extracted" in e.lower() for e in row["errors"]))
+        self.assertNotIn("proposed", row)
+
     def test_multiple_videos_independent_instructions(self):
         text = (
             f"1. https://www.youtube.com/watch?v={VIDEO_ID_1}\n"
