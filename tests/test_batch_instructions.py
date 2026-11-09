@@ -1729,6 +1729,33 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         self.assertTrue(stale["blocked"])
         self.assertEqual(youtube._videos.update_calls, [])
 
+    def test_test_and_compare_title_restriction_is_reported_as_blocked(self):
+        row = self._ready_publish_row()
+        rows = [row]
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
+        error = connector.HttpError(
+            resp=MagicMock(status=400),
+            content=(
+                b'{"error":{"code":400,"message":'
+                b'"UPDATE_TITLE_NOT_ALLOWED_DURING_TEST_AND_COMPARE: Precondition check failed."}}'
+            ),
+        )
+
+        with patch.object(connector, "apply_approved_dashboard_proposal", side_effect=error):
+            result = batch_metadata.publish_approved_batch_rows(
+                object(), rows, [row["video_id"]],
+                approved=True,
+                approval_fingerprint=fingerprint,
+                review_revision=1,
+            )
+
+        self.assertEqual(result["blocked_count"], 1)
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(row["status"], "blocked")
+        self.assertIn("Test & Compare", row["result_message"])
+        self.assertIn("description", row["changed_fields"])
+        self.assertEqual(row["proposed"]["description"], "Proposed description")
+
     def test_22_publish_helper_executes_approved_write_and_verifies_all_fields(self):
         vid = self.VIDEOS_4[0]
         youtube = FakeYoutube({vid: make_snippet(vid, title="Original approved title")})
