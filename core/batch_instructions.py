@@ -338,7 +338,9 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
     else:
         # Check triple quotes, or quotes, or multiline block
         desc_triple = re.search(
-            r"(?:change|set|update)?\s*(?:the\s+)?description\s*(?:to|:|=)\s*([\"']{3})([\s\S]*?)\1",
+            # Use an explicit delimiter alternative so triple-quoted blocks are
+            # not confused with the single-quote fallback below.
+            r"(?:change|set|update)?\s*(?:the\s+)?description\s*(?:to|:|=)\s*(?P<quote>\"\"\"|''')([\s\S]*?)(?P=quote)",
             text_content,
             re.IGNORECASE,
         )
@@ -695,12 +697,25 @@ def parse_batch_instructions(
             local_intent = local_context.get("intent", {})
 
             def _merged_field_intent(intent_key: str, exact_key: str):
+                # Prefer deterministic extraction of user-supplied exact values.
+                # If a source labels a field exact but has lost its payload, do not
+                # let that empty value shadow a complete value from another source.
                 for source in (local_intent, shared_intent):
                     candidate = source.get(intent_key, "unmentioned")
+                    value = source.get(exact_key)
                     if candidate and candidate != "unmentioned":
-                        return candidate, source.get(exact_key)
+                        if candidate == "exact" and (
+                            value is None or (isinstance(value, str) and not value.strip())
+                        ):
+                            continue
+                        return candidate, value
                 candidate = item.get(intent_key, "unmentioned") or "unmentioned"
-                return candidate, item.get(exact_key)
+                value = item.get(exact_key)
+                if candidate == "exact" and (
+                    value is None or (isinstance(value, str) and not value.strip())
+                ):
+                    return "unmentioned", None
+                return candidate, value
 
             title_intent, exact_title = _merged_field_intent("title_intent", "exact_title")
             description_intent, exact_description = _merged_field_intent(
