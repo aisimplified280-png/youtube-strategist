@@ -351,7 +351,7 @@ def extract_field_values_and_intents(text: str) -> Dict[str, Any]:
             # A description is a free-form, multi-paragraph field. Do not stop at
             # blank lines: that silently drops most of a description. Stop only
             # when the next explicitly labelled metadata field begins.
-            r"\\bDescription\\s*:\\s*([\\s\\S]+?)(?=\\s*(?:\\bTags\\s*[:=]|\\bTitle\\s*[:=]|\\bNew\\s+title\\s*[:=]|\\bVideo\\s*(?:id|\\d+)\\s*[:=]|$))",
+            r"\bDescription\s*:\s*([\s\S]+?)(?=\s*(?:\bTags\s*[:=]|\bTitle\s*[:=]|\bNew\s+title\s*[:=]|\bVideo\s*(?:id|\d+)\s*[:=]|$))",
             text_content,
             re.IGNORECASE,
         )
