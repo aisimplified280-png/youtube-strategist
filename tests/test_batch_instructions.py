@@ -106,6 +106,42 @@ class TestBatchTextInterpretation(unittest.TestCase):
         self.assertEqual(video["tags_intent"], "exact")
         self.assertEqual(video["exact_tags"], ["AI agents", "LLM", "automation"])
 
+    def test_multiline_description_keeps_blank_paragraphs_and_stages_exactly(self):
+        description = (
+            "See how Google Mixboard can turn rough ideas into visual concepts on an AI canvas. "
+            "This tutorial covers five practical use cases, from concept art to product mockups and presentations.\\n\\n"
+            "What the video shows: • Concept art and inpainting • Product mockups using a logo and 3D object "
+            "• Interior design planning • Fashion styling with mood-board items • Turning a canvas into slides\\n\\n"
+            "The video describes Mixboard as an experimental Google Labs tool powered by Gemini models. "
+            "It also shows style transfer and ways to edit visual ideas on the canvas.\\n\\n"
+            "Try Google Mixboard through Google Labs.\\n\\n"
+            "Chapters: 00:00 Introduction to Google Mixboard 00:31 Concept art and inpainting 02:00 Product mockups"
+            "\\n\\nSubscribe to AI Simplified Lab for clear AI tool tutorials and practical workflows."
+            "\\n\\n#GoogleMixboard #GoogleLabs #AITools #GenerativeAI #AISimplifiedLab"
+        )
+        text = (
+            f"Video 1: https://www.youtube.com/watch?v={VIDEO_ID_1}\\n"
+            "New title: Google Mixboard Tutorial: 5 AI Use Cases for Design\\n"
+            f"Description: {description}\\n"
+            "Tags: Google Mixboard tutorial; Google Labs; Gemini AI; AI tools; AI design; AI Simplified Lab"
+        )
+        plan = batch_instructions.parse_batch_instructions(text)
+        video = plan["videos"][0]
+        self.assertEqual(video["description_intent"], "exact")
+        self.assertEqual(video["exact_description"], description)
+
+        youtube = FakeYoutube({VIDEO_ID_1: make_snippet(VIDEO_ID_1)})
+        staged = batch_metadata.prepare_metadata_batch(
+            youtube,
+            batch_metadata.create_batch_from_text_plan(plan),
+        )
+        row = staged["rows"][0]
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["proposed"]["description"], description)
+        self.assertIn("description", row["changed_fields"])
+        exported = list(csv.DictReader(io.StringIO(batch_metadata.build_results_csv(staged))))[0]
+        self.assertEqual(exported["proposed_description"], description)
+
     def test_multiple_videos_independent_instructions(self):
         text = (
             f"1. https://www.youtube.com/watch?v={VIDEO_ID_1}\n"
