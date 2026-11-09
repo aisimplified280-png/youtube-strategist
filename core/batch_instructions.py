@@ -549,6 +549,7 @@ Parsing rules:
 8. Use "clear" only when the user explicitly asks to remove/empty a field. Triple quotes around a description are delimiters, NOT a request to clear it.
 9. If an exact value is too long or cannot be copied completely, do not invent or summarize it. Set clarification_required and leave that exact value null.
 10. Return a complete plan for every referenced video.
+"""
 
     if groq_key:
         try:
