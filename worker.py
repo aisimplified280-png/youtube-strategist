@@ -76,6 +76,15 @@ def _persist_row(store, job_id: str, owner_key: str, row_record: dict, row: dict
         "video_title": row.get("current_title") or before.get("title"),
         "before_metadata": before,
         "proposed_metadata": proposed,
+        "proposal_details": {
+            "title_angles": row.get("title_angles") or [],
+            "recommended_title": row.get("recommended_title") or proposed.get("title", ""),
+            "recommendation_reason": row.get("recommendation_reason") or "",
+            "rationale": row.get("rationale") or [],
+            "changed_fields": row.get("changed_fields") or [],
+            "result_message": row.get("result_message") or "",
+            "proposed_title": row.get("proposed_title") or proposed.get("title", ""),
+        },
         "errors": row.get("errors") or ([row.get("result_message")] if row.get("result_message") else []),
         "approval_digest": digest,
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -109,12 +118,21 @@ def process_one_job(store, cipher, groq_key, gemini_key):
         for record in records:
             if record.get("status") not in {"queued", "running"}:
                 processed += 1
-                if record.get("status") in {"invalid", "failed"}:
+                if record.get("status") in {"invalid", "failed", "verification_unavailable"}:
                     failed += 1
                 continue
             payload = record.get("input_payload") or {}
             one_batch = {"rows": [payload]}
             try:
+                store._request("PATCH", "batch_job_rows", params={
+                    "id": f"eq.{record['id']}", "job_id": f"eq.{job_id}",
+                    "owner_key": f"eq.{owner_key}",
+                }, payload={
+                    "status": "running",
+                    "attempt_count": int(record.get("attempt_count") or 0) + 1,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }, prefer="return=minimal")
                 prepared = batch_metadata.prepare_metadata_batch(
                     youtube, one_batch, secrets=secrets, ai_generator=generator
                 )
