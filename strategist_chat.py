@@ -979,6 +979,271 @@ def _stage_text_metadata_batch(text, youtube, secrets=None):
     )
 
 
+def _queue_persistent_batch(parsed_batch, instruction, source_type):
+    """Persist parsed batch inputs; AI generation is performed later by the background worker."""
+    store = st.session_state.get("_copilot_persistent_store")
+    conversation_id = st.session_state.get("_copilot_conversation_id")
+    if not st.session_state.get("youtube_credentials_json") and st.session_state.get("youtube_needs_reconnect"):
+        raise RuntimeError("Reconnect YouTube before queuing a batch.")
+    if not store or not conversation_id:
+        raise RuntimeError(
+            "Background batch processing is unavailable because persistent Supabase storage is not connected. "
+            "Reconnect the app after configuring the Supabase URL and service-role secret."
+        )
+    rows = parsed_batch.get("rows") or []
+    if not rows:
+        raise ValueError("No video rows were found in this batch.")
+    if len(rows) > 25:
+        raise ValueError("A batch can contain at most 25 videos. Split this request into smaller batches.")
+    job = store.enqueue_batch(
+        conversation_id,
+        instruction or parsed_batch.get("file_name", "Metadata batch"),
+        parsed_batch,
+        source_type=source_type,
+    )
+    st.session_state["_copilot_active_job_id"] = job["id"]
+    return job
+
+
+def _render_persistent_batch_jobs(youtube, subject=None):
+    """Reload durable jobs and provide a persistent, explicit approval/publish gate."""
+    store = st.session_state.get("_copilot_persistent_store")
+    if not store:
+        return
+    try:
+        jobs = store.list_jobs(limit=20)
+    except Exception as error:
+        st.warning(f"Could not load background batch jobs: {error}")
+        return
+    if not jobs:
+        return
+
+    active_id = st.session_state.get("_copilot_active_job_id")
+    labels = {
+        f"{job.get('created_at', '')[:16].replace('T', ' ')} · "
+        f"{job.get('source_type', 'batch')} · {job.get('status', 'unknown')} · "
+        f"{job.get('total_count', 0)} videos · {str(job.get('id', ''))[:8]}": job.get("id")
+        for job in jobs
+    }
+    default_label = next((label for label, job_id in labels.items() if job_id == active_id), None)
+    with st.expander("Background batch jobs", expanded=bool(default_label)):
+        selected_label = st.selectbox(
+            "Choose a saved batch",
+            list(labels),
+            index=list(labels).index(default_label) if default_label in labels else 0,
+            key="persistent_batch_job_selector",
+        )
+        job_id = labels[selected_label]
+        st.session_state["_copilot_active_job_id"] = job_id
+        job = store.get_job(job_id)
+        if not job:
+            st.warning("This saved batch could not be found.")
+            return
+        status = job.get("status", "unknown")
+        total = int(job.get("total_count") or 0)
+        processed = int(job.get("processed_count") or 0)
+        st.caption(f"{status.replace('_', ' ').title()} · {processed}/{total} processed")
+        if status in {"queued", "running"}:
+            st.progress(min(1.0, processed / max(total, 1)))
+            st.info("This batch is safely queued. You can close the app; return later to review the proposals.")
+            return
+        if status in {"failed", "cancelled"}:
+            if job.get("last_error"):
+                st.error(str(job["last_error"]))
+            st.info("This job did not finish successfully. No YouTube metadata was published. Row-level results are shown below when available.")
+
+        try:
+            records = store.get_job_rows(job_id)
+        except Exception as error:
+            st.error(f"Could not reload the saved proposals: {error}")
+            return
+        rows = []
+        record_by_video = {}
+        for record in records:
+            before = record.get("before_metadata") or {}
+            proposed = record.get("proposed_metadata") or {}
+            details = record.get("proposal_details") or {}
+            row = {
+                "video_id": record.get("video_id") or "",
+                "current_title": record.get("video_title") or before.get("title", ""),
+                "before": before,
+                "proposed": proposed,
+                "status": record.get("status", "failed"),
+                "digest": record.get("approval_digest") or "",
+                "title_angles": details.get("title_angles") or [],
+                "recommended_title": details.get("recommended_title") or proposed.get("title", ""),
+                "recommendation_reason": details.get("recommendation_reason") or "",
+                "rationale": details.get("rationale") or [],
+                "changed_fields": details.get("changed_fields") or [],
+                "errors": record.get("errors") or [],
+                "result_message": details.get("result_message") or "",
+                "attempted": record.get("status") in {"verified", "failed", "verification_unavailable"},
+                "_record_id": record.get("id"),
+                "_record": record,
+            }
+            rows.append(row)
+            record_by_video[row["video_id"]] = record
+
+        ready_count = sum(row["status"] == "ready" for row in rows)
+        verified_count = sum(row["status"] == "verified" for row in rows)
+        failed_count = sum(row["status"] in {"failed", "invalid", "verification_unavailable"} for row in rows)
+        st.write(f"**{ready_count} ready to review** · {verified_count} verified · {failed_count} failed or invalid")
+        if not rows:
+            st.info("This batch has no rows to review.")
+            return
+
+        selected_ids = []
+        for index, row in enumerate(rows, start=1):
+            video_id = row.get("video_id") or row.get("_record_id")
+            title = row.get("before", {}).get("title") or row.get("current_title") or "Untitled video"
+            with st.container(border=True):
+                st.markdown(f"**{index}. {html.escape(str(title))}**")
+                st.caption(row["status"].replace("_", " ").upper())
+                if row["status"] == "ready":
+                    selected = st.checkbox(
+                        "Include this video in the approval",
+                        value=False,
+                        key=f"persist_select_{job_id}_{row['_record_id']}",
+                    )
+                    if selected:
+                        selected_ids.append(video_id)
+                    details = row.get("title_angles") or []
+                    with st.form(key=f"persist_edit_{job_id}_{row['_record_id']}"):
+                        if details:
+                            angle_titles = [str(item.get("title", "")) for item in details if item.get("title")]
+                            angle_labels = [
+                                f"{item.get('label') or item.get('angle', 'Option').title()}: {item.get('title', '')}"
+                                for item in details if item.get("title")
+                            ]
+                            angle_map = dict(zip(angle_labels, angle_titles))
+                            current_title = row.get("proposed", {}).get("title", "")
+                            selected_index = next((i for i, value in enumerate(angle_titles) if value == current_title), 0)
+                            chosen_label = st.radio(
+                                "Title options",
+                                angle_labels,
+                                index=selected_index,
+                                key=f"persist_angle_{job_id}_{row['_record_id']}",
+                            )
+                            chosen_title = angle_map[chosen_label]
+                        else:
+                            chosen_title = row.get("proposed", {}).get("title", "")
+                        if row.get("recommendation_reason"):
+                            st.info(
+                                f"Recommended: **{row.get('recommended_title') or chosen_title}**\n\n"
+                                f"{row['recommendation_reason']}"
+                            )
+                        proposed_description = st.text_area(
+                            "Full description (hashtags included)",
+                            value=row.get("proposed", {}).get("description", ""),
+                            height=150,
+                            key=f"persist_desc_{job_id}_{row['_record_id']}",
+                        )
+                        proposed_tags = st.text_input(
+                            "Separate YouTube tags",
+                            value=", ".join(row.get("proposed", {}).get("tags", [])),
+                            key=f"persist_tags_{job_id}_{row['_record_id']}",
+                        )
+                        if st.form_submit_button("Save proposal edits"):
+                            row["proposed"]["title"] = chosen_title
+                            row["proposed"]["description"] = proposed_description
+                            row["proposed"]["tags"] = [tag.strip() for tag in proposed_tags.split(",") if tag.strip()]
+                            batch_metadata.revalidate_batch_row(row)
+                            proposal_details = dict(row.get("_record", {}).get("proposal_details") or {})
+                            proposal_details.update({
+                                "title_angles": row.get("title_angles") or [],
+                                "recommended_title": row.get("recommended_title") or chosen_title,
+                                "recommendation_reason": row.get("recommendation_reason") or "",
+                                "rationale": row.get("rationale") or [],
+                                "changed_fields": row.get("changed_fields") or [],
+                                "proposed_title": row["proposed"].get("title", ""),
+                            })
+                            store.update_job_row(row["_record_id"], {
+                                "status": row["status"],
+                                "proposed_metadata": row["proposed"],
+                                "approval_digest": row.get("digest", ""),
+                                "proposal_details": proposal_details,
+                                "errors": row.get("errors") or [],
+                                "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                            })
+                            st.success("Saved. Review the updated proposal before approving.")
+                            st.rerun()
+                    st.caption("**Current title:** " + str(row.get("before", {}).get("title", "")))
+                    st.caption("**Proposed title:** " + str(row.get("proposed", {}).get("title", "")))
+                    st.caption("**Current description:** " + str(row.get("before", {}).get("description", ""))[:240])
+                    if row.get("errors"):
+                        st.warning("; ".join(str(error) for error in row["errors"]))
+                else:
+                    if row.get("result_message"):
+                        st.caption(row["result_message"])
+                    if row.get("errors"):
+                        st.caption("; ".join(str(error) for error in row["errors"]))
+
+        if ready_count:
+            if youtube is None:
+                st.warning("Reconnect YouTube before approving and publishing this batch.")
+                return
+            selected_rows = [row for row in rows if row.get("video_id") in set(selected_ids) and row.get("status") == "ready"]
+            if selected_rows:
+                approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(selected_rows, review_revision=1)
+                approved = st.checkbox(
+                    f"I reviewed the exact proposals and approve publishing these {len(selected_rows)} selected videos.",
+                    key=f"persist_approval_{job_id}_{approval_fingerprint}",
+                )
+                if st.button(
+                    f"Approve & Publish {len(selected_rows)} selected videos",
+                    type="primary",
+                    disabled=not approved,
+                    key=f"persist_publish_{job_id}_{approval_fingerprint}",
+                ):
+                    result = batch_metadata.publish_approved_batch_rows(
+                        youtube, rows, selected_ids, approved=approved,
+                        approval_fingerprint=approval_fingerprint, review_revision=1,
+                        audit_callback=_batch_audit_callback,
+                    )
+                    for row in rows:
+                        if row.get("video_id") not in set(selected_ids) or not row.get("attempted"):
+                            continue
+                        details = dict(row.get("_record", {}).get("proposal_details") or {})
+                        details["result_message"] = row.get("result_message") or ""
+                        details["changed_fields"] = row.get("changed_fields") or []
+                        details["proposed_title"] = row.get("proposed", {}).get("title", "")
+                        persisted_status = row.get("status") if row.get("status") in {
+                            "verified", "failed", "no_change", "verification_unavailable"
+                        } else "failed"
+                        store.update_job_row(row["_record_id"], {
+                            "status": persisted_status,
+                            "proposed_metadata": row.get("proposed") or {},
+                            "approval_digest": row.get("digest", ""),
+                            "proposal_details": details,
+                            "errors": row.get("errors") or [],
+                            "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                            "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                        })
+                    refreshed = store.get_job_rows(job_id)
+                    remaining = sum(item.get("status") == "ready" for item in refreshed)
+                    failed_total = sum(item.get("status") in {"failed", "invalid", "verification_unavailable"} for item in refreshed)
+                    store.update_job(job_id, {
+                        "status": "review" if remaining else ("completed" if any(item.get("status") == "verified" for item in refreshed) else "failed"),
+                        "processed_count": sum(item.get("status") not in {"queued", "running"} for item in refreshed),
+                        "failed_count": failed_total,
+                        "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat() if not remaining else None,
+                    })
+                    if result.get("blocked"):
+                        st.error(result.get("message") or "Approval was blocked. Refresh and review again.")
+                    else:
+                        st.success(
+                            f"Publish attempt finished: {result.get('success_count', 0)} verified, "
+                            f"{result.get('failure_count', 0)} not verified. Remaining ready proposals stay saved for review."
+                        )
+                    st.rerun()
+            else:
+                st.caption("Select one or more READY proposals to enable the explicit approval step.")
+        elif verified_count:
+            st.success(f"All completed selections are verified: {verified_count}.")
+        elif failed_count:
+            st.warning("No publishable proposals remain in this job. No further changes were made.")
+
+
 def _is_explicit_video_pairing_request(message: str) -> bool:
     """Return True only when the user explicitly assigns or compares supplied videos."""
     text = str(message or "").casefold()
@@ -1921,7 +2186,10 @@ def render_copilot_chat(
                     except Exception as error:
                         st.error(_apply_error_message(error))
 
-    # Batch review is a chronological conversation step, not a separate workspace.
+    # Durable jobs survive browser sessions and are reloaded from Supabase on every visit.
+    _render_persistent_batch_jobs(youtube, subject)
+
+    # Legacy in-session batch review remains available for batches created by older app versions.
     if batch_active:
         render_batch_metadata_import(youtube, subject, secrets=secrets)
 
@@ -1999,24 +2267,19 @@ def render_copilot_chat(
                 context = None
 
                 uploaded, payload = metadata_files[0]
-                with st.spinner("Checking video ownership and preparing the spreadsheet proposals…"):
-                    staged = _stage_uploaded_metadata_batch(uploaded.name, payload, youtube)
-                staged["file_name"] = uploaded.name
-                staged["review_revision"] = 1
-                staged["is_text_batch"] = False
-                st.session_state["batch_metadata_review"] = staged
-                st.session_state["batch_metadata_payload"] = payload
-                st.session_state["batch_metadata_file_name"] = uploaded.name
-                st.session_state["batch_selected_video_ids"] = []
-                st.session_state["batch_review_index"] = 0
-                st.session_state["batch_flow_step"] = "review"
-                st.session_state["show_batch_metadata"] = True
+                parsed_batch = batch_metadata.parse_metadata_file(uploaded.name, payload)
+                parsed_batch["file_name"] = uploaded.name
+                job = _queue_persistent_batch(
+                    parsed_batch,
+                    instruction or f"Metadata spreadsheet: {uploaded.name}",
+                    "spreadsheet",
+                )
                 _append_history(history, "user", instruction or f"Attached metadata spreadsheet: {uploaded.name}")
                 _append_history(
                     history,
                     "assistant",
-                    f"I prepared {len(staged.get('rows', []))} video proposal(s) from **{uploaded.name}**. "
-                    "Review them below, one video at a time. Nothing has been published.",
+                    f"Queued **{len(parsed_batch.get('rows', []))} videos** from **{uploaded.name}** for background processing "
+                    f"(job {str(job.get('id', ''))[:8]}). You can close the app and return later. Nothing has been published.",
                 )
                 st.rerun()
             except Exception as error:
@@ -2112,47 +2375,22 @@ def render_copilot_chat(
         # Check if user message indicates batch request
         if _is_batch_intent(instruction, urls):
             try:
+                if youtube is None:
+                    raise RuntimeError("Connect YouTube before queuing a metadata batch.")
                 _clear_single_video_editor_state()
                 context = None
 
-                staged = _stage_text_metadata_batch(instruction, youtube, secrets=secrets)
-                all_refs = batch_instructions.extract_video_references_from_text(instruction)
-                requested_vids = {r["video_id"] for r in all_refs if r.get("video_id")}
-                for u in urls:
-                    try:
-                        v = parse_video_id(u)
-                        if v:
-                            requested_vids.add(v)
-                    except Exception:
-                        pass
-
-                staged_rows = staged.get("rows", [])
-                staged_vids = {r.get("video_id") for r in staged_rows if r.get("video_id")}
-                missing_vids = requested_vids - staged_vids
-                invalid_rows = [r for r in staged_rows if r.get("status") == "invalid" or r.get("errors")]
-
-                st.session_state["batch_metadata_review"] = staged
-                st.session_state["batch_text_instructions_input"] = instruction
-                st.session_state["batch_selected_video_ids"] = []
-                st.session_state["batch_review_index"] = 0
-                st.session_state["batch_flow_step"] = "review"
-                st.session_state["show_batch_metadata"] = True
-
-                if missing_vids or invalid_rows:
-                    issue_details = []
-                    if missing_vids:
-                        issue_details.append(f"Missing target videos: {', '.join(sorted(missing_vids))}")
-                    if invalid_rows:
-                        row_errs = [f"{r.get('video_id') or r.get('reference')}: {'; '.join(r.get('errors', []))}" for r in invalid_rows]
-                        issue_details.append(f"Validation errors: {', '.join(row_errs)}")
-                    msg = (
-                        f"Batch staged with issues ({len(staged_rows)} videos identified). "
-                        f"Issues found: {'. '.join(issue_details)}. "
-                        "Review individual proposals below before approving."
-                    )
-                else:
-                    msg = f"Identified batch request for {len(staged_rows)} videos. Proposals are ready below for sequential review."
-
+                channel_videos = connector.get_owner_channel_videos(youtube, limit=200) if youtube else []
+                parsed_plan = batch_instructions.parse_batch_instructions(
+                    instruction, channel_videos=channel_videos, secrets=secrets,
+                )
+                parsed_batch = batch_metadata.create_batch_from_text_plan(parsed_plan)
+                job = _queue_persistent_batch(parsed_batch, instruction, "text")
+                msg = (
+                    f"Queued **{len(parsed_batch.get('rows', []))} videos** for background metadata generation "
+                    f"(job {str(job.get('id', ''))[:8]}). You can close the app; proposals will appear here "
+                    "when processing finishes. Nothing has been published."
+                )
                 _append_history(history, "user", instruction)
                 _append_history(history, "assistant", msg)
                 st.rerun()
