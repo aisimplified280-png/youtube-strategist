@@ -6,6 +6,7 @@ Never send this key to browser/client-side code or log it.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import quote
 
@@ -89,7 +90,7 @@ class SupabasePersistentStore:
         }, prefer="return=representation")
         self._request("PATCH", "copilot_conversations", params={
             "id": f"eq.{conversation_id}", "owner_key": f"eq.{self.owner_key}",
-        }, payload={"updated_at": "now()"}, prefer="return=minimal")
+        }, payload={"updated_at": datetime.now(timezone.utc).isoformat()}, prefer="return=minimal")
         return rows[0] if rows else None
 
     def enqueue_batch(self, conversation_id: Optional[str], instruction: str,
