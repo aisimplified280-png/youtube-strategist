@@ -2375,6 +2375,8 @@ def render_copilot_chat(
         # Check if user message indicates batch request
         if _is_batch_intent(instruction, urls):
             try:
+                if youtube is None:
+                    raise RuntimeError("Connect YouTube before queuing a metadata batch.")
                 _clear_single_video_editor_state()
                 context = None
 
