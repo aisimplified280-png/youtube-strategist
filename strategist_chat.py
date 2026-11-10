@@ -580,9 +580,19 @@ LATEST USER INSTRUCTION:
 
 
 def _append_history(history: List[Dict[str, str]], role: str, content: str):
-    """Append a message to the conversational history buffer."""
+    """Append locally and durably when a verified persistent store is active."""
     history.append({"role": role, "content": content})
     del history[:-MAX_HISTORY_TURNS]
+    store = st.session_state.get("_copilot_persistent_store")
+    conversation_id = st.session_state.get("_copilot_conversation_id")
+    if store and conversation_id:
+        try:
+            store.append_message(conversation_id, role, content)
+        except Exception as error:
+            # Do not lose the in-session interaction if persistence is temporarily unavailable.
+            st.session_state["_copilot_persistence_warning"] = (
+                "Chat history could not be saved to the database. Keep this tab open and retry after reconnecting."
+            )
 
 
 def _youtube_urls_from_message(message: str) -> List[str]:

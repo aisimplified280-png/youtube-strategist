@@ -197,3 +197,54 @@ class OAuthTokenStore:
                 """,
                 (self._app_key, subject_key, purpose, tombstone, time.time()),
             )
+
+
+class SupabaseOAuthTokenStore:
+    """Encrypted OAuth vault backed by Supabase for Streamlit + background workers.
+
+    The ciphertext format intentionally matches OAuthTokenStore so existing
+    state_secret values can decrypt credentials without storing plaintext tokens.
+    """
+    def __init__(self, signing_secret: str, url: str, service_role_key: str, path=None):
+        if not isinstance(signing_secret, str) or len(signing_secret) < 32:
+            raise ValueError("OAuth token storage requires the configured strong signing secret.")
+        from core.persistent_store import SupabasePersistentStore
+        import base64
+        digest = hashlib.sha256(
+            ("ai-simplified-lab-oauth-token-store:" + signing_secret).encode("utf-8")
+        ).digest()
+        self._cipher = Fernet(base64.urlsafe_b64encode(digest))
+        self._store_type = SupabasePersistentStore
+        self.url = url
+        self.service_role_key = service_role_key
+        self.signing_secret = signing_secret
+
+    def _store(self, subject: str):
+        return self._store_type(self.url, self.service_role_key, subject)
+
+    def get_credentials_record(self, subject: str, purpose: str):
+        OAuthTokenStore._validate_purpose(purpose)
+        encrypted = self._store(subject).get_encrypted_credentials(purpose)
+        if encrypted is None:
+            return {"status": "missing", "credentials_json": None}
+        try:
+            cleartext = self._cipher.decrypt(encrypted.encode("ascii")).decode("utf-8")
+            if not isinstance(json.loads(cleartext), dict):
+                raise ValueError("Invalid stored credential payload.")
+            return {"status": "active", "credentials_json": cleartext}
+        except (InvalidToken, UnicodeDecodeError, ValueError, TypeError):
+            return {"status": "invalid", "credentials_json": None}
+
+    def get_credentials_json(self, subject: str, purpose: str):
+        return self.get_credentials_record(subject, purpose)["credentials_json"]
+
+    def save_credentials_json(self, subject: str, purpose: str, credentials_json: str) -> None:
+        OAuthTokenStore._validate_purpose(purpose)
+        if not isinstance(credentials_json, str) or not isinstance(json.loads(credentials_json), dict):
+            raise ValueError("OAuth credentials must be a JSON object.")
+        encrypted = self._cipher.encrypt(credentials_json.encode("utf-8")).decode("ascii")
+        self._store(subject).save_encrypted_credentials(purpose, encrypted)
+
+    def delete_credentials(self, subject: str, purpose: str) -> None:
+        OAuthTokenStore._validate_purpose(purpose)
+        self._store(subject).revoke_credentials(purpose)
