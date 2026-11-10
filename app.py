@@ -131,8 +131,12 @@ def render_app():
     token_store = None
     local_token_store = None
     supabase_cfg = secrets.get("supabase", {}) if hasattr(secrets, "get") else {}
-    supabase_url = str(supabase_cfg.get("url", "")).strip()
-    supabase_service_key = str(supabase_cfg.get("service_role_key", "")).strip()
+    supabase_url = str(supabase_cfg.get("url") or secrets.get("SUPABASE_URL", "")).strip()
+    supabase_service_key = str(
+        supabase_cfg.get("service_role_key")
+        or secrets.get("SUPABASE_SERVICE_ROLE_KEY", "")
+        or secrets.get("service_role_key", "")
+    ).strip()
     persistent_store = None
     if supabase_url and supabase_service_key and subject:
         try:
