@@ -174,18 +174,37 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }, prefer="return=minimal")
 
-        final_status = "review" if any(
-            record.get("status") == "ready" for record in records
-        ) else ("failed" if failed else "completed")
+        # Re-read statuses before finalizing: the owner may have approved
+        # already-ready rows while this worker continued staging later rows.
+        final_rows = store._request("GET", "batch_job_rows", params={
+            "job_id": f"eq.{job_id}", "owner_key": f"eq.{owner_key}",
+            "select": "id,status", "order": "row_number.asc",
+        })
+        final_statuses = [
+            str(item.get("status") or "failed")
+            for item in (final_rows or records)
+        ]
+        pending_count = sum(status in {"queued", "running"} for status in final_statuses)
+        ready_count = sum(status == "ready" for status in final_statuses)
+        processed = len(final_statuses) - pending_count
+        failed = sum(status in {"invalid", "failed", "verification_unavailable"} for status in final_statuses)
+        if pending_count:
+            final_status = "running"
+        elif ready_count:
+            final_status = "review"
+        elif any(status in {"verified", "no_change"} for status in final_statuses):
+            final_status = "completed"
+        else:
+            final_status = "failed" if failed else "completed"
         store._request("PATCH", "batch_jobs", params={
             "id": f"eq.{job_id}", "owner_key": f"eq.{owner_key}",
         }, payload={
             "status": final_status, "processed_count": processed, "failed_count": failed,
             "worker_id": None, "lease_expires_at": None,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None if pending_count else datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, prefer="return=minimal")
-        log.info("Finished batch job %s: %s (%s/%s)", job_id, final_status, processed, len(records))
+        log.info("Finished batch job %s: %s (%s/%s)", job_id, final_status, processed, len(final_statuses))
     except Exception as exc:
         log.exception("Batch job %s failed", job_id)
         store._request("PATCH", "batch_jobs", params={

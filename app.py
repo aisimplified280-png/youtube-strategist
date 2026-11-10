@@ -178,13 +178,28 @@ def render_app():
     # Restore the selected persistent conversation.
     if persistent_store:
         try:
-            conversations = persistent_store.list_conversations()
+            conversations = persistent_store.list_conversations(limit=100)
             known_ids = {item["id"] for item in conversations}
             selected_id = st.session_state.get("_copilot_conversation_id")
             if selected_id not in known_ids:
-                created = persistent_store.create_conversation()
-                selected_id = created["id"]
+                # On a fresh login, resume the conversation holding the newest
+                # queued/running/review batch instead of creating an empty chat.
+                latest_batch = None
+                try:
+                    latest_batch = next((
+                        job for job in persistent_store.list_jobs(limit=50)
+                        if job.get("status") in {"queued", "running", "review"}
+                        and job.get("conversation_id") in known_ids
+                    ), None)
+                except Exception:
+                    latest_batch = None
+                if latest_batch:
+                    selected_id = latest_batch["conversation_id"]
+                else:
+                    created = persistent_store.create_conversation()
+                    selected_id = created["id"]
                 st.session_state["_copilot_conversation_id"] = selected_id
+                st.session_state["_copilot_history_loaded"] = False
                 st.session_state["strategist_chat_history"] = []
             if selected_id and not st.session_state.get("_copilot_history_loaded"):
                 messages = persistent_store.load_messages(selected_id)
