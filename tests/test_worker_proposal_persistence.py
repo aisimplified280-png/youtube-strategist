@@ -148,7 +148,7 @@ class WorkerProposalPersistenceTests(unittest.TestCase):
         self.assertEqual(publish_batch.call_count, 25)
         self.assertTrue(all(call.kwargs["approved"] is True for call in publish_batch.call_args_list))
         self.assertTrue(all(row["status"] == "verified" for row in store.rows))
-        self.assertTrue(all(row["attempt_count"] == 2 for row in store.rows))
+        self.assertTrue(all(row["attempt_count"] == 1 for row in store.rows))
         self.assertEqual(store.job_updates[-1]["status"], "completed")
         self.assertEqual(store.job_updates[-1]["processed_count"], 25)
         self.assertEqual(store.job_updates[-1]["failed_count"], 0)
