@@ -1005,6 +1005,70 @@ def _queue_persistent_batch(parsed_batch, instruction, source_type):
     return job
 
 
+
+def _ready_persistent_batch_rows(rows):
+    """Return only identifiable proposals that are currently eligible for approval."""
+    return [
+        row for row in (rows or [])
+        if isinstance(row, dict)
+        and row.get("status") == "ready"
+        and str(row.get("video_id") or "").strip()
+    ]
+
+
+def _publish_persistent_batch_selection(youtube, store, job_id, rows, selected_ids, approval_fingerprint):
+    """Publish an explicitly approved selection and persist each verified row result."""
+    result = batch_metadata.publish_approved_batch_rows(
+        youtube, rows, selected_ids, approved=True,
+        approval_fingerprint=approval_fingerprint, review_revision=1,
+        audit_callback=_batch_audit_callback,
+    )
+    selected_set = {str(video_id) for video_id in selected_ids}
+    for row in rows:
+        if str(row.get("video_id") or "") not in selected_set or not row.get("attempted"):
+            continue
+        details = dict(row.get("_record", {}).get("proposal_details") or {})
+        details["result_message"] = row.get("result_message") or ""
+        details["changed_fields"] = row.get("changed_fields") or []
+        details["proposed_title"] = row.get("proposed", {}).get("title", "")
+        persisted_status = row.get("status") if row.get("status") in {
+            "verified", "failed", "no_change", "verification_unavailable"
+        } else "failed"
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        store.update_job_row(row["_record_id"], {
+            "status": persisted_status,
+            "proposed_metadata": row.get("proposed") or {},
+            "approval_digest": row.get("digest", ""),
+            "proposal_details": details,
+            "errors": row.get("errors") or [],
+            "finished_at": now,
+            "updated_at": now,
+        })
+
+    refreshed = store.get_job_rows(job_id)
+    remaining = sum(item.get("status") == "ready" for item in refreshed)
+    unfinished = sum(item.get("status") in {"queued", "running"} for item in refreshed)
+    failed_total = sum(item.get("status") in {"failed", "invalid", "verification_unavailable"} for item in refreshed)
+    if unfinished:
+        next_job_status = "running"
+    elif remaining:
+        next_job_status = "review"
+    elif any(item.get("status") in {"verified", "no_change"} for item in refreshed):
+        next_job_status = "completed"
+    else:
+        next_job_status = "failed"
+    store.update_job(job_id, {
+        "status": next_job_status,
+        "processed_count": sum(item.get("status") not in {"queued", "running"} for item in refreshed),
+        "failed_count": failed_total,
+        "finished_at": (
+            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+            if not unfinished else None
+        ),
+    })
+    return result
+
+
 @st.fragment(run_every="5s")
 def _render_persistent_batch_jobs(youtube, subject=None):
     """Reload durable jobs and provide a persistent, explicit approval/publish gate."""
@@ -1231,55 +1295,13 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                 )
                 if st.button(
                     f"Approve & Publish {len(selected_rows)} selected videos",
-                    type="primary",
+                    type="secondary",
                     disabled=not approved,
                     key=f"persist_publish_{job_id}_{approval_fingerprint}",
                 ):
-                    result = batch_metadata.publish_approved_batch_rows(
-                        youtube, rows, selected_ids, approved=approved,
-                        approval_fingerprint=approval_fingerprint, review_revision=1,
-                        audit_callback=_batch_audit_callback,
+                    result = _publish_persistent_batch_selection(
+                        youtube, store, job_id, rows, selected_ids, approval_fingerprint,
                     )
-                    for row in rows:
-                        if row.get("video_id") not in set(selected_ids) or not row.get("attempted"):
-                            continue
-                        details = dict(row.get("_record", {}).get("proposal_details") or {})
-                        details["result_message"] = row.get("result_message") or ""
-                        details["changed_fields"] = row.get("changed_fields") or []
-                        details["proposed_title"] = row.get("proposed", {}).get("title", "")
-                        persisted_status = row.get("status") if row.get("status") in {
-                            "verified", "failed", "no_change", "verification_unavailable"
-                        } else "failed"
-                        store.update_job_row(row["_record_id"], {
-                            "status": persisted_status,
-                            "proposed_metadata": row.get("proposed") or {},
-                            "approval_digest": row.get("digest", ""),
-                            "proposal_details": details,
-                            "errors": row.get("errors") or [],
-                            "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-                            "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-                        })
-                    refreshed = store.get_job_rows(job_id)
-                    remaining = sum(item.get("status") == "ready" for item in refreshed)
-                    unfinished = sum(item.get("status") in {"queued", "running"} for item in refreshed)
-                    failed_total = sum(item.get("status") in {"failed", "invalid", "verification_unavailable"} for item in refreshed)
-                    if unfinished:
-                        next_job_status = "running"
-                    elif remaining:
-                        next_job_status = "review"
-                    elif any(item.get("status") in {"verified", "no_change"} for item in refreshed):
-                        next_job_status = "completed"
-                    else:
-                        next_job_status = "failed"
-                    store.update_job(job_id, {
-                        "status": next_job_status,
-                        "processed_count": sum(item.get("status") not in {"queued", "running"} for item in refreshed),
-                        "failed_count": failed_total,
-                        "finished_at": (
-                            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-                            if not unfinished else None
-                        ),
-                    })
                     if result.get("blocked"):
                         st.error(result.get("message") or "Approval was blocked. Refresh and review again.")
                     else:
@@ -1289,7 +1311,42 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                         )
                     st.rerun(scope="fragment")
             else:
-                st.caption("Select one or more READY proposals to enable the explicit approval step.")
+                st.caption("Select one or more READY proposals to publish only that selection.")
+
+            ready_rows = _ready_persistent_batch_rows(rows)
+            if ready_rows:
+                st.divider()
+                st.caption(
+                    "Or approve every proposal currently marked READY in this batch. "
+                    "Waiting/in-progress rows are not included; failed, invalid, and completed rows are excluded. "
+                    "AI-generated suggestions can still contain mistakes, so review the proposals above first."
+                )
+                all_ready_ids = [str(row["video_id"]) for row in ready_rows]
+                all_approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(
+                    ready_rows, review_revision=1,
+                )
+                approve_all = st.checkbox(
+                    f"I reviewed and approve all {len(ready_rows)} READY proposals for publishing.",
+                    key=f"persist_approve_all_{job_id}_{all_approval_fingerprint}",
+                )
+                if st.button(
+                    f"Approve all & Publish {len(ready_rows)} ready videos",
+                    type="primary",
+                    disabled=not approve_all,
+                    key=f"persist_publish_all_{job_id}_{all_approval_fingerprint}",
+                ):
+                    result = _publish_persistent_batch_selection(
+                        youtube, store, job_id, rows, all_ready_ids, all_approval_fingerprint,
+                    )
+                    if result.get("blocked"):
+                        st.error(result.get("message") or "Approval was blocked. Refresh and review again.")
+                    else:
+                        st.success(
+                            f"Batch publish finished: {result.get('success_count', 0)} verified, "
+                            f"{result.get('failure_count', 0)} not verified. "
+                            "Any remaining ready proposals stay saved for review."
+                        )
+                    st.rerun(scope="fragment")
         elif verified_count:
             st.success(f"All completed selections are verified: {verified_count}.")
         elif failed_count:
