@@ -360,5 +360,18 @@ class StrategistChatTests(unittest.TestCase):
         self.assertEqual(result["title"], "Backup title")
 
 
+    def test_ready_persistent_batch_rows_only_includes_ready_rows_with_video_ids(self):
+        rows = [
+            {"video_id": "ready000001", "status": "ready"},
+            {"video_id": "queued00001", "status": "queued"},
+            {"video_id": "failed00001", "status": "failed"},
+            {"video_id": "verify00001", "status": "verified"},
+            {"video_id": "", "status": "ready"},
+            {"status": "ready"},
+        ]
+        selected = strategist_chat._ready_persistent_batch_rows(rows)
+        self.assertEqual([row["video_id"] for row in selected], ["ready000001"])
+
+
 if __name__ == "__main__":
     unittest.main()
