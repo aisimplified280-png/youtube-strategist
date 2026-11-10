@@ -1027,7 +1027,26 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         for job in jobs
     }
     default_label = next((label for label, job_id in labels.items() if job_id == active_id), None)
-    with st.expander("Background batch jobs", expanded=bool(default_label)):
+    if not default_label:
+        # The newest queued/running/review batch is the default when a fresh
+        # browser session has no in-memory active-job selection.
+        preferred_job = next(
+            (item for item in jobs if item.get("status") in {"queued", "running", "review"}),
+            jobs[0],
+        )
+        default_label = next(
+            (label for label, value in labels.items() if value == preferred_job.get("id")),
+            None,
+        )
+        if default_label:
+            st.session_state["_copilot_active_job_id"] = preferred_job.get("id")
+    default_job = next((item for item in jobs if labels.get(
+        f"{item.get('created_at', '')[:16].replace('T', ' ')} · "
+        f"{item.get('source_type', 'batch')} · {item.get('status', 'unknown')} · "
+        f"{item.get('total_count', 0)} videos · {str(item.get('id', ''))[:8]}"
+    ) == item.get("id")), None)
+    expanded = bool(default_job and default_job.get("status") in {"queued", "running", "review"})
+    with st.expander("Background batch jobs", expanded=expanded):
         selected_label = st.selectbox(
             "Choose a saved batch",
             list(labels),
@@ -1046,8 +1065,11 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         st.caption(f"{status.replace('_', ' ').title()} · {processed}/{total} processed")
         if status in {"queued", "running"}:
             st.progress(min(1.0, processed / max(total, 1)))
-            st.info("This batch is safely queued. You can close the app; return later to review the proposals.")
-            return
+            st.info(
+                "The backend worker is handling this batch in queue order. "
+                "Completed video proposals are saved as they finish and appear below; "
+                "you do not need to wait for all videos."
+            )
         if status in {"failed", "cancelled"}:
             if job.get("last_error"):
                 st.error(str(job["last_error"]))
@@ -1088,7 +1110,13 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         ready_count = sum(row["status"] == "ready" for row in rows)
         verified_count = sum(row["status"] == "verified" for row in rows)
         failed_count = sum(row["status"] in {"failed", "invalid", "verification_unavailable"} for row in rows)
-        st.write(f"**{ready_count} ready to review** · {verified_count} verified · {failed_count} failed or invalid")
+        pending_count = sum(row["status"] in {"queued", "running"} for row in rows)
+        st.write(
+            f"**{ready_count} ready to review** · {pending_count} waiting/in progress · "
+            f"{verified_count} verified · {failed_count} failed or invalid"
+        )
+        if pending_count and ready_count:
+            st.caption("You can review and approve completed rows now while the remaining videos continue processing.")
         if not rows:
             st.info("This batch has no rows to review.")
             return
@@ -1096,7 +1124,7 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         selected_ids = []
         for index, row in enumerate(rows, start=1):
             video_id = row.get("video_id") or row.get("_record_id")
-            title = row.get("before", {}).get("title") or row.get("current_title") or "Untitled video"
+            title = row.get("before", {}).get("title") or row.get("current_title") or f"Video {index} · awaiting title verification"
             with st.container(border=True):
                 st.markdown(f"**{index}. {html.escape(str(title))}**")
                 st.caption(row["status"].replace("_", " ").upper())
@@ -1222,12 +1250,24 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                         })
                     refreshed = store.get_job_rows(job_id)
                     remaining = sum(item.get("status") == "ready" for item in refreshed)
+                    unfinished = sum(item.get("status") in {"queued", "running"} for item in refreshed)
                     failed_total = sum(item.get("status") in {"failed", "invalid", "verification_unavailable"} for item in refreshed)
+                    if unfinished:
+                        next_job_status = "running"
+                    elif remaining:
+                        next_job_status = "review"
+                    elif any(item.get("status") in {"verified", "no_change"} for item in refreshed):
+                        next_job_status = "completed"
+                    else:
+                        next_job_status = "failed"
                     store.update_job(job_id, {
-                        "status": "review" if remaining else ("completed" if any(item.get("status") == "verified" for item in refreshed) else "failed"),
+                        "status": next_job_status,
                         "processed_count": sum(item.get("status") not in {"queued", "running"} for item in refreshed),
                         "failed_count": failed_total,
-                        "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat() if not remaining else None,
+                        "finished_at": (
+                            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+                            if not unfinished else None
+                        ),
                     })
                     if result.get("blocked"):
                         st.error(result.get("message") or "Approval was blocked. Refresh and review again.")
@@ -2280,7 +2320,8 @@ def render_copilot_chat(
                     history,
                     "assistant",
                     f"Queued **{len(parsed_batch.get('rows', []))} videos** from **{uploaded.name}** for background processing "
-                    f"(job {str(job.get('id', ''))[:8]}). You can close the app and return later. Nothing has been published.",
+                    f"(job {str(job.get('id', ''))[:8]}). You can close the app; each completed proposal will appear here "
+                    "as soon as it is staged. Nothing has been published.",
                 )
                 st.rerun()
             except Exception as error:
@@ -2389,8 +2430,8 @@ def render_copilot_chat(
                 job = _queue_persistent_batch(parsed_batch, instruction, "text")
                 msg = (
                     f"Queued **{len(parsed_batch.get('rows', []))} videos** for background metadata generation "
-                    f"(job {str(job.get('id', ''))[:8]}). You can close the app; proposals will appear here "
-                    "when processing finishes. Nothing has been published."
+                    f"(job {str(job.get('id', ''))[:8]}). You can close the app; each completed proposal "
+                    "will appear here as soon as it is staged. Nothing has been published."
                 )
                 _append_history(history, "user", instruction)
                 _append_history(history, "assistant", msg)
