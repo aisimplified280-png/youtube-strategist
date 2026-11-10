@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import worker
 
@@ -55,6 +56,91 @@ class WorkerProposalPersistenceTests(unittest.TestCase):
         self.assertEqual(payload["proposal_details"]["rationale"], ["Specific", "Accurate"])
         self.assertEqual(payload["proposal_details"]["changed_fields"], ["title", "description", "tags"])
 
+
+
+    def test_worker_preloads_snippets_once_for_a_25_video_batch(self):
+        video_ids = [f"V{index:010d}" for index in range(25)]
+        records = [{
+            "id": f"row-{index}",
+            "row_number": index + 1,
+            "video_id": video_id,
+            "status": "queued",
+            "attempt_count": 0,
+            "input_payload": {
+                "video_id": video_id,
+                "status": "parsed",
+                "title": f"Updated title {index + 1}",
+                "exact_title": f"Updated title {index + 1}",
+                "title_intent": "exact",
+                "description_intent": "unmentioned",
+                "tags_intent": "unmentioned",
+                "errors": [],
+            },
+        } for index, video_id in enumerate(video_ids)]
+
+        class BatchStore:
+            def __init__(self, rows):
+                self.rows = rows
+                self.job_updates = []
+
+            def claim_next_job(self, worker_id, lease_seconds=600):
+                return {"id": "job-25", "owner_key": "owner-1"}
+
+            def _request(self, method, path, *, params=None, payload=None, prefer=None):
+                if method == "GET" and path == "batch_job_rows":
+                    return self.rows
+                if method == "PATCH" and path == "batch_job_rows":
+                    row_id = str((params or {}).get("id", "")).removeprefix("eq.")
+                    for row in self.rows:
+                        if str(row["id"]) == row_id:
+                            row.update(payload or {})
+                    return []
+                if method == "PATCH" and path == "batch_jobs":
+                    self.job_updates.append(payload or {})
+                    return []
+                return []
+
+        store = BatchStore(records)
+        cached_snippets = {video_id: {"title": f"Current {index}"} for index, video_id in enumerate(video_ids)}
+
+        def prepared_batch(youtube, one_batch, **kwargs):
+            source = one_batch["rows"][0]
+            return {"rows": [{
+                "status": "ready",
+                "video_id": source["video_id"],
+                "current_title": f"Current {source['video_id']}",
+                "before": {"title": f"Current {source['video_id']}", "description": "", "tags": []},
+                "proposed": {"title": source["exact_title"], "description": "", "tags": []},
+                "proposed_title": source["exact_title"],
+                "digest": f"digest-{source['video_id']}",
+                "changed_fields": ["title"],
+                "errors": [],
+            }]}
+
+        with (
+            patch.object(worker, "_get_owner_credentials", return_value=object()),
+            patch.object(worker, "build", return_value=object()),
+            patch.object(worker, "build_batch_metadata_generator", return_value=object()),
+            patch.object(
+                worker.batch_metadata,
+                "fetch_owner_verified_snippets",
+                return_value=(cached_snippets, {}),
+            ) as fetch_snippets,
+            patch.object(
+                worker.batch_metadata,
+                "prepare_metadata_batch",
+                side_effect=prepared_batch,
+            ) as prepare_batch,
+        ):
+            self.assertTrue(worker.process_one_job(store, object(), "groq-key", "gemini-key"))
+
+        fetch_snippets.assert_called_once()
+        self.assertEqual(len(fetch_snippets.call_args.args[1]), 25)
+        self.assertEqual(prepare_batch.call_count, 25)
+        self.assertTrue(all(row["status"] == "ready" for row in store.rows))
+        self.assertEqual(store.job_updates[-1]["status"], "review")
+        self.assertEqual(store.job_updates[-1]["processed_count"], 25)
+        self.assertEqual(store.job_updates[-1]["failed_count"], 0)
 
 if __name__ == "__main__":
     unittest.main()
