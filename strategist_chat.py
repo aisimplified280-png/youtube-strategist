@@ -1026,16 +1026,27 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         f"{job.get('total_count', 0)} videos · {str(job.get('id', ''))[:8]}": job.get("id")
         for job in jobs
     }
-    default_label = next((label for label, job_id in labels.items() if job_id == active_id), None)
+    latest_listed_job_id = str(jobs[0].get("id") or "")
+    last_seen_latest_job_id = str(st.session_state.get("_copilot_latest_batch_job_seen") or "")
+    if latest_listed_job_id and latest_listed_job_id != last_seen_latest_job_id:
+        # A newly-created backend batch should surface automatically, even if
+        # this browser session was previously focused on an older job.
+        preferred_job = next(
+            (item for item in jobs if item.get("status") in {"queued", "running", "review"}),
+            jobs[0],
+        )
+        active_id = preferred_job.get("id")
+        st.session_state["_copilot_active_job_id"] = active_id
+        st.session_state["_copilot_latest_batch_job_seen"] = latest_listed_job_id
+        st.session_state.pop("persistent_batch_job_selector", None)
+    default_label = next((label for label, job_id in labels.items() if str(job_id) == str(active_id)), None)
     if not default_label:
-        # The newest queued/running/review batch is the default when a fresh
-        # browser session has no in-memory active-job selection.
         preferred_job = next(
             (item for item in jobs if item.get("status") in {"queued", "running", "review"}),
             jobs[0],
         )
         default_label = next(
-            (label for label, value in labels.items() if value == preferred_job.get("id")),
+            (label for label, value in labels.items() if str(value) == str(preferred_job.get("id"))),
             None,
         )
         if default_label:
