@@ -138,7 +138,7 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                 )
                 row = (prepared.get("rows") or [{}])[0]
                 _persist_row(store, job_id, owner_key, record, row)
-                if row.get("status") in {"invalid", "failed"}:
+                if row.get("status") in {"invalid", "failed", "verification_unavailable"}:
                     failed += 1
             except Exception as exc:
                 failed += 1
@@ -147,6 +147,7 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                 }, payload={
                     "status": "failed", "errors": [f"{type(exc).__name__}: {str(exc)[:500]}"],
                     "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 }, prefer="return=minimal")
             processed += 1
             store._request("PATCH", "batch_jobs", params={
