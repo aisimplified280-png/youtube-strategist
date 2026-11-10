@@ -696,17 +696,11 @@ def publish_approved_batch_rows(
     return result
 
 
-def prepare_metadata_batch(
-    youtube,
-    parsed_batch: Dict[str, Any],
-    secrets: Optional[Dict[str, Any]] = None,
-    ai_generator: Optional[Any] = None,
-) -> Dict[str, Any]:
-    """Fetch owner-verified live snippets in API batches and stage immutable row proposals."""
+def fetch_owner_verified_snippets(youtube, rows: List[Dict[str, Any]]):
+    """Fetch each parsed video's live snippet once, in YouTube API chunks of at most 50."""
     if youtube is None:
         raise RuntimeError("Connect the verified YouTube owner account before reviewing metadata changes.")
 
-    rows = parsed_batch.get("rows", [])
     valid_ids = list(dict.fromkeys(
         row["video_id"] for row in rows
         if row.get("status") == "parsed" and row.get("video_id")
@@ -737,6 +731,30 @@ def prepare_metadata_batch(
             message = f"Could not load current YouTube metadata: {type(error).__name__}: {error}"
             for video_id in chunk:
                 fetch_errors[video_id] = message
+
+    return snippets, fetch_errors
+
+
+def prepare_metadata_batch(
+    youtube,
+    parsed_batch: Dict[str, Any],
+    secrets: Optional[Dict[str, Any]] = None,
+    ai_generator: Optional[Any] = None,
+    preloaded_snippets: Optional[Dict[str, Dict[str, Any]]] = None,
+    preloaded_fetch_errors: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Fetch owner-verified live snippets in API batches and stage immutable row proposals."""
+    if youtube is None:
+        raise RuntimeError("Connect the verified YouTube owner account before reviewing metadata changes.")
+
+    rows = parsed_batch.get("rows", [])
+    if preloaded_snippets is None or preloaded_fetch_errors is None:
+        snippets, fetch_errors = fetch_owner_verified_snippets(youtube, rows)
+    else:
+        # The worker can reuse one batched YouTube snapshot while preserving row-level
+        # processing and progress updates.
+        snippets = preloaded_snippets
+        fetch_errors = preloaded_fetch_errors
 
     for row in rows:
         if row.get("status") != "parsed":

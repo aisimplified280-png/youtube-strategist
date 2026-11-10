@@ -121,7 +121,8 @@ class SupabasePersistentStore:
 
     def list_jobs(self, limit: int = 30) -> list[Dict[str, Any]]:
         return self._request("GET", "batch_jobs", params={
-            "owner_key": f"eq.{self.owner_key}", "select": "*",
+            "owner_key": f"eq.{self.owner_key}",
+            "select": "id,created_at,source_type,status,total_count,processed_count,failed_count,last_error,started_at,finished_at,updated_at",
             "order": "created_at.desc", "limit": str(max(1, min(int(limit), 100))),
         })
 
@@ -135,7 +136,8 @@ class SupabasePersistentStore:
     def get_job_rows(self, job_id: str) -> list[Dict[str, Any]]:
         return self._request("GET", "batch_job_rows", params={
             "job_id": f"eq.{job_id}", "owner_key": f"eq.{self.owner_key}",
-            "select": "*", "order": "row_number.asc",
+            "select": "id,video_id,video_title,status,before_metadata,proposed_metadata,proposal_details,approval_digest,errors,attempt_count",
+            "order": "row_number.asc",
         })
 
     def update_job(self, job_id: str, values: Dict[str, Any]):

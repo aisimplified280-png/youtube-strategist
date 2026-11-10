@@ -121,6 +121,59 @@ class BatchMetadataTests(unittest.TestCase):
         self.assertEqual(row["title"], "Excel title")
         self.assertEqual(row["tags"], ["one", "two"])
 
+    def test_25_video_batch_fetches_owner_snippets_in_one_youtube_request(self):
+        video_ids = [f"V{index:010d}" for index in range(25)]
+        rows = [{
+            "row_number": index + 1,
+            "video_id": video_id,
+            "status": "parsed",
+            "title": f"Updated title {index + 1}",
+            "exact_title": f"Updated title {index + 1}",
+            "title_intent": "exact",
+            "description_intent": "unmentioned",
+            "tags_intent": "unmentioned",
+            "errors": [],
+        } for index, video_id in enumerate(video_ids)]
+        snippets = {
+            video_id: make_snippet(title=f"Current title {index + 1}")
+            for index, video_id in enumerate(video_ids)
+        }
+        youtube = FakeYoutube(snippets)
+
+        staged = batch_metadata.prepare_metadata_batch(youtube, {"rows": rows})
+
+        self.assertEqual(len(staged["rows"]), 25)
+        self.assertTrue(all(row["status"] == "ready" for row in staged["rows"]))
+        self.assertEqual(len(youtube._videos.calls), 1)
+        self.assertEqual(
+            youtube._videos.calls[0]["id"].split(","),
+            video_ids,
+        )
+
+    def test_prepare_batch_reuses_preloaded_owner_verified_snippets(self):
+        rows = [{
+            "video_id": VIDEO_ID,
+            "status": "parsed",
+            "title": "Updated title",
+            "exact_title": "Updated title",
+            "title_intent": "exact",
+            "description_intent": "unmentioned",
+            "tags_intent": "unmentioned",
+            "errors": [],
+        }]
+        youtube = FakeYoutube({VIDEO_ID: make_snippet()})
+        snippets, fetch_errors = batch_metadata.fetch_owner_verified_snippets(youtube, rows)
+
+        staged = batch_metadata.prepare_metadata_batch(
+            youtube,
+            {"rows": rows},
+            preloaded_snippets=snippets,
+            preloaded_fetch_errors=fetch_errors,
+        )
+
+        self.assertEqual(staged["rows"][0]["status"], "ready")
+        self.assertEqual(len(youtube._videos.calls), 1)
+
     def test_prepare_batch_owner_verifies_and_preserves_blank_fields(self):
         youtube = FakeYoutube({VIDEO_ID: make_snippet()})
         payload = f"video_id,title,description,tags\n{VIDEO_ID},Updated title,,\n".encode()
