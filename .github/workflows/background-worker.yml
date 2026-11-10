@@ -1,6 +1,13 @@
 name: Background metadata worker
 
 on:
+  # The weekly scan writes this marker after it queues proposals. That push
+  # starts the worker immediately instead of relying only on cron polling.
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/worker-trigger.json"
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
