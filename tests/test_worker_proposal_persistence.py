@@ -120,7 +120,7 @@ class WorkerProposalPersistenceTests(unittest.TestCase):
         with (
             patch.object(worker, "_get_owner_credentials", return_value=object()),
             patch.object(worker, "build", return_value=object()),
-            patch.object(worker, "build_batch_metadata_generator", return_value=object()),
+            patch.object(worker, "build_batch_metadata_generator", return_value=None),
             patch.object(
                 worker.batch_metadata,
                 "fetch_owner_verified_snippets",
@@ -132,12 +132,13 @@ class WorkerProposalPersistenceTests(unittest.TestCase):
                 side_effect=prepared_batch,
             ) as prepare_batch,
         ):
-            self.assertTrue(worker.process_one_job(store, object(), "groq-key", "gemini-key"))
+            self.assertTrue(worker.process_one_job(store, object(), "", ""))
 
         fetch_snippets.assert_called_once()
         self.assertEqual(len(fetch_snippets.call_args.args[1]), 25)
         self.assertEqual(prepare_batch.call_count, 25)
         self.assertTrue(all(row["status"] == "ready" for row in store.rows))
+        self.assertTrue(all(row["attempt_count"] == 1 for row in store.rows))
         self.assertEqual(store.job_updates[-1]["status"], "review")
         self.assertEqual(store.job_updates[-1]["processed_count"], 25)
         self.assertEqual(store.job_updates[-1]["failed_count"], 0)
