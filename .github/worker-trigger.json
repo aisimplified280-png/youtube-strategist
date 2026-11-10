@@ -1,6 +1,7 @@
 {
   "purpose": "A push update to this marker on main starts the background metadata worker.",
-  "trigger": "initial-activation",
-  "created_at": "2026-11-10T12:25:00Z",
+  "trigger": "real-test-batch",
+  "batch_job_id": "5dbbf057-9164-44f3-a8ab-7c811ba9d25c",
+  "created_at": "2026-11-10T12:31:32Z",
   "credentials_included": false
 }
