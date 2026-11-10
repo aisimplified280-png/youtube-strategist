@@ -3,7 +3,7 @@
 Required environment:
 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, YOUTUBE_STRATEGIST_STATE_SECRET,
 GROQ_API_KEY (preferred), GEMINI_API_KEY (fallback).
-This worker ONLY prepares proposals. It never publishes metadata.
+This worker prepares metadata proposals and auto-publishes READY rows through the owner-authorized YouTube Data API connection. It never uses ChannelzIQ for writes.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def _persist_row(store, job_id: str, owner_key: str, row_record: dict, row: dict
         "owner_key": f"eq.{owner_key}",
     }, payload={
         "status": status if status in {
-            "ready", "invalid", "no_change", "failed", "verification_unavailable"
+            "ready", "verified", "invalid", "no_change", "failed", "verification_unavailable"
         } else "failed",
         "video_title": row.get("current_title") or before.get("title"),
         "before_metadata": before,
@@ -150,6 +150,27 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                     preloaded_fetch_errors=preloaded_fetch_errors,
                 )
                 row = (prepared.get("rows") or [{}])[0]
+                # The owner has explicitly enabled automatic publishing for queued
+                # app batches. Only READY, owner-verified proposals are eligible.
+                # The app's direct YouTube Data API publisher re-checks the live
+                # snapshot, validates the exact proposal digest, writes metadata,
+                # and performs a fresh read-back before reporting VERIFIED.
+                if row.get("status") == "ready":
+                    approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(
+                        [row], review_revision=1
+                    )
+                    publish_result = batch_metadata.publish_approved_batch_rows(
+                        youtube,
+                        [row],
+                        [row.get("video_id")],
+                        approved=True,
+                        approval_fingerprint=approval_fingerprint,
+                        review_revision=1,
+                    )
+                    if row.get("status") != "verified":
+                        row["result_message"] = row.get("result_message") or publish_result.get(
+                            "message", "Automatic YouTube publishing did not complete verification."
+                        )
                 _persist_row(store, job_id, owner_key, record, row)
                 record["status"] = row.get("status") or "failed"
                 if record["status"] in {"invalid", "failed", "verification_unavailable"}:
