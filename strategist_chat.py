@@ -1040,11 +1040,11 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         )
         if default_label:
             st.session_state["_copilot_active_job_id"] = preferred_job.get("id")
-    default_job = next((item for item in jobs if labels.get(
-        f"{item.get('created_at', '')[:16].replace('T', ' ')} · "
-        f"{item.get('source_type', 'batch')} · {item.get('status', 'unknown')} · "
-        f"{item.get('total_count', 0)} videos · {str(item.get('id', ''))[:8]}"
-    ) == item.get("id")), None)
+    selected_default_id = labels.get(default_label) if default_label else None
+    default_job = next(
+        (item for item in jobs if str(item.get("id")) == str(selected_default_id)),
+        None,
+    )
     expanded = bool(default_job and default_job.get("status") in {"queued", "running", "review"})
     with st.expander("Background batch jobs", expanded=expanded):
         selected_label = st.selectbox(
