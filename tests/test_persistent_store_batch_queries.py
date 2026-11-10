@@ -28,6 +28,7 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         selected = request.call_args.kwargs["params"]["select"]
         self.assertIn("status", selected)
         self.assertIn("processed_count", selected)
+        self.assertIn("conversation_id", selected)
         self.assertNotIn("input_payload", selected)
         self.assertNotIn("instruction_text", selected)
 
