@@ -1128,11 +1128,6 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                             chosen_title = angle_map[chosen_label]
                         else:
                             chosen_title = row.get("proposed", {}).get("title", "")
-                        final_title = st.text_input(
-                            "Final title",
-                            value=chosen_title,
-                            key=f"persist_final_title_{job_id}_{row['_record_id']}",
-                        )
                         if row.get("recommendation_reason"):
                             st.info(
                                 f"Recommended: **{row.get('recommended_title') or chosen_title}**\n\n"
@@ -1150,7 +1145,7 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                             key=f"persist_tags_{job_id}_{row['_record_id']}",
                         )
                         if st.form_submit_button("Save proposal edits"):
-                            row["proposed"]["title"] = final_title.strip()
+                            row["proposed"]["title"] = chosen_title
                             row["proposed"]["description"] = proposed_description
                             row["proposed"]["tags"] = [tag.strip() for tag in proposed_tags.split(",") if tag.strip()]
                             batch_metadata.revalidate_batch_row(row)
