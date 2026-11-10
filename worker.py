@@ -87,6 +87,7 @@ def _persist_row(store, job_id: str, owner_key: str, row_record: dict, row: dict
         },
         "errors": row.get("errors") or ([row.get("result_message")] if row.get("result_message") else []),
         "approval_digest": digest,
+        "attempt_count": int(row_record.get("attempt_count") or 0) + 1,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }, prefer="return=minimal")
@@ -140,15 +141,6 @@ def process_one_job(store, cipher, groq_key, gemini_key):
             payload = record.get("input_payload") or {}
             one_batch = {"rows": [payload]}
             try:
-                store._request("PATCH", "batch_job_rows", params={
-                    "id": f"eq.{record['id']}", "job_id": f"eq.{job_id}",
-                    "owner_key": f"eq.{owner_key}",
-                }, payload={
-                    "status": "running",
-                    "attempt_count": int(record.get("attempt_count") or 0) + 1,
-                    "started_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }, prefer="return=minimal")
                 prepared = batch_metadata.prepare_metadata_batch(
                     youtube,
                     one_batch,
@@ -169,6 +161,7 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                     "id": f"eq.{record['id']}", "owner_key": f"eq.{owner_key}",
                 }, payload={
                     "status": "failed", "errors": [f"{type(exc).__name__}: {str(exc)[:500]}"],
+                    "attempt_count": int(record.get("attempt_count") or 0) + 1,
                     "finished_at": datetime.now(timezone.utc).isoformat(),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }, prefer="return=minimal")
@@ -211,8 +204,6 @@ def main():
     state_secret = os.environ["YOUTUBE_STRATEGIST_STATE_SECRET"]
     groq_key = os.getenv("GROQ_API_KEY", "")
     gemini_key = os.getenv("GEMINI_API_KEY", "")
-    if not groq_key and not gemini_key:
-        raise RuntimeError("Configure GROQ_API_KEY or GEMINI_API_KEY for metadata generation.")
     store = SupabasePersistentStore.worker_client(url, key)
     cipher = _cipher(state_secret)
     max_jobs = int(os.getenv("WORKER_MAX_JOBS", "10"))
