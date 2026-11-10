@@ -1,0 +1,6 @@
+{
+  "purpose": "A push update to this marker on main starts the background metadata worker.",
+  "trigger": "initial-activation",
+  "created_at": "2026-11-10T12:25:00Z",
+  "credentials_included": false
+}
