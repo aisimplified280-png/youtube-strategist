@@ -983,6 +983,8 @@ def _queue_persistent_batch(parsed_batch, instruction, source_type):
     """Persist parsed batch inputs; AI generation is performed later by the background worker."""
     store = st.session_state.get("_copilot_persistent_store")
     conversation_id = st.session_state.get("_copilot_conversation_id")
+    if not st.session_state.get("youtube_credentials_json") and st.session_state.get("youtube_needs_reconnect"):
+        raise RuntimeError("Reconnect YouTube before queuing a batch.")
     if not store or not conversation_id:
         raise RuntimeError(
             "Background batch processing is unavailable because persistent Supabase storage is not connected. "
@@ -1147,7 +1149,8 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                             row["proposed"]["description"] = proposed_description
                             row["proposed"]["tags"] = [tag.strip() for tag in proposed_tags.split(",") if tag.strip()]
                             batch_metadata.revalidate_batch_row(row)
-                            details.update({
+                            proposal_details = dict(row.get("_record", {}).get("proposal_details") or {})
+                            proposal_details.update({
                                 "title_angles": row.get("title_angles") or [],
                                 "recommended_title": row.get("recommended_title") or chosen_title,
                                 "recommendation_reason": row.get("recommendation_reason") or "",
@@ -1159,7 +1162,7 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                                 "status": row["status"],
                                 "proposed_metadata": row["proposed"],
                                 "approval_digest": row.get("digest", ""),
-                                "proposal_details": details,
+                                "proposal_details": proposal_details,
                                 "errors": row.get("errors") or [],
                             })
                             st.success("Saved. Review the updated proposal before approving.")
