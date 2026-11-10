@@ -111,8 +111,24 @@ def process_one_job(store, cipher, groq_key, gemini_key):
         generator = build_batch_metadata_generator(secrets, youtube=youtube)
         records = store._request("GET", "batch_job_rows", params={
             "job_id": f"eq.{job_id}", "owner_key": f"eq.{owner_key}",
-            "select": "*", "order": "row_number.asc",
+            "select": "id,row_number,video_id,video_title,status,input_payload,attempt_count",
+            "order": "row_number.asc",
         })
+        pending_payloads = [
+            record.get("input_payload") or {}
+            for record in records
+            if record.get("status") in {"queued", "running"}
+        ]
+        preloaded_snippets, preloaded_fetch_errors = batch_metadata.fetch_owner_verified_snippets(
+            youtube, pending_payloads
+        )
+        log.info(
+            "Preloaded YouTube snippets for %s video rows (%s owner-verified, %s rejected)",
+            len(pending_payloads),
+            len(preloaded_snippets),
+            len(preloaded_fetch_errors),
+        )
+
         processed = 0
         failed = 0
         for record in records:
@@ -134,14 +150,21 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }, prefer="return=minimal")
                 prepared = batch_metadata.prepare_metadata_batch(
-                    youtube, one_batch, secrets=secrets, ai_generator=generator
+                    youtube,
+                    one_batch,
+                    secrets=secrets,
+                    ai_generator=generator,
+                    preloaded_snippets=preloaded_snippets,
+                    preloaded_fetch_errors=preloaded_fetch_errors,
                 )
                 row = (prepared.get("rows") or [{}])[0]
                 _persist_row(store, job_id, owner_key, record, row)
-                if row.get("status") in {"invalid", "failed", "verification_unavailable"}:
+                record["status"] = row.get("status") or "failed"
+                if record["status"] in {"invalid", "failed", "verification_unavailable"}:
                     failed += 1
             except Exception as exc:
                 failed += 1
+                record["status"] = "failed"
                 store._request("PATCH", "batch_job_rows", params={
                     "id": f"eq.{record['id']}", "owner_key": f"eq.{owner_key}",
                 }, payload={
@@ -158,10 +181,9 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }, prefer="return=minimal")
 
-        final_status = "review" if any(r.get("status") == "ready" for r in store._request(
-            "GET", "batch_job_rows", params={"job_id": f"eq.{job_id}", "owner_key": f"eq.{owner_key}",
-            "select": "status"}
-        )) else ("failed" if failed else "completed")
+        final_status = "review" if any(
+            record.get("status") == "ready" for record in records
+        ) else ("failed" if failed else "completed")
         store._request("PATCH", "batch_jobs", params={
             "id": f"eq.{job_id}", "owner_key": f"eq.{owner_key}",
         }, payload={
