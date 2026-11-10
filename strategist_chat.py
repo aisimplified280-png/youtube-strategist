@@ -1050,8 +1050,7 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         if status in {"failed", "cancelled"}:
             if job.get("last_error"):
                 st.error(str(job["last_error"]))
-            st.info("This job did not finish successfully. No YouTube metadata was published.")
-            return
+            st.info("This job did not finish successfully. No YouTube metadata was published. Row-level results are shown below when available.")
 
         try:
             records = store.get_job_rows(job_id)
