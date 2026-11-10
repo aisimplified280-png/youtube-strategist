@@ -1005,6 +1005,7 @@ def _queue_persistent_batch(parsed_batch, instruction, source_type):
     return job
 
 
+@st.fragment(run_every="5s")
 def _render_persistent_batch_jobs(youtube, subject=None):
     """Reload durable jobs and provide a persistent, explicit approval/publish gate."""
     store = st.session_state.get("_copilot_persistent_store")
@@ -1035,7 +1036,7 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         )
         job_id = labels[selected_label]
         st.session_state["_copilot_active_job_id"] = job_id
-        job = store.get_job(job_id)
+        job = next((item for item in jobs if str(item.get("id")) == str(job_id)), None)
         if not job:
             st.warning("This saved batch could not be found.")
             return
@@ -1166,7 +1167,7 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                                 "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
                             })
                             st.success("Saved. Review the updated proposal before approving.")
-                            st.rerun()
+                            st.rerun(scope="fragment")
                     st.caption("**Current title:** " + str(row.get("before", {}).get("title", "")))
                     st.caption("**Proposed title:** " + str(row.get("proposed", {}).get("title", "")))
                     st.caption("**Current description:** " + str(row.get("before", {}).get("description", ""))[:240])
@@ -1235,7 +1236,7 @@ def _render_persistent_batch_jobs(youtube, subject=None):
                             f"Publish attempt finished: {result.get('success_count', 0)} verified, "
                             f"{result.get('failure_count', 0)} not verified. Remaining ready proposals stay saved for review."
                         )
-                    st.rerun()
+                    st.rerun(scope="fragment")
             else:
                 st.caption("Select one or more READY proposals to enable the explicit approval step.")
         elif verified_count:
