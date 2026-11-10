@@ -18,6 +18,7 @@ from core.oauth import test_or_refresh_credentials, build_flow, YOUTUBE_SCOPES, 
 from ui.theme import inject_theme
 import oauth_token_store
 import dashboard_security
+from core.persistent_store import SupabasePersistentStore
 from strategist_chat import render_copilot_chat
 
 
@@ -128,15 +129,87 @@ def render_app():
     # Vault & Token Management
     state_secret = secrets.get("security", {}).get("state_secret", "")
     token_store = None
+    local_token_store = None
+    supabase_cfg = secrets.get("supabase", {}) if hasattr(secrets, "get") else {}
+    supabase_url = str(supabase_cfg.get("url", "")).strip()
+    supabase_service_key = str(supabase_cfg.get("service_role_key", "")).strip()
+    persistent_store = None
+    if supabase_url and supabase_service_key and subject:
+        try:
+            persistent_store = SupabasePersistentStore(supabase_url, supabase_service_key, subject)
+            st.session_state["_copilot_persistent_store"] = persistent_store
+        except Exception as error:
+            st.session_state.pop("_copilot_persistent_store", None)
+            st.warning(f"Persistent history is temporarily unavailable: {error}")
+    else:
+        st.session_state.pop("_copilot_persistent_store", None)
+
     if len(state_secret) >= 32:
         try:
-            token_store = oauth_token_store.OAuthTokenStore(state_secret)
+            local_token_store = oauth_token_store.OAuthTokenStore(state_secret)
+            if supabase_url and supabase_service_key:
+                token_store = oauth_token_store.SupabaseOAuthTokenStore(
+                    state_secret, supabase_url, supabase_service_key
+                )
+            else:
+                token_store = local_token_store
         except Exception:
-            token_store = None
+            token_store = local_token_store
+
+    # Migrate the existing encrypted local OAuth grant into the shared vault once.
+    if subject and token_store and local_token_store and token_store is not local_token_store:
+        for purpose in ("youtube", "memory"):
+            try:
+                if token_store.get_credentials_record(subject, purpose).get("status") == "missing":
+                    local_record = local_token_store.get_credentials_record(subject, purpose)
+                    if local_record.get("status") == "active":
+                        token_store.save_credentials_json(subject, purpose, local_record["credentials_json"])
+            except Exception:
+                pass
 
     # Handle incoming OAuth callback
     if subject and token_store:
         _handle_oauth_callback(secrets, subject, token_store)
+
+    # Restore the selected persistent conversation.
+    if persistent_store:
+        try:
+            conversations = persistent_store.list_conversations()
+            known_ids = {item["id"] for item in conversations}
+            selected_id = st.session_state.get("_copilot_conversation_id")
+            if selected_id not in known_ids:
+                created = persistent_store.create_conversation()
+                selected_id = created["id"]
+                st.session_state["_copilot_conversation_id"] = selected_id
+                st.session_state["strategist_chat_history"] = []
+            if selected_id and not st.session_state.get("_copilot_history_loaded"):
+                messages = persistent_store.load_messages(selected_id)
+                st.session_state["strategist_chat_history"] = [
+                    {"role": row["role"], "content": row["content"]} for row in messages
+                ]
+                st.session_state["_copilot_history_loaded"] = True
+            if conversations:
+                with st.sidebar:
+                    st.markdown("### Chat history")
+                    labels = {f"{item['title']} · {item['updated_at'][:10]}": item["id"] for item in conversations}
+                    current_label = next((label for label, cid in labels.items() if cid == selected_id), None)
+                    chosen_label = st.selectbox(
+                        "Previous conversations", list(labels), index=list(labels).index(current_label) if current_label in labels else 0,
+                        key="copilot_history_selector",
+                    )
+                    chosen_id = labels[chosen_label]
+                    if chosen_id != selected_id:
+                        st.session_state["_copilot_conversation_id"] = chosen_id
+                        st.session_state["_copilot_history_loaded"] = False
+                        st.session_state["strategist_chat_history"] = []
+                        for key in ("strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
+                                    "batch_metadata_review", "batch_metadata_payload", "batch_flow_step"):
+                            st.session_state.pop(key, None)
+                        st.rerun()
+        except Exception as error:
+            st.session_state["_copilot_persistence_warning"] = (
+                "Could not load saved chat history. Your current session remains available."
+            )
 
     # Hydrate stored credentials
     yt_creds = None
@@ -215,6 +288,13 @@ def render_app():
                 "batch_flow_step", "show_batch_metadata",
             ):
                 st.session_state.pop(key, None)
+            if persistent_store:
+                try:
+                    created = persistent_store.create_conversation()
+                    st.session_state["_copilot_conversation_id"] = created["id"]
+                    st.session_state["_copilot_history_loaded"] = True
+                except Exception as error:
+                    st.warning(f"Could not create a saved conversation: {error}")
             st.rerun()
 
     with col_youtube:
