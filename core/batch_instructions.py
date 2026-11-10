@@ -708,40 +708,54 @@ def parse_batch_instructions(
             local_intent = local_context.get("intent", {})
 
             def _merged_field_intent(intent_key: str, exact_key: str):
-                # AI is the primary interpreter of natural-language intent.
-                # Deterministic extraction is a safety/recovery layer: when it has
-                # captured a literal exact value, that original user text wins over
-                # any AI paraphrase. Empty "exact" payloads are never accepted.
-                sources = (item, local_intent, shared_intent)
-                valid_exact = []
-                for source_index, source in enumerate(sources):
-                    candidate = source.get(intent_key, "unmentioned") or "unmentioned"
-                    value = source.get(exact_key)
-                    has_value = (
-                        value is not None
-                        and (not isinstance(value, str) or bool(value.strip()))
+                # Deterministic extraction only overrides the model when it found
+                # an explicit field instruction or a literal value in the user's
+                # text. This keeps AI-first natural-language interpretation while
+                # preventing a model from mistaking a "Current title:" context
+                # value for an exact replacement.
+                def has_value(value):
+                    return value is not None and (
+                        not isinstance(value, str) or bool(value.strip())
                     )
-                    if candidate == "exact" and has_value:
-                        valid_exact.append((source_index, value))
 
-                if valid_exact:
-                    # Prefer literal text extracted from the user's input (local,
-                    # then shared) over an AI-normalized or shortened copy.
-                    deterministic_values = [entry for entry in valid_exact if entry[0] in (1, 2)]
-                    _, exact_value = (deterministic_values or valid_exact)[0]
-                    return "exact", exact_value
-
-                # With no exact payload, let AI intent lead, then use deterministic
-                # intent as a fallback. This supports ordinary language without
-                # making the user conform to a rigid text template.
-                for source in sources:
+                # Explicit literal values in the user's text have highest
+                # precedence: video-local overrides shared instructions.
+                for source in (local_intent, shared_intent):
                     candidate = source.get(intent_key, "unmentioned") or "unmentioned"
                     value = source.get(exact_key)
-                    if candidate == "unmentioned":
-                        continue
-                    if candidate == "exact":
-                        continue
-                    return candidate, value
+                    if candidate == "exact" and has_value(value):
+                        return "exact", value
+
+                ai_candidate = item.get(intent_key, "unmentioned") or "unmentioned"
+                ai_value = item.get(exact_key)
+
+                # The AI sometimes labels the current title as an exact title.
+                # It is context, not a replacement, when it matches the title
+                # extracted from a "Current title:" line for this video.
+                ai_exact_is_context = (
+                    intent_key == "title_intent"
+                    and ai_candidate == "exact"
+                    and has_value(ai_value)
+                    and str(ai_value).strip() == str(local_intent.get("context_title") or "").strip()
+                )
+
+                # Clear deterministic intent cues (optimize/preserve/clear) must
+                # beat a contradictory or incomplete AI interpretation.
+                for source in (local_intent, shared_intent):
+                    candidate = source.get(intent_key, "unmentioned") or "unmentioned"
+                    if candidate not in {"unmentioned", "exact"}:
+                        return candidate, source.get(exact_key)
+
+                if ai_candidate == "exact" and has_value(ai_value) and not ai_exact_is_context:
+                    return "exact", ai_value
+                if ai_candidate not in {"unmentioned", "exact"}:
+                    return ai_candidate, ai_value
+
+                # Last-resort deterministic fallback for any recognized intent.
+                for source in (local_intent, shared_intent):
+                    candidate = source.get(intent_key, "unmentioned") or "unmentioned"
+                    if candidate != "unmentioned":
+                        return candidate, source.get(exact_key)
                 return "unmentioned", None
 
             title_intent, exact_title = _merged_field_intent("title_intent", "exact_title")

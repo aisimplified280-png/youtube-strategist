@@ -522,25 +522,119 @@ def publish_approved_batch_rows(
             if details.get("locations"):
                 err_msg += f" [Field: {', '.join(details['locations'])}]"
 
-            # YouTube rejects title edits while a Test & Compare experiment owns
-            # the title. Keep the complete proposal visible and do not retry
-            # description/tags as a second, separate write.
+            # YouTube may reject title changes while a Test & Compare experiment
+            # owns the title. The user already approved the exact description and
+            # tags too, so make one narrower retry with the current title retained.
+            # This never changes or bypasses the experiment-owned title.
             error_text = f"{details.get('message', '')} {error}".upper()
             if "UPDATE_TITLE_NOT_ALLOWED_DURING_TEST_AND_COMPARE" in error_text:
-                row["status"] = "blocked"
-                row["result_message"] = (
-                    "YouTube blocked this metadata request because a Test & Compare title experiment "
-                    "is preventing title changes. The request was rejected; no successful metadata "
-                    "update was confirmed. End or resolve the experiment in YouTube Studio, then "
-                    "refresh this batch and review the proposal again. Description and tags will not "
-                    "be retried separately."
+                before = row.get("before") or {}
+                original_proposed = row.get("proposed") or {}
+                fallback_proposed = deepcopy(original_proposed)
+                fallback_proposed["title"] = before.get("title", "")
+                non_title_changes = [
+                    field for field in ("description", "tags")
+                    if before.get(field, [] if field == "tags" else "")
+                    != fallback_proposed.get(field, [] if field == "tags" else "")
+                ]
+
+                if not non_title_changes:
+                    row["status"] = "blocked"
+                    row["result_message"] = (
+                        "YouTube blocked the title change because a Test & Compare experiment is active. "
+                        "No description or tag changes were requested, so nothing else was retried. "
+                        "End or resolve the experiment in YouTube Studio to change the title."
+                    )
+                    result["blocked_count"] += 1
+                    result["failure_count"] += 1
+                    continue
+
+                fallback_digest = connector.metadata_proposal_digest(
+                    video_id, before, fallback_proposed
                 )
-                result["blocked_count"] += 1
+                try:
+                    fallback_result = connector.apply_approved_dashboard_proposal(
+                        youtube,
+                        video_id,
+                        before,
+                        fallback_proposed,
+                        fallback_digest,
+                        audit_callback=audit_callback or (lambda entry: None),
+                    )
+                except connector.MetadataVerificationUnavailableError as fallback_error:
+                    row["status"] = "verification_unavailable"
+                    row["result_message"] = (
+                        "The title change was blocked by Test & Compare. The description/tags-only retry "
+                        "may have reached YouTube, but its result could not be verified: "
+                        f"{fallback_error}"
+                    )
+                    result["failure_count"] += 1
+                    continue
+                except connector.HttpError as fallback_error:
+                    fallback_details = connector.extract_http_error_details(fallback_error)
+                    fallback_text = (
+                        f"{fallback_details.get('message', '')} {fallback_error}"
+                    ).upper()
+                    if "UPDATE_TITLE_NOT_ALLOWED_DURING_TEST_AND_COMPARE" in fallback_text:
+                        row["status"] = "blocked"
+                        row["result_message"] = (
+                            "YouTube blocked the title change during Test & Compare and also rejected "
+                            "the description/tags-only retry. No successful metadata update was confirmed. "
+                            "End or resolve the experiment in YouTube Studio before retrying."
+                        )
+                        result["blocked_count"] += 1
+                    else:
+                        row["status"] = "failed"
+                        row["result_message"] = (
+                            f"Title blocked by Test & Compare; the description/tags-only retry failed: "
+                            f"{fallback_details.get('message') or fallback_error}"
+                        )
+                    result["failure_count"] += 1
+                    continue
+                except Exception as fallback_error:
+                    fallback_message = str(fallback_error)
+                    lowered_fallback = fallback_message.casefold()
+                    if any(term in lowered_fallback for term in (
+                        "could not be reached for verification",
+                        "verification unavailable",
+                        "verification failed",
+                        "outcome is unknown",
+                        "may have succeeded",
+                    )) and not any(term in lowered_fallback for term in (
+                        "verification mismatch", "found different metadata"
+                    )):
+                        row["status"] = "verification_unavailable"
+                    else:
+                        row["status"] = "failed"
+                    row["result_message"] = (
+                        "Title blocked by Test & Compare; the description/tags-only retry did not "
+                        f"complete cleanly: {fallback_message or type(fallback_error).__name__}"
+                    )
+                    result["failure_count"] += 1
+                    continue
+
+                if not isinstance(fallback_result, dict) or fallback_result.get("result") != "success":
+                    row["status"] = "failed"
+                    row["result_message"] = (
+                        "Title blocked by Test & Compare; YouTube did not confirm the "
+                        "description/tags-only retry."
+                    )
+                    result["failure_count"] += 1
+                    continue
+
+                # Keep only the approved non-title changes after the narrower
+                # retry succeeds; read-back verification below checks this subset.
+                row["proposed"] = fallback_proposed
+                row["digest"] = fallback_digest
+                row["proposed_title"] = fallback_proposed.get("title", "")
+                row["changed_fields"] = non_title_changes
+                row["title_change_blocked"] = True
+                apply_result = fallback_result
             else:
                 row["status"] = "failed"
                 row["result_message"] = err_msg
-            result["failure_count"] += 1
-            continue
+                result["failure_count"] += 1
+                continue
         except Exception as error:
             message = str(error)
             lowered = message.casefold()
@@ -587,9 +681,16 @@ def publish_approved_batch_rows(
             continue
 
         row["status"] = "verified"
-        row["result_message"] = (
-            f"Verified on YouTube: {apply_result.get('title', row.get('proposed_title', 'Updated video'))}"
-        )
+        if row.get("title_change_blocked"):
+            row["result_message"] = (
+                "Description and tags were updated and verified on YouTube. The title remains unchanged "
+                "because a Test & Compare experiment currently controls title changes; resolve the "
+                "experiment in YouTube Studio to apply the approved title later."
+            )
+        else:
+            row["result_message"] = (
+                f"Verified on YouTube: {apply_result.get('title', row.get('proposed_title', 'Updated video'))}"
+            )
         result["success_count"] += 1
 
     return result

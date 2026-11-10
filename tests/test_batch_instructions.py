@@ -1824,9 +1824,10 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         self.assertTrue(stale["blocked"])
         self.assertEqual(youtube._videos.update_calls, [])
 
-    def test_test_and_compare_title_restriction_is_reported_as_blocked(self):
+    def test_test_and_compare_title_restriction_retries_approved_description_and_tags_only(self):
         row = self._ready_publish_row()
         row["proposed"]["description"] = "Proposed description"
+        row["proposed"]["tags"] = ["approved tag", "another approved tag"]
         batch_metadata.revalidate_batch_row(row)
         rows = [row]
         fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
@@ -1837,8 +1838,18 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
                 b'"UPDATE_TITLE_NOT_ALLOWED_DURING_TEST_AND_COMPARE: Precondition check failed."}}'
             ),
         )
+        fallback_proposal = copy.deepcopy(row["proposed"])
+        fallback_proposal["title"] = row["before"]["title"]
 
-        with patch.object(connector, "apply_approved_dashboard_proposal", side_effect=error):
+        with patch.object(
+            connector,
+            "apply_approved_dashboard_proposal",
+            side_effect=[error, {"result": "success"}],
+        ) as apply_mock, patch.object(
+            connector,
+            "fetch_video_snippet",
+            return_value=fallback_proposal,
+        ):
             result = batch_metadata.publish_approved_batch_rows(
                 object(), rows, [row["video_id"]],
                 approved=True,
@@ -1846,12 +1857,48 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
                 review_revision=1,
             )
 
+        self.assertEqual(apply_mock.call_count, 2)
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(result["blocked_count"], 0)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(row["status"], "verified")
+        self.assertEqual(row["proposed"]["title"], row["before"]["title"])
+        self.assertEqual(row["changed_fields"], ["description", "tags"])
+        self.assertEqual(row["proposed"]["description"], "Proposed description")
+        self.assertEqual(row["proposed"]["tags"], ["approved tag", "another approved tag"])
+        self.assertTrue(row["title_change_blocked"])
+        self.assertIn("title remains unchanged", row["result_message"].lower())
+
+    def test_test_and_compare_title_only_request_stays_blocked_without_retry(self):
+        row = self._ready_publish_row()
+        rows = [row]
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
+        error = connector.HttpError(
+            resp=MagicMock(status=400),
+            content=(
+                b'{"error":{"code":400,"message":'
+                b'"UPDATE_TITLE_NOT_ALLOWED_DURING_TEST_AND_COMPARE: Precondition check failed."}}'
+            ),
+        )
+
+        with patch.object(
+            connector,
+            "apply_approved_dashboard_proposal",
+            side_effect=error,
+        ) as apply_mock:
+            result = batch_metadata.publish_approved_batch_rows(
+                object(), rows, [row["video_id"]],
+                approved=True,
+                approval_fingerprint=fingerprint,
+                review_revision=1,
+            )
+
+        self.assertEqual(apply_mock.call_count, 1)
         self.assertEqual(result["blocked_count"], 1)
         self.assertEqual(result["failure_count"], 1)
         self.assertEqual(row["status"], "blocked")
         self.assertIn("Test & Compare", row["result_message"])
-        self.assertIn("description", row["changed_fields"])
-        self.assertEqual(row["proposed"]["description"], "Proposed description")
+        self.assertEqual(row["proposed"]["title"], "A genuinely new approved title")
 
     def test_22_publish_helper_executes_approved_write_and_verifies_all_fields(self):
         vid = self.VIDEOS_4[0]
