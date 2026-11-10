@@ -141,7 +141,7 @@ class SupabasePersistentStore:
     def update_job(self, job_id: str, values: Dict[str, Any]):
         safe = {k: v for k, v in values.items() if k in {
             "status", "processed_count", "failed_count", "last_error",
-            "worker_id", "lease_expires_at", "started_at", "finished_at",
+            "worker_id", "lease_expires_at", "started_at", "finished_at", "updated_at",
         }}
         return self._request("PATCH", "batch_jobs", params={
             "id": f"eq.{job_id}", "owner_key": f"eq.{self.owner_key}",
