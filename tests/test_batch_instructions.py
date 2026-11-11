@@ -2010,5 +2010,34 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
 
 
 
+
+class GeminiBatchInstructionFallbackTests(unittest.TestCase):
+    @patch("core.batch_instructions.requests.post")
+    def test_batch_parser_tries_flash_when_gemini_argon_is_quota_limited(self, post):
+        quota = Mock(status_code=429)
+        success = Mock(status_code=200)
+        success.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{ "videos": [], "shared_instructions": "" }'}]}}]
+        }
+        post.side_effect = [quota, success]
+
+        result = batch_instructions._call_gemini_json(
+            "gemini-key", "gemini-4-argon", "prompt", ["gemini-3.8-flash"]
+        )
+        self.assertEqual(result["videos"], [])
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("gemini-4-argon", post.call_args_list[0].args[0])
+        self.assertIn("gemini-3.8-flash", post.call_args_list[1].args[0])
+
+    @patch("core.batch_instructions.requests.post")
+    def test_batch_parser_does_not_retry_gemini_models_on_invalid_key(self, post):
+        post.return_value = Mock(status_code=403)
+        with self.assertRaisesRegex(RuntimeError, "rejected the API key"):
+            batch_instructions._call_gemini_json(
+                "invalid-key", "gemini-4-argon", "prompt", ["gemini-3.8-flash"]
+            )
+        self.assertEqual(post.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
