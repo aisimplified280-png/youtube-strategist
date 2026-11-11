@@ -64,6 +64,63 @@ class MetadataSnapshotWorkerTests(unittest.TestCase):
         record.assert_called_once()
         self.assertEqual(record.call_args.args[2], "PUBLIC00001")
 
+    def test_owner_resolution_requires_exactly_one_channel_match(self):
+        class Store:
+            def _request(self, method, path, *, params=None, payload=None, prefer=None):
+                return [{"owner_key": "owner-a"}, {"owner_key": "owner-b"}]
+
+        class Channels:
+            def __init__(self, channel_id):
+                self.channel_id = channel_id
+
+            def list(self, **kwargs):
+                return _Request({"items": [{"id": self.channel_id}]})
+
+        class Service:
+            def __init__(self, channel_id):
+                self._channels = Channels(channel_id)
+
+            def channels(self):
+                return self._channels
+
+        def fake_credentials(store, owner_key, cipher):
+            return owner_key
+
+        def fake_build(api, version, credentials, cache_discovery=False):
+            return Service("UC" + "A" * 22 if credentials == "owner-a" else "UC" + "B" * 22)
+
+        with (
+            patch.object(metadata_snapshot_worker, "_get_owner_credentials", side_effect=fake_credentials),
+            patch.object(metadata_snapshot_worker, "build", side_effect=fake_build),
+        ):
+            owner_key, service = metadata_snapshot_worker.resolve_channel_owner(
+                Store(), object(), "UC" + "A" * 22
+            )
+        self.assertEqual(owner_key, "owner-a")
+        self.assertIsInstance(service, Service)
+
+    def test_owner_resolution_fails_closed_when_no_channel_matches(self):
+        class Store:
+            def _request(self, method, path, *, params=None, payload=None, prefer=None):
+                return [{"owner_key": "owner-a"}]
+
+        class Channels:
+            def list(self, **kwargs):
+                return _Request({"items": [{"id": "UC" + "B" * 22}]})
+
+        class Service:
+            def channels(self):
+                return Channels()
+
+        with (
+            patch.object(metadata_snapshot_worker, "_get_owner_credentials", return_value=object()),
+            patch.object(metadata_snapshot_worker, "build", return_value=Service()),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exactly one active"):
+                metadata_snapshot_worker.resolve_channel_owner(
+                    Store(), object(), "UC" + "A" * 22
+                )
+
     def test_snapshot_scan_fails_if_a_ledger_write_fails(self):
         youtube = _YouTube({"items": [{
             "id": "PUBLIC00001", "snippet": {
