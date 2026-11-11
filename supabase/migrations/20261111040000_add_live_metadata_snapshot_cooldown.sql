@@ -85,7 +85,7 @@ begin
             p_owner_key, p_video_id, v_snapshot, v_hash,
             v_now, v_now, v_now, 'baseline', 0, v_now, v_now
         )
-        on conflict (owner_key, video_id) do nothing;
+        on conflict on constraint video_metadata_snapshots_pkey do nothing;
 
         -- A concurrent first observation may have inserted the row first.
         select * into v_existing
