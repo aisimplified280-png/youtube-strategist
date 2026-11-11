@@ -1,8 +1,7 @@
 name: Background metadata worker
 
 on:
-  # The weekly scan writes this marker after it queues proposals. That push
-  # starts the worker immediately instead of relying only on cron polling.
+  # Process approval-gated metadata proposals and AI-staged batch jobs.
   push:
     branches:
       - main
@@ -38,10 +37,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           YOUTUBE_STRATEGIST_STATE_SECRET: ${{ secrets.YOUTUBE_STRATEGIST_STATE_SECRET }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: "gemini-4-argon"
+          GEMINI_FALLBACK_MODELS: "gemini-3.8-flash"
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: "openai/gpt-oss-120b"
           WORKER_MAX_JOBS: "10"
           WORKER_IDLE_SECONDS: "5"
         run: python worker.py
-      # Trusted direct-publish requests are processed by the separate
-      # assistant-publish-worker.yml workflow after its additive migration is applied.
