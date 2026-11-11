@@ -305,3 +305,15 @@ class SupabasePersistentStore:
         if not rows:
             raise PersistentStoreError("Supabase did not return the monitor publishing queue record.")
         return rows[0]
+
+
+    def get_publish_request(self, request_id: str) -> Optional[Dict[str, Any]]:
+        """Read one publishing request, scoped to the authenticated owner."""
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        rows = self._request("GET", "assistant_publish_requests", params={
+            "id": f"eq.{request_id}", "owner_key": f"eq.{self.owner_key}",
+            "select": "id,video_id,request_source,status,result,created_at,finished_at",
+            "limit": "1",
+        })
+        return rows[0] if rows else None
