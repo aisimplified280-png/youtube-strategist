@@ -23,7 +23,7 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
         return False, "This saved action is incomplete. It was not published; run a fresh strategy scan."
 
     def audit_callback(entry):
-        store.update_strategy_action(action_id, {
+        store.update_strategy_action(action_id, store.owner_key, {
             "audit_log": entry,
             "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         })
