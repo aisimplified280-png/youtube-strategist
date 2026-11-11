@@ -23,7 +23,7 @@ app = FastAPI(title="AI Simplified Lab Publishing API", version="1.0.0")
 
 class PublishBody(BaseModel):
     proposed_metadata: dict[str, Any] = Field(min_length=1)
-    publish_confirmed: bool = True
+    publish_confirmed: bool = False
     idempotency_key: str | None = Field(default=None, max_length=160)
 
 
@@ -172,3 +172,14 @@ def set_monitor_policy(body: MonitorPolicyBody,
     return {"monitor_auto_publish_enabled": body.enabled,
             "max_daily_publishes": body.max_daily_publishes,
             "saved": bool(result)}
+
+
+@app.get("/v1/monitor/policy")
+def get_monitor_policy(authorization: str | None = Header(default=None)):
+    token = authorization.removeprefix("Bearer ").strip() if authorization else None
+    _authorize(token, "CHATGPT_PUBLISH_API_TOKEN")
+    policy = _store().get_monitor_publish_policy()
+    return {
+        "monitor_auto_publish_enabled": policy.get("monitor_auto_publish_enabled") is True,
+        "max_daily_publishes": int(policy.get("max_daily_publishes") or 5),
+    }
