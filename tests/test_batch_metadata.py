@@ -1,6 +1,7 @@
 import csv
 import io
 import unittest
+from unittest.mock import patch
 from openpyxl import Workbook
 
 import core.batch_metadata as batch_metadata
