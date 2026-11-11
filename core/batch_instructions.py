@@ -25,7 +25,7 @@ MAX_BATCH_VIDEOS = 25
 GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_GEMINI_MODEL = "gemini-4-argon"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_GEMINI_FALLBACKS = ["gemini-3.8-flash"]
 
 YOUTUBE_URL_PATTERN = re.compile(
