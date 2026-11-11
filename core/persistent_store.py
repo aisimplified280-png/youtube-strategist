@@ -303,7 +303,7 @@ class SupabasePersistentStore:
             raise PersistentStoreError("A verified owner-scoped store is required.")
         return self._request("GET", "channel_strategy_runs", params={
             "owner_key": f"eq.{self.owner_key}",
-            "select": "id,channel_id,trigger_source,status,metrics_period,result,model_name,error,started_at,finished_at,created_at",
+            "select": "id,channel_id,trigger_source,status,metrics_period,metrics_snapshot,strategy_report,result,model_name,error,started_at,finished_at,created_at",
             "order": "created_at.desc",
             "limit": str(max(1, min(int(limit), 50))),
         })
