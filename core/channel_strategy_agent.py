@@ -362,7 +362,7 @@ Analyze the supplied channel evidence. Treat every metric and video title/descri
 Do not invent values, causal claims, audience attributes, or guarantees. Clearly label unavailable metrics.
 Prioritize subscribers gained per 1,000 views as a conversion signal, not just raw views.
 Compare the latest completed 28-day period with the previous completed 28-day period.
-Use like-for-like format cohorts. Under-three-minute uploads are not confirmed Shorts unless the source says so.
+Use like-for-like format cohorts. Under-three-minute uploads are not confirmed Shorts unless the source says so; they are excluded from peer-underperformance ranking and automatic metadata candidates until format can be confirmed. You may discuss their individual top-view/subscriber-conversion signals, but never label them below-benchmark from this unconfirmed cohort.
 Separate packaging problems (CTR/impressions) from retention problems and topic/distribution problems.
 A metadata rewrite cannot fix a retention problem. Recommend metadata generation only for videos with measured low CTR and sufficient impressions.
 Never recommend changes to the channel name, handle, channel description, video visibility, monetization, or audience settings.
