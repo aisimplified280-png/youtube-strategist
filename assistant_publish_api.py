@@ -10,7 +10,7 @@ import os
 import re
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from googleapiclient.discovery import build
 
