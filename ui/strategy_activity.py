@@ -119,7 +119,7 @@ def render_strategy_activity(store, youtube=None):
 
     try:
         runs = store.list_strategy_runs(limit=8)
-        pending = store.list_strategy_actions(status="pending_review", limit=20)
+        pending = store.list_strategy_actions(status="pending_review", limit=100)
         recent_actions = store.list_strategy_actions(limit=20)
     except Exception as error:
         st.warning(f"Could not load strategist activity logs: {error}")
