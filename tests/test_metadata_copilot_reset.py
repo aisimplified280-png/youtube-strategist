@@ -488,13 +488,13 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             )
         self.assertEqual(result.get("result"), "success")
 
-    # Criterion 18: Fail-safe LLM fallback
+    # Criterion 18: Fail-safe Gemini model fallback
     @patch("strategist_chat.requests.post")
     def test_18_fail_safe_llm_fallback(self, mock_post):
-        """Falls back from primary provider to secondary on failure."""
-        groq_resp = Mock(status_code=429)
-        gemini_resp = Mock(status_code=200)
-        gemini_resp.json.return_value = {
+        """Falls back to the next configured Gemini model when the primary model is unavailable."""
+        primary_response = Mock(status_code=429)
+        fallback_response = Mock(status_code=200)
+        fallback_response.json.return_value = {
             "candidates": [{
                 "content": {
                     "parts": [{
@@ -503,25 +503,27 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
                             "title": "Fallback Title",
                             "description": "Fallback description",
                             "tags": ["fallback"],
-                            "rationale": ["Handled by secondary provider"],
+                            "rationale": ["Handled by configured Gemini fallback model"],
                         })
                     }]
                 }
             }]
         }
-        mock_post.side_effect = [groq_resp, gemini_resp]
+        mock_post.side_effect = [primary_response, fallback_response]
 
         result, provider, model = strategist_chat._generate_with_fallbacks(
             groq_key="groq-key",
             groq_model="groq-model",
             groq_fallbacks=[],
             gemini_key="gemini-key",
-            gemini_model="gemini-model",
-            gemini_fallbacks=[],
+            gemini_model="gemini-4-argon",
+            gemini_fallbacks=["gemini-3.8-flash"],
             prompt="Optimize video",
         )
         self.assertEqual(provider, "Gemini")
+        self.assertEqual(model, "gemini-3.8-flash")
         self.assertEqual(result["title"], "Fallback Title")
+        self.assertEqual(mock_post.call_count, 2)
 
     # Criterion 19: Owner-isolated proposal history
     def test_19_owner_isolation_for_proposal_history(self):
