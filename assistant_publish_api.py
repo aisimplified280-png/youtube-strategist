@@ -27,6 +27,11 @@ class PublishBody(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=160)
 
 
+class MonitorPolicyBody(BaseModel):
+    enabled: bool
+    max_daily_publishes: int = Field(default=5, ge=1, le=25)
+
+
 def _required_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
@@ -154,3 +159,16 @@ def publish_status(request_id: str, authorization: str | None = Header(default=N
     if not result:
         raise HTTPException(status_code=404, detail="Publishing request not found.")
     return result
+
+
+@app.put("/v1/monitor/policy")
+def set_monitor_policy(body: MonitorPolicyBody,
+                       authorization: str | None = Header(default=None)):
+    token = authorization.removeprefix("Bearer ").strip() if authorization else None
+    _authorize(token, "CHATGPT_PUBLISH_API_TOKEN")
+    result = _store().set_monitor_publish_policy(
+        enabled=body.enabled, max_daily_publishes=body.max_daily_publishes,
+    )
+    return {"monitor_auto_publish_enabled": body.enabled,
+            "max_daily_publishes": body.max_daily_publishes,
+            "saved": bool(result)}
