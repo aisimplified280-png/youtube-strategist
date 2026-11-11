@@ -74,20 +74,35 @@ class CoreLLMRouterTests(unittest.TestCase):
         parsed_fenced = parse_proposal_json(fenced)
         self.assertEqual(parsed_fenced["title"], "New Title")
 
-    def test_router_falls_back_from_groq_to_gemini(self):
+    def test_router_uses_gemini_before_groq(self):
         secrets = {
             "groq": {"api_key": "g-key", "model": "g-model"},
-            "gemini": {"api_key": "gem-key", "model": "gemini-2.5-flash"},
+            "gemini": {"api_key": "gem-key", "model": "gemini-4-argon"},
         }
         router = LLMRouter(secrets)
 
-        with patch("core.llm.call_groq_api", side_effect=LLMError("Groq 429 rate limit", recoverable=True)), \
-             patch("core.llm.call_gemini_api", return_value='{"title": "Gemini Title", "description": "Desc", "tags": []}') as mock_gemini:
+        with patch("core.llm.call_gemini_api", return_value='{"title": "Gemini Title", "description": "Desc", "tags": []}') as mock_gemini, \
+             patch("core.llm.call_groq_api") as mock_groq:
             proposal, provider, model = router.generate_structured_proposal("Optimize title")
             self.assertEqual(provider, "Gemini")
-            self.assertEqual(model, "gemini-2.5-flash")
+            self.assertEqual(model, "gemini-4-argon")
             self.assertEqual(proposal["title"], "Gemini Title")
             mock_gemini.assert_called_once()
+            mock_groq.assert_not_called()
+
+    def test_router_falls_back_to_groq_when_gemini_unavailable(self):
+        router = LLMRouter({
+            "groq": {"api_key": "g-key", "model": "g-model"},
+            "gemini": {"api_key": "gem-key", "model": "gemini-4-argon"},
+        })
+        with patch("core.llm.call_gemini_api", side_effect=LLMError("Gemini 429", recoverable=True)), \
+             patch("core.llm.call_groq_api", return_value='{"title": "Groq Fallback", "description": "Desc", "tags": []}') as mock_groq:
+            proposal, provider, model = router.generate_structured_proposal("Optimize title")
+            self.assertEqual(provider, "Groq")
+            self.assertEqual(model, "g-model")
+            self.assertEqual(proposal["title"], "Groq Fallback")
+            mock_groq.assert_called_once()
+
 
 
 class CoreAuthTests(unittest.TestCase):
