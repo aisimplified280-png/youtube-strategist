@@ -1018,7 +1018,7 @@ def _ready_persistent_batch_rows(rows):
 
 def _publish_persistent_batch_selection(youtube, store, job_id, rows, selected_ids, approval_fingerprint):
     """Publish an explicitly approved selection and persist each verified row result."""
-    result = batch_metadata.publish_approved_batch_rows(
+    result = batch_metadata.publish_approved_batch_rows_atomic(
         youtube, rows, selected_ids, approved=True,
         approval_fingerprint=approval_fingerprint, review_revision=1,
         audit_callback=_batch_audit_callback,
