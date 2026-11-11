@@ -247,8 +247,8 @@ def _process_candidate(
             "subscribers_per_1000_views": candidate.get("subscribers_per_1000_views"),
             "changed_fields": changed_fields,
         },
-        "before_metadata": before,
-        "proposed_metadata": proposed,
+        "before_metadata": before_full,
+        "proposed_metadata": proposed_full,
         "approval_digest": digest,
         "model_name": model_name,
         "created_at": _utc_now(),
@@ -383,7 +383,10 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
                 "metadata_candidates": [],
             }
 
-        candidates = _metadata_candidates(snapshot, strategy_report, limit=3)
+        candidates = _metadata_candidates(
+            snapshot, strategy_report,
+            limit=max(0, min(int(settings.get("max_metadata_reviews_per_run", 3)), 10)),
+        )
         proposal_model = model_used if model_used != "deterministic" else model
         metadata_secrets = {
             "gemini": {
@@ -398,10 +401,26 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
         }
 
         if candidates:
-            rows = _prepare_metadata_proposals(youtube, metadata_secrets, candidates)
             auto_count = _daily_auto_count(store, owner_key)
+            try:
+                rows = _prepare_metadata_proposals(youtube, metadata_secrets, candidates)
+            except Exception as proposal_error:
+                # Keep the successful analytics/Gemini strategy snapshot even if
+                # proposal generation fails; record one failed action per candidate.
+                rows = [
+                    {
+                        "video_id": candidate["video_id"],
+                        "status": "failed",
+                        "errors": [f"{type(proposal_error).__name__}: {str(proposal_error)[:1000]}"],
+                    }
+                    for candidate in candidates
+                ]
             for index, candidate in enumerate(candidates):
-                row = rows[index] if index < len(rows) else {"video_id": candidate["video_id"], "status": "failed", "errors": ["No generated proposal row was returned."]}
+                row = rows[index] if index < len(rows) else {
+                    "video_id": candidate["video_id"],
+                    "status": "failed",
+                    "errors": ["No generated proposal row was returned."],
+                }
                 counters["proposals"] += 1
                 result, auto_count = _process_candidate(
                     store, youtube, owner_key, run_id, candidate, row,
