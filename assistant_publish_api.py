@@ -144,3 +144,13 @@ def monitor_publish(video_id: str, body: PublishBody,
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"queued": True, "request_id": queued.get("id"), "source": "monitor",
             "message": "Queued under the owner's autonomous monitor policy."}
+
+
+@app.get("/v1/publish-requests/{request_id}")
+def publish_status(request_id: str, authorization: str | None = Header(default=None)):
+    token = authorization.removeprefix("Bearer ").strip() if authorization else None
+    _authorize(token, "CHATGPT_PUBLISH_API_TOKEN")
+    result = _store().get_publish_request(request_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Publishing request not found.")
+    return result
