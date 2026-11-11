@@ -730,7 +730,12 @@ def publish_approved_batch_rows_atomic(
         return result
 
     selected_set = set(selected)
+    ready_rows = [r for r in rows if r.get("status") == "ready" and str(r.get("video_id") or "").strip()]
+    ready_ids = {str(r.get("video_id")) for r in ready_rows}
     selected_rows = [r for r in rows if str(r.get("video_id", "")) in selected_set and r.get("status") == "ready"]
+    if selected_set != ready_ids:
+        result.update(blocked=True, message="Batch blocked: this is an all-or-nothing batch. Select every READY proposal; partial publishing is disabled.")
+        return result
     if len(selected_rows) != len(selected) or len({str(r.get("video_id")) for r in selected_rows}) != len(selected):
         result.update(blocked=True, message="Batch blocked: every selected video must have exactly one READY proposal.")
         return result
