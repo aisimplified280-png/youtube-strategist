@@ -198,3 +198,111 @@ class SupabasePersistentStore:
         })
         return rows[0] if rows else None
 
+
+
+    def _enqueue_publish_request(self, *, video_id: str, before_metadata: Dict[str, Any],
+                                 proposed_metadata: Dict[str, Any], request_source: str,
+                                 authorization_mode: str, authorized_by: str,
+                                 idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        import re
+
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id or "")):
+            raise ValueError("A valid 11-character YouTube video ID is required.")
+        if not isinstance(before_metadata, dict) or not isinstance(proposed_metadata, dict):
+            raise ValueError("Before metadata and proposed metadata must be objects.")
+        if not proposed_metadata or set(proposed_metadata) - {"title", "description", "tags"}:
+            raise ValueError("Only non-empty title, description, and tags changes can be queued.")
+        if not str(authorized_by or "").strip():
+            raise ValueError("A trusted authorization identity is required.")
+        if request_source not in {"chatgpt", "monitor"}:
+            raise ValueError("Unsupported publishing request source.")
+        if request_source == "chatgpt" and authorization_mode != "explicit_user_command":
+            raise ValueError("ChatGPT publishing requires an explicit user publish command.")
+        if request_source == "monitor" and authorization_mode != "monitor_policy":
+            raise ValueError("Monitor publishing requires the configured autonomous policy.")
+
+        now = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "owner_key": self.owner_key,
+            "video_id": video_id,
+            "before_metadata": before_metadata,
+            "proposed_metadata": proposed_metadata,
+            "request_source": request_source,
+            "authorization_mode": authorization_mode,
+            "authorized_by": str(authorized_by)[:160],
+            "authorized_at": now,
+            # Retain the legacy fields for compatibility with existing audit/reporting.
+            "approved_by": str(authorized_by)[:160] if request_source == "chatgpt" else None,
+            "approved_at": now if request_source == "chatgpt" else None,
+            "status": "queued",
+        }
+        if idempotency_key:
+            payload["idempotency_key"] = str(idempotency_key)[:160]
+        rows = self._request(
+            "POST", "assistant_publish_requests", payload=payload,
+            prefer="return=representation",
+        )
+        if not rows:
+            raise PersistentStoreError("Supabase did not return the publishing queue record.")
+        return rows[0]
+
+    def enqueue_chat_publish_request(self, *, video_id: str, before_metadata: Dict[str, Any],
+                                     proposed_metadata: Dict[str, Any], publish_confirmed: bool,
+                                     authorized_by: str = "chatgpt_user",
+                                     idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """Queue a direct ChatGPT-originated write only after an explicit publish command."""
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        if publish_confirmed is not True:
+            raise ValueError("No publishing request was queued: explicit publish confirmation is required.")
+        return self._enqueue_publish_request(
+            video_id=video_id, before_metadata=before_metadata,
+            proposed_metadata=proposed_metadata, request_source="chatgpt",
+            authorization_mode="explicit_user_command", authorized_by=authorized_by,
+            idempotency_key=idempotency_key,
+        )
+
+    def get_monitor_publish_policy(self) -> Dict[str, Any]:
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        rows = self._request("GET", "owner_publish_policies", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "select": "monitor_auto_publish_enabled,max_daily_publishes",
+            "limit": "1",
+        })
+        if rows:
+            return rows[0]
+        # The owner explicitly enabled monitor publishing in the product workflow.
+        # The conservative daily cap remains in force until a stored policy overrides it.
+        return {
+            "monitor_auto_publish_enabled": True,
+            "max_daily_publishes": 5,
+        }
+
+    def enqueue_monitor_publish_request(self, *, video_id: str,
+                                        before_metadata: Dict[str, Any],
+                                        proposed_metadata: Dict[str, Any],
+                                        authorized_by: str = "authorized_monitor",
+                                        idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """Queue a monitor optimization under the owner's autonomous-publishing policy."""
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        policy = self.get_monitor_publish_policy()
+        if policy.get("monitor_auto_publish_enabled") is not True:
+            raise PersistentStoreError("Autonomous monitor publishing is disabled for this owner.")
+        cap = max(1, min(int(policy.get("max_daily_publishes") or 5), 25))
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        todays = self._request("GET", "assistant_publish_requests", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "request_source": "eq.monitor",
+            "created_at": f"gte.{day_start}",
+            "select": "id",
+        })
+        if len(todays or []) >= cap:
+            raise PersistentStoreError(f"Monitor daily publishing limit reached ({cap} per UTC day).")
+        return self._enqueue_publish_request(
+            video_id=video_id, before_metadata=before_metadata,
+            proposed_metadata=proposed_metadata, request_source="monitor",
+            authorization_mode="monitor_policy", authorized_by=authorized_by,
+            idempotency_key=idempotency_key,
+        )
