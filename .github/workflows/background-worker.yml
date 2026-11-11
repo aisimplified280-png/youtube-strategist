@@ -43,3 +43,10 @@ jobs:
           WORKER_MAX_JOBS: "10"
           WORKER_IDLE_SECONDS: "5"
         run: python worker.py
+      - name: Publish explicitly approved assistant requests
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          YOUTUBE_STRATEGIST_STATE_SECRET: ${{ secrets.YOUTUBE_STRATEGIST_STATE_SECRET }}
+          ASSISTANT_PUBLISH_MAX_REQUESTS: "10"
+        run: python assistant_publish_worker.py
