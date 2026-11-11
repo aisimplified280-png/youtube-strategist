@@ -42,7 +42,7 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
             "tags": list(after.get("tags") or []),
             "categoryId": after.get("categoryId") or "",
         }
-        store.update_strategy_action(action_id, {
+        store.update_strategy_action(action_id, store.owner_key, {
             "status": "approved_published",
             "after_metadata": after,
             "result": {"result": result.get("result"), "url": result.get("url")},
@@ -52,14 +52,14 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
         })
         return True, "Approved metadata update was published and verified."
     except connector.MetadataVerificationUnavailableError as error:
-        store.update_strategy_action(action_id, {
+        store.update_strategy_action(action_id, store.owner_key, {
             "status": "verification_unavailable",
             "error": f"{type(error).__name__}: {str(error)[:1500]}",
             "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         })
         return False, "The update may have reached YouTube, but read-back verification was unavailable. Reload the video before retrying."
     except Exception as error:
-        store.update_strategy_action(action_id, {
+        store.update_strategy_action(action_id, store.owner_key, {
             "status": "failed",
             "error": f"{type(error).__name__}: {str(error)[:1500]}",
             "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
@@ -145,8 +145,8 @@ def render_strategy_activity(store, youtube=None):
         st.info("No scheduled strategy run has been recorded yet. The daily trigger will populate this panel after its first successful run.")
 
     if pending:
-        st.markdown("#### Major metadata changes awaiting approval")
-        st.caption("These suggestions can change wording or meaning. Nothing in this queue is published automatically.")
+        st.markdown("#### Metadata changes awaiting approval")
+        st.caption("Major wording changes and minor fixes held by cooldown or daily limits appear here. Nothing in this queue is published automatically.")
         for index, action in enumerate(pending, 1):
             action_id = str(action.get("id") or f"pending-{index}")
             title = action.get("video_title") or "Untitled video"
@@ -219,7 +219,7 @@ def render_strategy_activity(store, youtube=None):
                 with reject_col:
                     if st.button("Skip this proposal", key=f"strategy_skip_{action_id}", use_container_width=True):
                         try:
-                            store.update_strategy_action(action_id, {
+                            store.update_strategy_action(action_id, store.owner_key, {
                                 "status": "rejected",
                                 "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
                             })
