@@ -20,6 +20,7 @@ import oauth_token_store
 import dashboard_security
 from core.persistent_store import SupabasePersistentStore
 from strategist_chat import render_copilot_chat
+from ui.strategy_activity import render_strategy_activity
 
 
 def _read_secrets_safe():
@@ -339,6 +340,9 @@ def render_app():
         reporting=reporting,
         subject=subject,
     )
+
+    # Scheduled channel strategy remains inside the single owner-authenticated Streamlit app.
+    render_strategy_activity(persistent_store, youtube=youtube)
 
 
 def main():
