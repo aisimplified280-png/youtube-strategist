@@ -2,7 +2,7 @@
 
 import unittest
 
-from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value
+from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows
 
 
 class ChannelStrategyClassificationTests(unittest.TestCase):
@@ -75,6 +75,14 @@ class ChannelStrategyClassificationTests(unittest.TestCase):
         )
         self.assertEqual(classification, "major")
 
+    def test_only_confirmed_standard_videos_enter_peer_benchmarks(self):
+        rows = [
+            {"video_id": "long0000001", "duration_seconds": 240, "format_group": "Standard videos"},
+            {"video_id": "short000001", "duration_seconds": 45, "format_group": "Under-3-minute uploads (format unconfirmed)"},
+            {"video_id": "unknown00001", "duration_seconds": 160, "format_group": "Under-3-minute uploads (format unconfirmed)"},
+        ]
+        benchmarkable = _benchmarkable_video_rows(rows)
+        self.assertEqual([row["video_id"] for row in benchmarkable], ["long0000001"])
     def test_complete_reach_data_is_available_to_ranking(self):
         status = "Loaded daily reach reports for all 28 selected days. CTR is impression-weighted across those reports."
         self.assertEqual(_complete_reach_value(status, 1250), 1250)
