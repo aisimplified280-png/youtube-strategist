@@ -243,3 +243,59 @@ class BatchMetadataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AtomicBatchPublishingTests(unittest.TestCase):
+    def _rows(self):
+        rows = []
+        for video_id in ("Video000001", "Video000002"):
+            before = {"title": "Old " + video_id, "description": "Old description", "tags": ["old"], "categoryId": "28"}
+            proposed = {**before, "title": "New " + video_id, "description": "New description", "tags": ["new"]}
+            row = {"video_id": video_id, "before": before, "proposed": proposed, "status": "ready"}
+            row["digest"] = connector.metadata_proposal_digest(video_id, before, proposed)
+            rows.append(row)
+        return rows
+
+    def test_preflight_failure_means_zero_writes(self):
+        rows = self._rows()
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
+        with patch.object(batch_metadata.connector, "fetch_video_snippet", side_effect=[
+            {**rows[0]["before"], "channelId": batch_metadata.connector.CHANNEL_ID},
+            {**rows[1]["before"], "title": "Externally changed", "channelId": batch_metadata.connector.CHANNEL_ID},
+        ]), patch.object(batch_metadata.connector, "apply_approved_dashboard_proposal") as apply:
+            result = batch_metadata.publish_approved_batch_rows_atomic(
+                object(), rows, [r["video_id"] for r in rows], approved=True,
+                approval_fingerprint=fingerprint,
+            )
+        apply.assert_not_called()
+        self.assertEqual(result["success_count"], 0)
+        self.assertTrue(all(r["status"] == "failed" for r in rows))
+
+    def test_second_video_failure_rolls_back_first_and_leaves_no_ready_rows(self):
+        rows = self._rows()
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
+        live = {
+            r["video_id"]: {**r["before"], "channelId": batch_metadata.connector.CHANNEL_ID}
+            for r in rows
+        }
+        def fetch(_youtube, video_id):
+            return dict(live[video_id])
+        def apply(_youtube, video_id, before, proposed, _digest, **_kwargs):
+            if video_id == rows[1]["video_id"] and proposed["title"].startswith("New"):
+                raise RuntimeError("simulated YouTube write failure")
+            live[video_id] = {**proposed, "channelId": batch_metadata.connector.CHANNEL_ID}
+            return {"result": "success"}
+        with patch.object(batch_metadata.connector, "fetch_video_snippet", side_effect=fetch), patch.object(
+            batch_metadata.connector, "apply_approved_dashboard_proposal", side_effect=apply
+        ):
+            result = batch_metadata.publish_approved_batch_rows_atomic(
+                object(), rows, [r["video_id"] for r in rows], approved=True,
+                approval_fingerprint=fingerprint,
+            )
+        self.assertEqual(result["success_count"], 0)
+        self.assertTrue(result["rolled_back"])
+        self.assertFalse(result["rollback_failed"])
+        self.assertTrue(all(r["status"] == "rolled_back" for r in rows))
+        self.assertTrue(all(r["status"] not in {"ready", "approved", "publishing"} for r in rows))
+        for row in rows:
+            self.assertEqual(live[row["video_id"]]["title"], row["before"]["title"])
