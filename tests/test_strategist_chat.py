@@ -316,36 +316,37 @@ class StrategistChatTests(unittest.TestCase):
 
     @patch("strategist_chat._gemini_generate")
     @patch("strategist_chat._groq_generate")
-    def test_provider_switches_from_groq_to_gemini(self, grok, gemini):
-        grok.side_effect = RuntimeError("Groq quota exhausted")
-        gemini.return_value = (
-            {"title": "Backup title", "description": "Text", "tags": []},
-            "gemini-backup-model",
+    def test_provider_switches_from_gemini_to_groq(self, groq, gemini):
+        gemini.side_effect = RuntimeError("Gemini quota exhausted")
+        groq.return_value = (
+            {"title": "Groq fallback title", "description": "Text", "tags": []},
+            "groq-fallback-model",
         )
         result, provider, model = strategist_chat._generate_with_fallbacks(
-            "groq-key", "grok-main", [], "gemini-key", "gemini-main",
+            "groq-key", "groq-main", [], "gemini-key", "gemini-main",
             ["gemini-backup-model"], "prompt",
         )
-        self.assertEqual(provider, "Gemini")
-        self.assertEqual(model, "gemini-backup-model")
-        self.assertEqual(result["title"], "Backup title")
-        grok.assert_called_once()
+        self.assertEqual(provider, "Groq")
+        self.assertEqual(model, "groq-fallback-model")
+        self.assertEqual(result["title"], "Groq fallback title")
         gemini.assert_called_once()
+        groq.assert_called_once()
 
-    @patch("strategist_chat._gemini_generate")
     @patch("strategist_chat._groq_generate")
-    def test_groq_primary_does_not_call_gemini_on_success(self, grok, gemini):
-        grok.return_value = (
-            {"title": "Primary title", "description": "Text", "tags": []},
-            "grok-main",
+    @patch("strategist_chat._gemini_generate")
+    def test_gemini_primary_does_not_call_groq_on_success(self, gemini, groq):
+        gemini.return_value = (
+            {"title": "Gemini primary title", "description": "Text", "tags": []},
+            "gemini-main",
         )
         result, provider, model = strategist_chat._generate_with_fallbacks(
-            "groq-key", "grok-main", [], "gemini-key", "gemini-main", [], "prompt",
+            "groq-key", "groq-main", [], "gemini-key", "gemini-main", [], "prompt",
         )
-        self.assertEqual(provider, "Groq")
-        self.assertEqual(model, "grok-main")
-        self.assertEqual(result["title"], "Primary title")
-        gemini.assert_not_called()
+        self.assertEqual(provider, "Gemini")
+        self.assertEqual(model, "gemini-main")
+        self.assertEqual(result["title"], "Gemini primary title")
+        groq.assert_not_called()
+
 
     def test_gemini_can_be_used_when_grok_key_missing(self):
         with patch("strategist_chat._gemini_generate") as gemini:
