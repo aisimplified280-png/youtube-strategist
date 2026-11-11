@@ -254,6 +254,21 @@ class AtomicBatchPublishingTests(unittest.TestCase):
             rows.append(row)
         return rows
 
+
+    def test_partial_selection_is_blocked_before_any_youtube_read_or_write(self):
+        rows = self._rows()
+        fingerprint = batch_metadata.compute_batch_approval_fingerprint([rows[0]], review_revision=1)
+        with patch.object(batch_metadata.connector, "fetch_video_snippet") as fetch, patch.object(
+            batch_metadata.connector, "apply_approved_dashboard_proposal"
+        ) as apply:
+            result = batch_metadata.publish_approved_batch_rows_atomic(
+                object(), rows, [rows[0]["video_id"]], approved=True,
+                approval_fingerprint=fingerprint,
+            )
+        self.assertTrue(result["blocked"])
+        fetch.assert_not_called()
+        apply.assert_not_called()
+
     def test_preflight_failure_means_zero_writes(self):
         rows = self._rows()
         fingerprint = batch_metadata.compute_batch_approval_fingerprint(rows, review_revision=1)
