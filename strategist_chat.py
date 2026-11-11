@@ -1023,6 +1023,10 @@ def _publish_persistent_batch_selection(youtube, store, job_id, rows, selected_i
         approval_fingerprint=approval_fingerprint, review_revision=1,
         audit_callback=_batch_audit_callback,
     )
+    # A blocked approval (for example, a partial selection) is not an execution.
+    # Leave the proposals untouched so the owner can correct the selection.
+    if result.get("blocked"):
+        return result
     selected_set = {str(video_id) for video_id in selected_ids}
     for row in rows:
         if str(row.get("video_id") or "") not in selected_set:
