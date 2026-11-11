@@ -6,14 +6,20 @@ from core.channel_strategy_agent import classify_metadata_change, _complete_reac
 
 
 class ChannelStrategyClassificationTests(unittest.TestCase):
-    def test_title_case_punctuation_and_whitespace_is_minor(self):
+    def test_title_case_and_whitespace_is_minor(self):
         classification, _, changed = classify_metadata_change(
             {"title": "Build AI Agents in Python!", "description": "Same", "tags": []},
-            {"title": "BUILD AI AGENTS IN PYTHON", "description": "Same", "tags": []},
+            {"title": "  BUILD AI AGENTS IN PYTHON!  ", "description": "Same", "tags": []},
         )
         self.assertEqual(classification, "minor")
         self.assertEqual(changed, ["title"])
 
+    def test_title_punctuation_change_is_major(self):
+        classification, _, _ = classify_metadata_change(
+            {"title": "GPT-4.1 for Python!", "description": "Same", "tags": []},
+            {"title": "GPT 4 1 for Python", "description": "Same", "tags": []},
+        )
+        self.assertEqual(classification, "major")
     def test_title_word_rewrite_is_major(self):
         classification, _, changed = classify_metadata_change(
             {"title": "Build AI Agents in Python", "description": "Same", "tags": []},
