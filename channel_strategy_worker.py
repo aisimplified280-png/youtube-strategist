@@ -338,12 +338,23 @@ def _process_candidate(
         )
         if not isinstance(applied, dict) or applied.get("result") != "success":
             raise RuntimeError("YouTube did not confirm a successful metadata update.")
-        after_full = connector.fetch_video_snippet(youtube, video_id)
-        after = _safe_metadata(after_full)
+        after = None
+        after_snapshot_warning = None
+        try:
+            after_full = connector.fetch_video_snippet(youtube, video_id)
+            after = _safe_metadata(after_full)
+        except Exception as snapshot_error:
+            # The connector has already verified the YouTube write. Failure to
+            # collect an additional audit snapshot must not overwrite that result.
+            after_snapshot_warning = f"{type(snapshot_error).__name__}: {str(snapshot_error)[:800]}"
         _update_action(store, action_id, owner_key, {
             "status": "auto_published",
             "after_metadata": after,
-            "result": {"result": applied.get("result"), "url": applied.get("url")},
+            "result": {
+                "result": applied.get("result"),
+                "url": applied.get("url"),
+                "post_write_snapshot_warning": after_snapshot_warning,
+            },
             "error": None,
             "updated_at": _utc_now(),
         })
