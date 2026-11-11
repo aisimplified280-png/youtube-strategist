@@ -368,7 +368,9 @@ def _gemini_generate(api_key: str, model: str, prompt: str, fallback_models=None
             failures.append(f"{candidate}: network/timeout")
             continue
 
-        if response.status_code in (401, 403, 404, 408, 429) or response.status_code >= 500:
+        if response.status_code in (401, 403):
+            raise RuntimeError("Gemini rejected the API key or access. Check [gemini].api_key and API permissions.")
+        if response.status_code in (404, 408, 429) or response.status_code >= 500:
             failures.append(f"{candidate}: HTTP {response.status_code}")
             continue
         if response.status_code >= 400:
