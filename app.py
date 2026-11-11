@@ -89,6 +89,9 @@ def render_app():
 
     # Access Gate
     authorized, subject, error_msg = verify_owner_access(secrets)
+    if authorized and subject:
+    st.info("Google Owner Subject:")
+    st.code(subject)
 
     # Signed-out or unauthorized visitor landing
     if not authorized:
