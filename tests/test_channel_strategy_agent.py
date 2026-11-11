@@ -2,7 +2,7 @@
 
 import unittest
 
-from core.channel_strategy_agent import classify_metadata_change
+from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value
 
 
 class ChannelStrategyClassificationTests(unittest.TestCase):
@@ -68,6 +68,20 @@ class ChannelStrategyClassificationTests(unittest.TestCase):
             source_text="AI tools Learn Gemini",
         )
         self.assertEqual(classification, "major")
+
+    def test_complete_reach_data_is_available_to_ranking(self):
+        status = "Loaded daily reach reports for all 28 selected days. CTR is impression-weighted across those reports."
+        self.assertEqual(_complete_reach_value(status, 1250), 1250)
+        self.assertEqual(_complete_reach_value(status, 0.037), 0.037)
+
+    def test_partial_reach_data_is_never_used_for_ctr_ranking(self):
+        status = "Partial reach coverage: reports are available for 22 of 28 selected days."
+        self.assertIsNone(_complete_reach_value(status, 1250))
+        self.assertIsNone(_complete_reach_value(status, 0.037))
+
+    def test_missing_reach_metric_stays_unavailable_even_with_complete_coverage(self):
+        status = "Loaded daily reach reports for all 28 selected days."
+        self.assertIsNone(_complete_reach_value(status, None))
 
     def test_identical_metadata_is_no_change(self):
         current = {"title": "AI tools", "description": "Learn Gemini", "tags": ["AI"]}
