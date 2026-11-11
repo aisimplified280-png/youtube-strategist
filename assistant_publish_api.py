@@ -22,7 +22,7 @@ app = FastAPI(title="AI Simplified Lab Publishing API", version="1.0.0")
 
 
 class PublishBody(BaseModel):
-    proposed_metadata: dict[str, Any] = Field(min_length=1)
+    proposed_metadata: dict[str, Any]
     publish_confirmed: bool = False
     idempotency_key: str | None = Field(default=None, max_length=160)
 
