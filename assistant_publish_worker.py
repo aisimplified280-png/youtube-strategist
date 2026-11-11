@@ -108,7 +108,7 @@ def process_one_request(store, cipher, worker_id: str | None = None) -> bool:
                 "owner_key": f"eq.{owner_key}", "request_source": "eq.monitor",
                 "status": "eq.verified", "created_at": f"gte.{day_start}", "select": "id",
             })
-            if len(todays or []) > cap:
+            if len(todays or []) >= cap:
                 raise RuntimeError(f"Monitor daily publishing limit reached ({cap} per UTC day).")
         else:
             raise RuntimeError("Unknown publishing request source; refusing to write.")
