@@ -34,7 +34,8 @@ import youtube_dashboard
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-4-argon"
+DEFAULT_GEMINI_FALLBACKS = ["gemini-3.8-flash"]
 MAX_TRANSCRIPT_CHARS = 12000
 MAX_HISTORY_TURNS = 10
 
@@ -358,6 +359,7 @@ def _gemini_generate(api_key: str, model: str, prompt: str, fallback_models=None
                         "responseMimeType": "application/json",
                         "temperature": 0.7,
                         "maxOutputTokens": 4096,
+                        "thinkingConfig": {"thinkingLevel": "HIGH"},
                     },
                 },
                 timeout=60,
@@ -366,9 +368,7 @@ def _gemini_generate(api_key: str, model: str, prompt: str, fallback_models=None
             failures.append(f"{candidate}: network/timeout")
             continue
 
-        if response.status_code in (401, 403):
-            raise RuntimeError("Gemini rejected the API key or access. Check [gemini].api_key and API permissions.")
-        if response.status_code == 429 or response.status_code >= 500 or response.status_code == 404:
+        if response.status_code in (401, 403, 404, 408, 429) or response.status_code >= 500:
             failures.append(f"{candidate}: HTTP {response.status_code}")
             continue
         if response.status_code >= 400:
@@ -464,26 +464,14 @@ def _validate_proposal_payload(result, preserve_title=False):
 def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
                              gemini_key, gemini_model, gemini_fallbacks, prompt,
                              validator=None):
-    """Prefer Groq; fall back to Gemini if Groq fails or fails semantic validation."""
+    """Prefer Gemini reasoning; use Groq only when Gemini is unavailable or fails validation."""
     failures = []
-    if isinstance(groq_key, str) and groq_key.strip():
-        try:
-            result, used_model = _groq_generate(groq_key, groq_model, prompt, groq_fallbacks)
-            if validator:
-                is_valid, val_err = validator(result)
-                if not is_valid:
-                    failures.append(f"Groq semantic validation failed: {val_err}")
-                    result = None
-            if result is not None:
-                return result, "Groq", used_model
-        except (ValueError, RuntimeError, requests.RequestException) as error:
-            failures.append(f"Groq: {error}")
-    else:
-        failures.append("Groq: no [groq].api_key configured")
 
     if isinstance(gemini_key, str) and gemini_key.strip():
         try:
-            result, used_model = _gemini_generate(gemini_key, gemini_model, prompt, gemini_fallbacks)
+            result, used_model = _gemini_generate(
+                gemini_key, gemini_model, prompt, gemini_fallbacks
+            )
             if validator:
                 is_valid, val_err = validator(result)
                 if not is_valid:
@@ -496,7 +484,26 @@ def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
     else:
         failures.append("Gemini: no [gemini].api_key configured")
 
-    raise RuntimeError("No configured AI provider could complete this request. " + " | ".join(failures))
+    if isinstance(groq_key, str) and groq_key.strip():
+        try:
+            result, used_model = _groq_generate(
+                groq_key, groq_model, prompt, groq_fallbacks
+            )
+            if validator:
+                is_valid, val_err = validator(result)
+                if not is_valid:
+                    failures.append(f"Groq semantic validation failed: {val_err}")
+                    result = None
+            if result is not None:
+                return result, "Groq", used_model
+        except (ValueError, RuntimeError, requests.RequestException) as error:
+            failures.append(f"Groq: {error}")
+    else:
+        failures.append("Groq: no API key configured")
+
+    raise RuntimeError(
+        "No configured AI provider could complete this request. " + " | ".join(failures)
+    )
 
 
 def _instruction_preserves_title(instruction: str) -> bool:
@@ -822,7 +829,7 @@ def _stage_uploaded_metadata_batch(file_name, payload, youtube):
 
 
 def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, youtube=None):
-    """Build a single-call AI metadata generator function with Groq primary and Gemini fallback."""
+    """Build a single-call AI metadata generator function with Gemini reasoning primary and Groq fallback."""
     secrets = secrets or {}
     # Streamlit returns nested TOML sections as AttrDict/Mapping objects,
     # not necessarily plain dicts. Accept the documented st.secrets shape.
@@ -845,7 +852,7 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
 
     gemini_key = gemini.get("api_key") or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
     gemini_model = gemini.get("model") or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model") or DEFAULT_MODEL
-    gemini_fallbacks = gemini.get("fallback_models", [])
+    gemini_fallbacks = gemini.get("fallback_models", DEFAULT_GEMINI_FALLBACKS)
     if isinstance(gemini_fallbacks, str):
         gemini_fallbacks = [i.strip() for i in gemini_fallbacks.split(",") if i.strip()]
 
