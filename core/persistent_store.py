@@ -272,10 +272,9 @@ class SupabasePersistentStore:
         })
         if rows:
             return rows[0]
-        # The owner explicitly enabled monitor publishing in the product workflow.
-        # The conservative daily cap remains in force until a stored policy overrides it.
+        # No stored policy means no explicit owner opt-in. Always fail closed.
         return {
-            "monitor_auto_publish_enabled": True,
+            "monitor_auto_publish_enabled": False,
             "max_daily_publishes": 5,
         }
 

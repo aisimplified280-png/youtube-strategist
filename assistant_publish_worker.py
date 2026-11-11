@@ -95,8 +95,9 @@ def process_one_request(store, cipher, worker_id: str | None = None) -> bool:
                 "select": "monitor_auto_publish_enabled,max_daily_publishes",
                 "limit": "1",
             })
+            # Missing policy is never consent: fail closed.
             policy = policies[0] if policies else {
-                "monitor_auto_publish_enabled": True, "max_daily_publishes": 5
+                "monitor_auto_publish_enabled": False, "max_daily_publishes": 5
             }
             if policy.get("monitor_auto_publish_enabled") is not True:
                 raise RuntimeError("Monitor autonomous publishing has been disabled; no YouTube write was attempted.")
@@ -104,9 +105,17 @@ def process_one_request(store, cipher, worker_id: str | None = None) -> bool:
             day_start = datetime.now(timezone.utc).replace(
                 hour=0, minute=0, second=0, microsecond=0
             ).isoformat()
+            # Count every monitor request created today, every request that finished
+            # today (including failed/uncertain writes), and all in-flight processing
+            # requests. Exclude this claimed request so the cap permits exactly N writes.
+            # This intentionally does not filter by status: failed and
+            # verification_unavailable requests may already have changed YouTube.
             todays = store._request("GET", "assistant_publish_requests", params={
-                "owner_key": f"eq.{owner_key}", "request_source": "eq.monitor",
-                "status": "eq.verified", "created_at": f"gte.{day_start}", "select": "id",
+                "owner_key": f"eq.{owner_key}",
+                "request_source": "eq.monitor",
+                "id": f"neq.{request_id}",
+                "or": f"(created_at.gte.{day_start},finished_at.gte.{day_start},status.eq.processing)",
+                "select": "id",
             })
             if len(todays or []) >= cap:
                 raise RuntimeError(f"Monitor daily publishing limit reached ({cap} per UTC day).")

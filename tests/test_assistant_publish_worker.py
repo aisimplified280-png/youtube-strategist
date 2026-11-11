@@ -128,6 +128,55 @@ class AssistantPublishWorkerTests(unittest.TestCase):
         credentials.assert_not_called()
 
 
+    def test_monitor_missing_policy_fails_closed_before_oauth(self):
+        store = MagicMock()
+        store._request.side_effect = [
+            [{
+                "id": "monitor-no-policy", "owner_key": "owner-hash",
+                "video_id": "AbCdEfGhIjK", "request_source": "monitor",
+                "authorization_mode": "monitor_policy",
+                "authorized_by": "authorized_monitor",
+                "authorized_at": "2026-11-11T10:00:00Z",
+            }],
+            [],
+            [],
+        ]
+        with patch.object(publisher, "_get_owner_credentials") as credentials:
+            self.assertTrue(publisher.process_one_request(store, object(), "monitor-worker"))
+        credentials.assert_not_called()
+        self.assertTrue(any(
+            call.args[1] == "assistant_publish_requests" and call.kwargs.get("payload", {}).get("status") == "failed"
+            for call in store._request.call_args_list
+        ))
+
+    def test_monitor_daily_limit_counts_failed_and_unverified_attempts(self):
+        store = MagicMock()
+        store._request.side_effect = [
+            [{
+                "id": "monitor-request-limit", "owner_key": "owner-hash",
+                "video_id": "AbCdEfGhIjK", "request_source": "monitor",
+                "authorization_mode": "monitor_policy",
+                "authorized_by": "authorized_monitor",
+                "authorized_at": "2026-11-11T10:00:00Z",
+            }],
+            [{"monitor_auto_publish_enabled": True, "max_daily_publishes": 5}],
+            [{"id": f"prior-{index}"} for index in range(5)],
+            [],
+        ]
+        with patch.object(publisher, "_get_owner_credentials") as credentials:
+            self.assertTrue(publisher.process_one_request(store, object(), "monitor-worker"))
+        credentials.assert_not_called()
+        count_call = next(
+            call for call in store._request.call_args_list
+            if call.args[1] == "assistant_publish_requests" and call.args[0] == "GET"
+        )
+        params = count_call.kwargs["params"]
+        self.assertNotIn("status", params)
+        self.assertIn("finished_at.gte.", params["or"])
+        self.assertIn("status.eq.processing", params["or"])
+
+
+
 
 if __name__ == "__main__":
     unittest.main()
