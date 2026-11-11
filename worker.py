@@ -61,6 +61,31 @@ def _get_owner_credentials(store, owner_key: str, cipher: Fernet):
     return creds
 
 
+def _record_live_metadata_snapshot(store, owner_key: str, video_id: str, snippet: dict, source: str = "worker") -> dict:
+    """Record the exact live title/description/tags and return the cooldown decision."""
+    rows = store._request("POST", "rpc/record_video_metadata_snapshot", payload={
+        "p_owner_key": owner_key,
+        "p_video_id": video_id,
+        "p_title": snippet.get("title") or "",
+        "p_description": snippet.get("description") or "",
+        "p_tags": snippet.get("tags") or [],
+        "p_source": source,
+    })
+    if not rows or not isinstance(rows[0], dict):
+        raise RuntimeError("Metadata cooldown ledger returned no decision.")
+    return rows[0]
+
+
+def _snapshot_allows_publish(snapshot: dict) -> bool:
+    """Fail closed unless a prior baseline is unchanged and the full hold elapsed."""
+    return bool(
+        isinstance(snapshot, dict)
+        and snapshot.get("eligible") is True
+        and snapshot.get("is_baseline") is False
+        and snapshot.get("changed_since_previous") is False
+    )
+
+
 def _persist_row(store, job_id: str, owner_key: str, row_record: dict, row: dict):
     proposed = row.get("proposed") or {}
     before = row.get("before") or {}
@@ -150,27 +175,61 @@ def process_one_job(store, cipher, groq_key, gemini_key):
                     preloaded_fetch_errors=preloaded_fetch_errors,
                 )
                 row = (prepared.get("rows") or [{}])[0]
-                # The owner has explicitly enabled automatic publishing for queued
-                # app batches. Only READY, owner-verified proposals are eligible.
-                # The app's direct YouTube Data API publisher re-checks the live
-                # snapshot, validates the exact proposal digest, writes metadata,
-                # and performs a fresh read-back before reporting VERIFIED.
+                # Recheck the current live snippet against the durable cooldown ledger
+                # immediately before any YouTube write. A missing baseline, recent change,
+                # changed live metadata, or ledger error must fail closed.
                 if row.get("status") == "ready":
-                    approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(
-                        [row], review_revision=1
-                    )
-                    publish_result = batch_metadata.publish_approved_batch_rows(
-                        youtube,
-                        [row],
-                        [row.get("video_id")],
-                        approved=True,
-                        approval_fingerprint=approval_fingerprint,
-                        review_revision=1,
-                    )
-                    if row.get("status") != "verified":
-                        row["result_message"] = row.get("result_message") or publish_result.get(
-                            "message", "Automatic YouTube publishing did not complete verification."
+                    try:
+                        cooldown = _record_live_metadata_snapshot(
+                            store, owner_key, row.get("video_id"), row.get("before") or {}, source="worker"
                         )
+                    except Exception as cooldown_error:
+                        cooldown = None
+                        row["status"] = "verification_unavailable"
+                        row["result_message"] = (
+                            "Publishing blocked: live metadata cooldown could not be verified. "
+                            f"{type(cooldown_error).__name__}: {str(cooldown_error)[:300]}"
+                        )
+                    if cooldown is not None and not _snapshot_allows_publish(cooldown):
+                        row["status"] = "verification_unavailable"
+                        row["result_message"] = (
+                            "Publishing blocked by the seven-day live metadata cooldown. "
+                            f"Eligible after: {cooldown.get('eligible_after') or 'not yet established'}."
+                        )
+
+                    if row.get("status") == "ready":
+                        approval_fingerprint = batch_metadata.compute_batch_approval_fingerprint(
+                            [row], review_revision=1
+                        )
+                        publish_result = batch_metadata.publish_approved_batch_rows(
+                            youtube,
+                            [row],
+                            [row.get("video_id")],
+                            approved=True,
+                            approval_fingerprint=approval_fingerprint,
+                            review_revision=1,
+                        )
+                        if row.get("status") != "verified":
+                            row["result_message"] = row.get("result_message") or publish_result.get(
+                                "message", "Automatic YouTube publishing did not complete verification."
+                            )
+                        else:
+                            # Capture the post-write live metadata so the cooldown begins
+                            # at the observed change, not at the queue or proposal time.
+                            try:
+                                readback = youtube.videos().list(
+                                    part="snippet", id=row.get("video_id")
+                                ).execute()
+                                items = readback.get("items") or []
+                                if items and items[0].get("snippet", {}).get("channelId") == batch_metadata.connector.CHANNEL_ID:
+                                    _record_live_metadata_snapshot(
+                                        store, owner_key, row.get("video_id"),
+                                        items[0].get("snippet") or {}, source="worker"
+                                    )
+                                else:
+                                    log.warning("Could not refresh metadata cooldown snapshot after verified publish for %s", row.get("video_id"))
+                            except Exception:
+                                log.exception("Could not refresh metadata cooldown snapshot after verified publish for %s", row.get("video_id"))
                 _persist_row(store, job_id, owner_key, record, row)
                 record["status"] = row.get("status") or "failed"
                 if record["status"] in {"invalid", "failed", "verification_unavailable"}:
