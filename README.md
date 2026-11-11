@@ -58,6 +58,7 @@ API routes:
 - `GET /v1/publish-requests/{request_id}` — check the verified publishing result.
 - `POST /v1/monitor/videos/{video_id}/publish` — enqueue monitor changes under the autonomous policy.
 - `PUT /v1/monitor/policy` — enable/disable monitor auto-publishing and set the daily cap (ChatGPT token only).
+- `GET /v1/monitor/policy` — read the current autonomous publishing setting (ChatGPT token only).
 - `GET /health` — health check.
 
 The monitor endpoint is an integration surface, not a monitor implementation: an existing monitor must call it using the separate monitor token. No monitor process is currently bundled in this repository.
