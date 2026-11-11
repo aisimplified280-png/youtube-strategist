@@ -1,9 +1,9 @@
-"""Process explicitly approved assistant-originated YouTube metadata writes.
+"""Process trusted ChatGPT and autonomous-monitor YouTube metadata write requests.
 
-This worker is intentionally separate from the monitor and proposal-generation worker.
-It does not consult the monitor cooldown. It requires an approved queue record, verifies
-channel ownership and the exact before-state, publishes through the existing guarded
-YouTube Data API helper, then verifies and records the resulting live snapshot.
+This publisher is separate from Streamlit's approval-gated proposal worker. ChatGPT
+requests require a recorded explicit user publish command; monitor requests require the
+owner's autonomous policy. Every request is rechecked for authorization, ownership,
+stale before-state, metadata validity, and post-write verification.
 """
 from __future__ import annotations
 
