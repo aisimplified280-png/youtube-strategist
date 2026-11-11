@@ -141,6 +141,48 @@ def render_strategy_activity(store, youtube=None):
         )
         if latest.get("error"):
             st.warning(str(latest["error"]))
+        snapshot = latest.get("metrics_snapshot") or {}
+        channel_metrics = snapshot.get("channel_metrics") or {}
+        deltas = latest.get("period_deltas_percent") or {}
+        kpi_values = [
+            ("28-day views", channel_metrics.get("views"), deltas.get("views")),
+            ("Watch time (minutes)", channel_metrics.get("estimatedMinutesWatched"), deltas.get("estimatedMinutesWatched")),
+            ("Subscribers gained", channel_metrics.get("subscribersGained"), deltas.get("subscribersGained")),
+            ("Subscribers lost", channel_metrics.get("subscribersLost"), None),
+        ]
+        kpi_cols = st.columns(4)
+        for col, (label, value, delta) in zip(kpi_cols, kpi_values):
+            number = f"{value:,.0f}" if isinstance(value, (int, float)) else "Unavailable"
+            delta_text = f"{delta:+.1f}% vs previous 28 days" if isinstance(delta, (int, float)) else None
+            col.metric(label, number, delta=delta_text)
+
+        report = latest.get("strategy_report") or {}
+        if report:
+            st.markdown("#### Gemini growth briefing")
+            if report.get("executive_summary"):
+                st.write(report["executive_summary"])
+            patterns = report.get("patterns") or []
+            if patterns:
+                with st.expander("Patterns detected", expanded=True):
+                    for item in patterns:
+                        st.markdown(f"**{item.get('pattern', 'Channel pattern')}**")
+                        st.write(item.get("evidence") or "")
+                        if item.get("implication"):
+                            st.caption(f"Implication: {item.get('implication')} · Confidence: {item.get('confidence', 'Unstated')}")
+            actions = report.get("growth_actions") or []
+            if actions:
+                with st.expander("Prioritized growth actions", expanded=True):
+                    for item in actions:
+                        st.markdown(f"**{item.get('priority', 'Action')}: {item.get('action', 'Review channel')}**")
+                        st.write(item.get("reason") or "")
+            ideas = report.get("content_ideas") or []
+            if ideas:
+                with st.expander("Content opportunities", expanded=False):
+                    for item in ideas:
+                        st.markdown(f"**{item.get('topic', 'Topic idea')}** · {item.get('format', 'Format unconfirmed')}")
+                        if item.get("hook"):
+                            st.write(f"Hook: {item.get('hook')}")
+                        st.caption(item.get("evidence") or "")
     else:
         st.info("No scheduled strategy run has been recorded yet. The daily trigger will populate this panel after its first successful run.")
 
