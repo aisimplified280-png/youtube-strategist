@@ -29,11 +29,11 @@ class AssistantPublishWorkerTests(unittest.TestCase):
         ]
         live = {
             "title": "Old", "description": "Old desc", "tags": ["old"],
-            "categoryId": "28", "channelId": "UC" + "A" * 22,
+            "categoryId": "28", "channelId": publisher.connector.CHANNEL_ID,
         }
         youtube = MagicMock()
         youtube.channels.return_value.list.return_value.execute.return_value = {
-            "items": [{"id": "UC" + "A" * 22}]
+            "items": [{"id": publisher.connector.CHANNEL_ID}]
         }
         youtube.videos.return_value.list.return_value.execute.side_effect = [
             {"items": [{"id": "AbCdEfGhIjK", "snippet": dict(live)}]},
