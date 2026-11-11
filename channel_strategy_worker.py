@@ -366,6 +366,9 @@ def _process_candidate(
 
 def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> dict:
     """Execute one end-to-end analytics, strategy, metadata-proposal and guarded-publish cycle."""
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        raise RuntimeError("GEMINI_API_KEY is required for the Gemini-first autonomous channel strategist. Configure it as a GitHub Actions repository secret.")
     owner_key, _ = resolve_channel_owner(store, cipher, OWNER_CHANNEL_ID)
     credentials = _get_owner_credentials(store, owner_key, cipher)
     youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
@@ -390,7 +393,6 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
             youtube, analytics, reporting, credentials, OWNER_CHANNEL_ID,
             catalogue_limit=int(os.getenv("STRATEGY_CATALOGUE_LIMIT", "500")),
         )
-        gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
         model = os.getenv("GEMINI_MODEL", DEFAULT_STRATEGY_MODEL).strip()
         fallback_models = [
             value.strip() for value in os.getenv(
