@@ -64,6 +64,9 @@ def _compact_snapshot(snapshot: dict) -> dict:
 
 def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) -> list[dict]:
     """Only package-review opportunities with measured CTR evidence can trigger metadata proposals."""
+    limit = max(0, min(int(limit), 10))
+    if limit == 0:
+        return []
     opportunities = snapshot.get("opportunities") or []
     by_id = {str(item.get("video_id")): item for item in opportunities if item.get("video_id")}
     selected = []
