@@ -106,15 +106,42 @@ def snapshot_public_uploads(youtube, store, owner_key: str, channel_id: str) -> 
     return summary
 
 
+def resolve_channel_owner(store, cipher, channel_id: str):
+    """Find the single stored OAuth grant that actually owns the configured channel."""
+    rows = store._request("GET", "owner_oauth_credentials", params={
+        "purpose": "eq.youtube", "revoked": "eq.false",
+        "select": "owner_key", "limit": "100",
+    })
+    matches = []
+    for record in rows or []:
+        owner_key = record.get("owner_key")
+        if not owner_key:
+            continue
+        try:
+            credentials = _get_owner_credentials(store, owner_key, cipher)
+            youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+            response = youtube.channels().list(part="id", mine=True).execute()
+            channel_ids = {item.get("id") for item in (response.get("items") or [])}
+            if channel_id in channel_ids:
+                matches.append((owner_key, youtube))
+        except Exception:
+            # Never print credential identifiers or token-related error details.
+            log.warning("Skipping a stored YouTube OAuth grant that could not verify channel ownership.")
+
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Could not resolve exactly one active YouTube OAuth grant for the configured owner channel."
+        )
+    return matches[0]
+
+
 def main() -> None:
     url = os.environ["SUPABASE_URL"]
     service_key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     state_secret = os.environ["YOUTUBE_STRATEGIST_STATE_SECRET"]
-    owner_key = os.environ["YOUTUBE_OWNER_KEY"]
     store = SupabasePersistentStore.worker_client(url, service_key)
     cipher = _cipher(state_secret)
-    credentials = _get_owner_credentials(store, owner_key, cipher)
-    youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+    owner_key, youtube = resolve_channel_owner(store, cipher, connector.CHANNEL_ID)
     snapshot_public_uploads(youtube, store, owner_key, connector.CHANNEL_ID)
 
 
