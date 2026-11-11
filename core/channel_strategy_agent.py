@@ -15,7 +15,7 @@ import youtube_analytics_connector as connector
 import youtube_dashboard
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-DEFAULT_STRATEGY_MODEL = "gemini-4-argon"
+DEFAULT_STRATEGY_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_STRATEGY_FALLBACKS = ("gemini-3.8-flash",)
 VIDEO_METRICS = (
     "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,"
