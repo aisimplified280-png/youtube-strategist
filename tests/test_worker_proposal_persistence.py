@@ -20,6 +20,22 @@ class RecordingStore:
 
 
 class WorkerProposalPersistenceTests(unittest.TestCase):
+    def test_publish_gate_fails_closed_for_missing_or_recent_snapshot(self):
+        self.assertFalse(worker._snapshot_allows_publish(None))
+        self.assertFalse(worker._snapshot_allows_publish({}))
+        self.assertFalse(worker._snapshot_allows_publish({
+            "eligible": False, "is_baseline": False, "changed_since_previous": False,
+        }))
+        self.assertFalse(worker._snapshot_allows_publish({
+            "eligible": True, "is_baseline": True, "changed_since_previous": False,
+        }))
+        self.assertFalse(worker._snapshot_allows_publish({
+            "eligible": True, "is_baseline": False, "changed_since_previous": True,
+        }))
+        self.assertTrue(worker._snapshot_allows_publish({
+            "eligible": True, "is_baseline": False, "changed_since_previous": False,
+        }))
+
     def test_persists_all_title_angles_and_recommendation_context(self):
         store = RecordingStore()
         row_record = {"id": "row-123"}
@@ -118,6 +134,10 @@ class WorkerProposalPersistenceTests(unittest.TestCase):
             }]}
 
         with (
+            patch.object(worker, "_record_live_metadata_snapshot", return_value={
+                "eligible": True, "is_baseline": False, "changed_since_previous": False,
+                "eligible_after": "2026-11-01T00:00:00+00:00",
+            }) as record_snapshot,
             patch.object(worker, "_get_owner_credentials", return_value=object()),
             patch.object(worker, "build", return_value=object()),
             patch.object(worker, "build_batch_metadata_generator", return_value=None),
@@ -143,6 +163,7 @@ class WorkerProposalPersistenceTests(unittest.TestCase):
             self.assertTrue(worker.process_one_job(store, object(), "", ""))
 
         fetch_snippets.assert_called_once()
+        self.assertEqual(record_snapshot.call_count, 25)
         self.assertEqual(len(fetch_snippets.call_args.args[1]), 25)
         self.assertEqual(prepare_batch.call_count, 25)
         self.assertEqual(publish_batch.call_count, 25)
