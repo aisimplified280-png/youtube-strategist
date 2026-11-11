@@ -68,5 +68,66 @@ class AssistantPublishWorkerTests(unittest.TestCase):
         credentials.assert_not_called()
 
 
+    def test_monitor_publish_works_without_user_approval_when_policy_is_enabled(self):
+        store = MagicMock()
+        store._request.side_effect = [
+            [{
+                "id": "monitor-request-1", "owner_key": "owner-hash",
+                "video_id": "AbCdEfGhIjK", "request_source": "monitor",
+                "authorization_mode": "monitor_policy",
+                "authorized_by": "authorized_monitor",
+                "authorized_at": "2026-11-11T10:00:00Z",
+                "approved_by": None, "approved_at": None,
+                "before_metadata": {"title": "Old", "description": "Old desc", "tags": ["old"], "categoryId": "28"},
+                "proposed_metadata": {"title": "New", "description": "New desc", "tags": ["new"]},
+            }],
+            [{"monitor_auto_publish_enabled": True, "max_daily_publishes": 5}],
+            [],
+            [],
+        ]
+        live = {
+            "title": "Old", "description": "Old desc", "tags": ["old"],
+            "categoryId": "28", "channelId": publisher.connector.CHANNEL_ID,
+        }
+        youtube = MagicMock()
+        youtube.channels.return_value.list.return_value.execute.return_value = {
+            "items": [{"id": publisher.connector.CHANNEL_ID}]
+        }
+        youtube.videos.return_value.list.return_value.execute.side_effect = [
+            {"items": [{"id": "AbCdEfGhIjK", "snippet": dict(live)}]},
+            {"items": [{"id": "AbCdEfGhIjK", "snippet": {
+                **live, "title": "New", "description": "New desc", "tags": ["new"]
+            }}]},
+        ]
+        with (
+            patch.object(publisher, "_get_owner_credentials", return_value=object()),
+            patch.object(publisher, "build", return_value=youtube),
+            patch.object(publisher, "_record_live_metadata_snapshot") as snapshot,
+            patch.object(publisher.batch_metadata, "publish_approved_batch_rows",
+                         side_effect=lambda yt, rows, ids, **kwargs: rows[0].update(status="verified") or {"success_count": 1}),
+        ):
+            self.assertTrue(publisher.process_one_request(store, object(), "monitor-worker"))
+        snapshot.assert_called_once()
+        self.assertEqual(snapshot.call_args.kwargs["source"], "monitor")
+
+    def test_monitor_policy_disabled_blocks_write_before_oauth(self):
+        store = MagicMock()
+        store._request.side_effect = [
+            [{
+                "id": "monitor-request-2", "owner_key": "owner-hash",
+                "video_id": "AbCdEfGhIjK", "request_source": "monitor",
+                "authorization_mode": "monitor_policy",
+                "authorized_by": "authorized_monitor",
+                "authorized_at": "2026-11-11T10:00:00Z",
+            }],
+            [{"monitor_auto_publish_enabled": False, "max_daily_publishes": 5}],
+            [],
+        ]
+        with patch.object(publisher, "_get_owner_credentials") as credentials:
+            self.assertTrue(publisher.process_one_request(store, object(), "monitor-worker"))
+        credentials.assert_not_called()
+
+
+
 if __name__ == "__main__":
     unittest.main()
