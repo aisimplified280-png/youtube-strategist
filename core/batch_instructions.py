@@ -2,7 +2,7 @@
 
 Interprets ordinary-language paragraphs, numbered lists, or structured text
 describing which YouTube videos to change and what to change.
-Uses Groq/Gemini structured interpretation with strict JSON schema validation,
+Uses Gemini-first structured interpretation with Groq fallback and strict JSON schema validation,
 fallback recovery, and deterministic reference reconciliation.
 """
 
@@ -25,7 +25,8 @@ MAX_BATCH_VIDEOS = 25
 GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-4-argon"
+DEFAULT_GEMINI_FALLBACKS = ["gemini-3.8-flash"]
 
 YOUTUBE_URL_PATTERN = re.compile(
     r"https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s\"'>)]+|shorts/[A-Za-z0-9_-]{11}|embed/[A-Za-z0-9_-]{11}|live/[A-Za-z0-9_-]{11})|youtu\.be/[A-Za-z0-9_-]{11}[^\s\"'>)]*)",
@@ -491,18 +492,54 @@ def _call_groq_json(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
     return json.loads(content_str)
 
 
-def _call_gemini_json(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
-    url = f"{GEMINI_ENDPOINT.format(model=model or DEFAULT_GEMINI_MODEL)}?key={api_key}"
-    headers = {"Content-Type": "application/json"}
+def _call_gemini_json(
+    api_key: str,
+    model: str,
+    prompt: str,
+    fallback_models: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    candidates = []
+    for candidate in [model or DEFAULT_GEMINI_MODEL, *(fallback_models or DEFAULT_GEMINI_FALLBACKS)]:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in candidates and re.fullmatch(r"[A-Za-z0-9._-]+", candidate):
+            candidates.append(candidate)
+    failures = []
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingLevel": "HIGH"},
+        },
     }
-    response = requests.post(url, headers=headers, json=body, timeout=60)
-    response.raise_for_status()
-    payload = response.json()
-    text = payload["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+    for candidate in candidates:
+        try:
+            response = requests.post(
+                GEMINI_ENDPOINT.format(model=candidate),
+                headers=headers,
+                json=body,
+                timeout=60,
+            )
+        except requests.RequestException as error:
+            failures.append(f"{candidate}: {type(error).__name__}")
+            continue
+        if response.status_code in (401, 403):
+            raise RuntimeError("Gemini rejected the API key or access. Check the API key and permissions.")
+        if response.status_code in (404, 408, 429) or response.status_code >= 500:
+            failures.append(f"{candidate}: HTTP {response.status_code}")
+            continue
+        if response.status_code >= 400:
+            raise RuntimeError(f"Gemini request was rejected (HTTP {response.status_code}).")
+        try:
+            payload = response.json()
+            result = json.loads(payload["candidates"][0]["content"]["parts"][0]["text"])
+            if not isinstance(result, dict):
+                raise ValueError("Gemini response was not a JSON object.")
+            return result
+        except (ValueError, KeyError, IndexError, TypeError) as error:
+            failures.append(f"{candidate}: invalid structured response ({type(error).__name__})")
+    raise RuntimeError("All configured Gemini batch-parser models failed: " + "; ".join(failures))
 
 
 def _interpret_batch_instructions_with_ai(
@@ -511,8 +548,9 @@ def _interpret_batch_instructions_with_ai(
     groq_model: Optional[str] = None,
     gemini_key: Optional[str] = None,
     gemini_model: Optional[str] = None,
+    gemini_fallback_models: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Use Groq-first, Gemini-fallback AI to interpret natural-language instructions into structured JSON."""
+    """Use Gemini reasoning first, with Groq as fallback, for structured natural-language instructions."""
     # JSON-encode the user's entire input instead of wrapping it in triple quotes.
     # User instructions may themselves contain triple-quoted descriptions, JSON,
     # markdown fences, or arbitrary punctuation; a JSON string keeps those as data.
@@ -560,15 +598,15 @@ Parsing rules:
 10. Return a complete plan for every referenced video.
 """
 
-    if groq_key:
+    if gemini_key:
         try:
-            return _call_groq_json(groq_key, groq_model, prompt)
+            return _call_gemini_json(gemini_key, gemini_model, prompt, gemini_fallback_models)
         except Exception:
             pass
 
-    if gemini_key:
+    if groq_key:
         try:
-            return _call_gemini_json(gemini_key, gemini_model, prompt)
+            return _call_groq_json(groq_key, groq_model, prompt)
         except Exception:
             pass
 
@@ -636,6 +674,7 @@ def parse_batch_instructions(
         )
 
     channel_videos = channel_videos or []
+    gemini_fallback_models = DEFAULT_GEMINI_FALLBACKS
     if secrets:
         groq_section = secrets.get("groq") or secrets.get("chatgroq") or {}
         gemini_section = secrets.get("gemini", {})
@@ -658,6 +697,9 @@ def parse_batch_instructions(
             gemini_model or gemini_config.get("model")
             or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model")
         )
+        gemini_fallback_models = gemini_config.get("fallback_models", DEFAULT_GEMINI_FALLBACKS)
+        if isinstance(gemini_fallback_models, str):
+            gemini_fallback_models = [item.strip() for item in gemini_fallback_models.split(",") if item.strip()]
 
     # 1. First, extract ALL direct video references appearing in the text
     all_refs = extract_video_references_from_text(text)
@@ -666,7 +708,7 @@ def parse_batch_instructions(
     ai_plan = None
     if groq_key or gemini_key:
         candidate_plan = _interpret_batch_instructions_with_ai(
-            text, groq_key=groq_key, groq_model=groq_model, gemini_key=gemini_key, gemini_model=gemini_model
+            text, groq_key=groq_key, groq_model=groq_model, gemini_key=gemini_key, gemini_model=gemini_model, gemini_fallback_models=gemini_fallback_models
         )
         if candidate_plan:
             is_valid, _ = validate_batch_instructions_schema(candidate_plan)

@@ -7,64 +7,37 @@
 
 ## Architecture Overview
 
-This repository contains two complementary components:
-1. **The Streamlit Web Application (`app.py`, `streamlit_app.py`)**: A private, hosted web app deployed on Streamlit Community Cloud with Google OpenID Connect auth, separate OAuth flows, Studio export parser, and live proposal diffs.
-2. **The Agent Skills Pack (`skills/`)**: 12 local agent skills with 6 stdlib-only Python command-line tools for scripting, chapters, dead air trimming, retention curve analysis, hook scoring, and viral packaging.
+This repository uses one owner-authenticated Streamlit application as the control centre. GitHub Actions supplies reliable scheduled execution because Streamlit Community Cloud is not an always-on worker. Supabase stores encrypted OAuth grants, run snapshots, proposals, and an audit trail. No second dashboard is required.
 
----
-
-# Part 1: Streamlit Metadata Copilot
+# Part 1: Streamlit Copilot and Autonomous Channel Strategist
 
 ## What It Does
 
-- **Single conversational workspace:** The owner signs in with the configured Google account. There is no sample-channel mode or simulated publishing path.
-- **Channel opportunity scan:** The landing action scans up to 200 recent channel uploads and reviews the last 28 complete days of available YouTube Analytics data. It ranks below-benchmark videos using format-aware channel comparisons.
-- **Video-specific optimization:** Paste a YouTube video or Short link to load current metadata, public metrics, and available captions. The assistant prepares title, description, and separate-tag recommendations grounded in the supplied content.
-- **Three structured title angles:** Curiosity, direct value, and search. Missing or invalid options are rejected rather than filled with generic titles. Description-only and tag-only edits preserve the current title.
-- **Studio evidence:** Attach CSV, TSV, TXT, or XLSX exports. Impressions and CTR are used only when both values are present together in matching video-level evidence from the same report period; CTR is never guessed from views.
-- **Approval-gated publishing:** The exact proposed metadata is shown for editing and comparison. A real YouTube write is available only for the verified owner channel, after explicit approval, a stale-metadata check, and post-write verification.
-- **AI providers:** Groq is primary and Gemini is the configured fallback. No other pages or dashboards are exposed by the app entry point.
+- **One owner-only Streamlit workspace:** Google sign-in, YouTube OAuth, conversational metadata optimization, strategist settings, major-change approvals, and run history stay in the existing app.
+- **Daily channel scan:** a scheduled worker inspects up to 500 uploads, compares the latest mature 28-day period with the previous 28 days, and stores a 90-day channel trend. The Analytics window ends three days before the run to reduce the impact of reporting delays.
+- **Evidence-first diagnosis:** it evaluates views, watch time, average percentage viewed, subscriber gains/losses, traffic sources, impressions, and impression CTR where the YouTube Reporting API returns them. Missing metrics remain unavailable; uploads under 180 seconds stay unclassified and are excluded from peer-underperformance ranking and automatic metadata candidates until orientation can be confirmed.
+- **Gemini reasoning primary:** Gemini 4 Argon is the default strategist model; Gemini 3.8 Flash is the configured model fallback. Groq is an optional provider fallback. The model interprets measured channel evidence; deterministic ranking and publishing gates remain in code.
+- **Automatic low-risk fixes:** only one-field title/description changes that preserve punctuation, every word, number, symbol, and emoji while changing case or whitespace can be auto-published. Up to two new tags can also qualify only when they are exact phrases already present in the source title/description, and no existing tag is removed.
+- **Major changes need approval:** any word/number/meaning change, multi-field rewrite, unsupported tag, removal, or larger metadata edit is saved as a proposal for review inside Streamlit. The worker does not publish it autonomously.
+- **Auditable YouTube writes:** automatic changes require the existing seven-day metadata baseline/cooldown, an owner-configured daily cap (default 3 minor updates), a fresh live before-state, metadata validation, and a successful YouTube read-back. Each run/action stores evidence, before/after metadata, model, result, and errors in Supabase.
+
+## Scheduled execution
+
+| Job | UTC schedule | India time | Purpose |
+|---|---:|---:|---|
+| Daily metadata snapshots | 02:15 | 07:45 | Maintain the seven-day change ledger for owner uploads |
+| Channel strategist | 02:30 | 08:00 | Gather analytics, reason with Gemini, prepare proposals, and publish only eligible minor fixes |
+| Batch metadata worker | Every 5 minutes | Every 5 minutes | Process manually submitted batch instructions and save proposals for review |
+
+The strategy workflow can also be started manually with GitHub Actions **workflow_dispatch**. Scheduled execution requires these GitHub Actions repository secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `YOUTUBE_STRATEGIST_STATE_SECRET`, and `GEMINI_API_KEY`. `GROQ_API_KEY` is optional.
+
+## Owner controls in Streamlit
+
+The **Channel Strategist** panel provides an enable/disable switch for low-risk automatic publishing, a daily auto-publish cap, a per-run metadata proposal cap, a major-change approval queue, and recent audit records. Changes are written only to the owner-scoped Supabase records. The default minor auto-publish cap is three per day; the seven-day per-video cooldown remains a separate safeguard.
+
+The old external ChatGPT/monitor publisher workflow is not part of this Streamlit-only workflow. The legacy API bridge files may remain in the repository for compatibility, but the scheduled external publisher is disabled and no ChatGPT/monitor token is required for the Streamlit strategist.
 
 ---
-
-## Source-Aware Direct Publishing (Separate Private API)
-
-The Streamlit Copilot and trusted external callers use different publishing policies:
-
-- **Streamlit Copilot:** continues to stage proposals and requires the owner's approval of the exact before/after metadata.
-- **ChatGPT bridge:** a publish request is queued only when the caller sends an explicit `publish_confirmed: true` after the user asks to publish. It is not treated as an approval for Streamlit-originated proposals.
-- **Authorized monitor:** can enqueue a direct write under the owner's autonomous monitor policy. The default policy is enabled with a conservative maximum of five monitor requests per UTC day; an owner-specific row in `owner_publish_policies` can disable it or change the cap.
-- **Backend publisher:** rechecks the source authorization, monitor policy, YouTube channel ownership, exact live before-state, metadata validity, and post-write read-back. It records the source and result in the durable request row and live metadata snapshot ledger.
-
-The private API is a separate process; Streamlit Community Cloud does not host this API automatically. Deploy it on a private HTTPS-capable Python service and run the existing `assistant_publish_worker.py` as a scheduled/worker process. Do not expose the Supabase service-role key or YouTube state secret to ChatGPT or a browser.
-
-Required API environment variables:
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `YOUTUBE_STRATEGIST_OWNER_SUBJECT` (the same verified Google OpenID Connect `sub` used by Streamlit)
-- `YOUTUBE_STRATEGIST_STATE_SECRET`
-- `CHATGPT_PUBLISH_API_TOKEN` (high-entropy bearer token)
-- `MONITOR_PUBLISH_API_TOKEN` (separate high-entropy monitor token)
-
-Run the API with:
-
-```bash
-uvicorn assistant_publish_api:app --host 0.0.0.0 --port 8000
-```
-
-API routes:
-- `GET /v1/videos/{video_id}` — read current owner-channel metadata for ChatGPT analysis.
-- `POST /v1/videos/{video_id}/publish` — enqueue a ChatGPT change after explicit publish confirmation.
-- `GET /v1/publish-requests/{request_id}` — check the verified publishing result.
-- `POST /v1/monitor/videos/{video_id}/publish` — enqueue monitor changes under the autonomous policy.
-- `PUT /v1/monitor/policy` — enable/disable monitor auto-publishing and set the daily cap (ChatGPT token only).
-- `GET /v1/monitor/policy` — read the current autonomous publishing setting (ChatGPT token only).
-- `GET /health` — health check.
-
-The monitor endpoint is an integration surface, not a monitor implementation: an existing monitor must call it using the separate monitor token. No monitor process is currently bundled in this repository.
-
----
-
 ## Non-Negotiable Safety & Privacy Rules
 
 1. **Owner-Only Gate:** Strict Google OpenID Connect email and verified-email check against `secrets.access.owner_email` occurs *before* any API client is instantiated or private channel data is shown.

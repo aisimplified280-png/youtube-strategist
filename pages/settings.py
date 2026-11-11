@@ -138,16 +138,16 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
         gemini_cfg = secrets.get("gemini", {})
 
         with ai_cols[0]:
-            st.markdown("**Primary: Groq**")
+            st.markdown("**Fallback: Groq**")
             has_groq = bool(groq_cfg.get("api_key"))
             st.markdown(f"Status: {'✅ Configured' if has_groq else '⚠️ Missing api_key'}")
             st.caption(f"Model: `{groq_cfg.get('model', 'openai/gpt-oss-120b')}`")
 
         with ai_cols[1]:
-            st.markdown("**Fallback: Google Gemini**")
+            st.markdown("**Primary: Gemini reasoning**")
             has_gemini = bool(gemini_cfg.get("api_key"))
             st.markdown(f"Status: {'✅ Configured' if has_gemini else '⚠️ Missing api_key'}")
-            st.caption(f"Model: `{gemini_cfg.get('model', 'gemini-2.5-flash')}`")
+            st.caption(f"Model: `{gemini_cfg.get('model', 'gemini-4-argon')}`")
 
     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 

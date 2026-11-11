@@ -1,4 +1,4 @@
-"""LLM Router and provider client: Groq primary with Google Gemini fallback."""
+"""LLM Router and provider client: Gemini reasoning primary with Groq fallback."""
 
 import json
 import re
@@ -12,8 +12,8 @@ GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_GEMINI_FALLBACKS = ["gemini-2.0-flash", "gemini-1.5-flash"]
+DEFAULT_GEMINI_MODEL = "gemini-4-argon"
+DEFAULT_GEMINI_FALLBACKS = ["gemini-3.8-flash"]
 DEFAULT_TIMEOUT_SECONDS = 30
 
 
@@ -135,7 +135,8 @@ def call_gemini_api(
             {"parts": [{"text": prompt}]}
         ],
         "generationConfig": {
-            "temperature": 0.4,
+            "temperature": 0.3,
+            "thinkingConfig": {"thinkingLevel": "HIGH"},
         }
     }
 
@@ -161,7 +162,7 @@ def call_gemini_api(
 
 
 class LLMRouter:
-    """Router that attempts Groq models first, then falls back to Gemini models."""
+    """Router that attempts Gemini reasoning first, then falls back to Groq models."""
 
     def __init__(self, secrets: Dict[str, Any]):
         groq_cfg = secrets.get("groq", {})
@@ -180,28 +181,12 @@ class LLMRouter:
             self.gemini_fallbacks = [m.strip() for m in self.gemini_fallbacks.split(",") if m.strip()]
 
     def generate(self, prompt: str) -> Tuple[str, str, str]:
-        """Generate text using Groq primary -> Gemini fallback.
-        
-        Returns:
-            (generated_text, provider_name, model_used)
+        """Generate using Gemini model/fallbacks first, then Groq as the provider fallback.
+
+        Returns (generated_text, provider_name, model_used).
         """
         errors = []
 
-        # Try Groq models first
-        if self.groq_key:
-            groq_models = [self.groq_model] + [m for m in self.groq_fallbacks if m != self.groq_model]
-            for model in groq_models:
-                try:
-                    text = call_groq_api(self.groq_key, model, prompt)
-                    return text, "Groq", model
-                except LLMError as err:
-                    errors.append(f"Groq ({model}): {str(err)}")
-                    if not err.recoverable:
-                        break
-        else:
-            errors.append("Groq: No API key configured.")
-
-        # Try Gemini models next
         if self.gemini_key:
             gemini_models = [self.gemini_model] + [m for m in self.gemini_fallbacks if m != self.gemini_model]
             for model in gemini_models:
@@ -215,7 +200,20 @@ class LLMRouter:
         else:
             errors.append("Gemini: No API key configured.")
 
-        raise LLMError(f"All AI providers failed:\n" + "\n".join(errors))
+        if self.groq_key:
+            groq_models = [self.groq_model] + [m for m in self.groq_fallbacks if m != self.groq_model]
+            for model in groq_models:
+                try:
+                    text = call_groq_api(self.groq_key, model, prompt)
+                    return text, "Groq", model
+                except LLMError as err:
+                    errors.append(f"Groq ({model}): {str(err)}")
+                    if not err.recoverable:
+                        break
+        else:
+            errors.append("Groq: No API key configured.")
+
+        raise LLMError("All AI providers failed:\\n" + "\\n".join(errors))
 
     def generate_structured_proposal(self, prompt: str) -> Tuple[Dict[str, Any], str, str]:
         """Generate proposal and ensure structured output, with 1 repair retry on malformed JSON."""

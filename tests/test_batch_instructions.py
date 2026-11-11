@@ -13,7 +13,7 @@ import io
 import json
 import unittest
 from collections import UserDict
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import core.batch_instructions as batch_instructions
 import core.batch_metadata as batch_metadata
@@ -953,37 +953,36 @@ class TestAuditFollowUpRegression(unittest.TestCase):
 
     @patch("strategist_chat._groq_generate")
     @patch("strategist_chat._gemini_generate")
-    def test_02_groq_primary_and_gemini_fallback(self, mock_gemini, mock_groq):
-        mock_groq.side_effect = RuntimeError("Groq service unavailable")
-        mock_gemini.return_value = (
-            json.dumps({
-                "title": "Gemini Fallback Title",
-                "recommended_title": "Gemini Fallback Title",
+    def test_02_gemini_primary_and_groq_fallback(self, mock_gemini, mock_groq):
+        mock_gemini.side_effect = RuntimeError("Gemini service unavailable")
+        mock_groq.return_value = (
+            {
+                "title": "Groq Fallback Title",
+                "recommended_title": "Groq Fallback Title",
                 "recommendation_reason": "The fallback title is concise and clearly searchable.",
                 "title_angles": [
                     {"angle": "curiosity", "label": "Curiosity", "title": "Curious Title"},
-                    {"angle": "value", "label": "Value", "title": "Gemini Fallback Title"},
+                    {"angle": "value", "label": "Direct Value", "title": "Groq Fallback Title"},
                     {"angle": "search", "label": "Search", "title": "Search Title"},
                 ],
-                "description": "Gemini Description",
+                "description": "Groq Description",
                 "tags": ["ai", "gemini"],
-                "rationale": "Groq down, Gemini recovered",
-            }),
-            "gemini-2.5-flash",
+                "rationale": "Gemini unavailable, Groq recovered",
+            },
+            "openai/gpt-oss-120b",
         )
         gen = strategist_chat.build_batch_metadata_generator(
             secrets={
                 "groq": {"api_key": "groq-key"},
-                "gemini": {"api_key": "gemini-key"},
+                "gemini": {"api_key": "gemini-key", "model": "gemini-4-argon"},
             }
         )
         self.assertIsNotNone(gen)
         result = gen(VIDEO_ID_1, make_snippet(VIDEO_ID_1), instruction="Optimize title")
-        self.assertEqual(result["title"], "Gemini Fallback Title")
-        self.assertEqual(result["provider"], "Gemini")
-        self.assertTrue(mock_groq.called)
+        self.assertEqual(result["title"], "Groq Fallback Title")
+        self.assertEqual(result["provider"], "Groq")
         self.assertTrue(mock_gemini.called)
-
+        self.assertTrue(mock_groq.called)
     @patch("youtube_analytics_connector.fetch_video_transcript")
     def test_03_correct_transcript_passed_to_generator(self, mock_transcript):
         mock_transcript.return_value = "This is a detailed video transcript about neural networks."
@@ -2009,6 +2008,35 @@ class TestTitleOptimizationAndVerificationAudit(unittest.TestCase):
         self.assertEqual(row["status"], "verification_unavailable")
         self.assertIn("read-back verification was unavailable", row["result_message"])
 
+
+
+
+class GeminiBatchInstructionFallbackTests(unittest.TestCase):
+    @patch("core.batch_instructions.requests.post")
+    def test_batch_parser_tries_flash_when_gemini_argon_is_quota_limited(self, post):
+        quota = Mock(status_code=429)
+        success = Mock(status_code=200)
+        success.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{ "videos": [], "shared_instructions": "" }'}]}}]
+        }
+        post.side_effect = [quota, success]
+
+        result = batch_instructions._call_gemini_json(
+            "gemini-key", "gemini-4-argon", "prompt", ["gemini-3.8-flash"]
+        )
+        self.assertEqual(result["videos"], [])
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("gemini-4-argon", post.call_args_list[0].args[0])
+        self.assertIn("gemini-3.8-flash", post.call_args_list[1].args[0])
+
+    @patch("core.batch_instructions.requests.post")
+    def test_batch_parser_does_not_retry_gemini_models_on_invalid_key(self, post):
+        post.return_value = Mock(status_code=403)
+        with self.assertRaisesRegex(RuntimeError, "rejected the API key"):
+            batch_instructions._call_gemini_json(
+                "invalid-key", "gemini-4-argon", "prompt", ["gemini-3.8-flash"]
+            )
+        self.assertEqual(post.call_count, 1)
 
 
 if __name__ == "__main__":
