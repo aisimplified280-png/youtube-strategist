@@ -44,7 +44,7 @@ class SourceAwarePublishingQueueTests(unittest.TestCase):
         store = self.make_store()
         with self.assertRaisesRegex(ValueError, "11-character"):
             store.enqueue_chat_publish_request(
-                video_id="recommended", before_metadata=BEFORE,
+                video_id="bad-id", before_metadata=BEFORE,
                 proposed_metadata=PATCH, publish_confirmed=True,
             )
         with self.assertRaisesRegex(ValueError, "Only non-empty"):
