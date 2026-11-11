@@ -696,6 +696,159 @@ def publish_approved_batch_rows(
     return result
 
 
+
+def publish_approved_batch_rows_atomic(
+    youtube,
+    rows: List[Dict[str, Any]],
+    selected_ids,
+    *,
+    approved: bool = False,
+    approval_fingerprint: Optional[str] = None,
+    review_revision: int = 1,
+    audit_callback=None,
+) -> Dict[str, Any]:
+    """Publish a reviewed batch as one compensating transaction.
+
+    Every row is preflighted before the first write. On the first write or
+    verification failure, stop immediately and restore every attempted video
+    to its captured live snippet. YouTube has no cross-video transaction, so
+    rollback is explicitly reported as best-effort and never called atomic
+    when a restoration cannot be verified.
+    """
+    result = {
+        "success_count": 0, "failure_count": 0, "blocked_count": 0,
+        "blocked": False, "message": "", "rolled_back": False,
+        "rollback_failed": [], "preflight_count": 0,
+    }
+    selected = list(dict.fromkeys(str(v) for v in (selected_ids or []) if v))
+    if not approved or not selected:
+        result.update(
+            blocked=True,
+            message=("Publishing requires explicit approval of the exact reviewed proposals."
+                     if not approved else "Select at least one ready video proposal."),
+        )
+        return result
+
+    selected_set = set(selected)
+    selected_rows = [r for r in rows if str(r.get("video_id", "")) in selected_set and r.get("status") == "ready"]
+    if len(selected_rows) != len(selected) or len({str(r.get("video_id")) for r in selected_rows}) != len(selected):
+        result.update(blocked=True, message="Batch blocked: every selected video must have exactly one READY proposal.")
+        return result
+    fingerprint = compute_batch_approval_fingerprint(selected_rows, review_revision=review_revision)
+    if not approval_fingerprint or fingerprint != approval_fingerprint:
+        result.update(blocked=True, message="Batch blocked: approval fingerprint is stale. Review and approve the exact current proposals again.")
+        return result
+
+    # Full preflight: no YouTube writes are allowed until every row passes.
+    prepared = []
+    try:
+        for row in selected_rows:
+            video_id = str(row["video_id"])
+            before = row.get("before") or {}
+            proposed = row.get("proposed") or {}
+            expected_digest = connector.metadata_proposal_digest(video_id, before, proposed)
+            if not row.get("digest") or row["digest"] != expected_digest:
+                raise ValueError(f"{video_id}: proposal digest mismatch.")
+            if not isinstance(proposed, dict) or not proposed:
+                raise ValueError(f"{video_id}: proposed metadata is empty.")
+            if set(proposed) - set(before) - {"title", "description", "tags"}:
+                raise ValueError(f"{video_id}: proposal contains unsupported fields.")
+            connector._validate_metadata(proposed)
+            live = connector.fetch_video_snippet(youtube, video_id)
+            if not isinstance(live, dict) or live.get("channelId") != connector.CHANNEL_ID:
+                raise ValueError(f"{video_id}: owner-channel verification failed.")
+            mismatch = batch_metadata_readback_mismatches(live, before)
+            if mismatch:
+                raise ValueError(f"{video_id}: live metadata changed since review ({', '.join(mismatch)}).")
+            prepared.append((row, video_id, deepcopy(live), deepcopy(proposed)))
+        result["preflight_count"] = len(prepared)
+    except Exception as error:
+        for row in selected_rows:
+            row["status"] = "failed"
+            row["attempted"] = False
+            row["result_message"] = f"Batch preflight failed; no videos were changed. {error}"
+        result.update(failure_count=len(selected_rows), message=f"Batch preflight failed; no videos were changed: {error}")
+        return result
+
+    attempted = []
+    failure = None
+    for row, video_id, original, proposed in prepared:
+        row["attempted"] = True
+        row["status"] = "publishing"
+        attempted.append((row, video_id, original))
+        try:
+            digest = connector.metadata_proposal_digest(video_id, original, proposed)
+            applied = connector.apply_approved_dashboard_proposal(
+                youtube, video_id, original, proposed, digest,
+                audit_callback=audit_callback or (lambda entry: None),
+            )
+            if not isinstance(applied, dict) or applied.get("result") != "success":
+                raise RuntimeError("YouTube did not confirm a successful metadata update.")
+            verified = connector.fetch_video_snippet(youtube, video_id)
+            mismatches = batch_metadata_readback_mismatches(verified, proposed)
+            if mismatches:
+                raise RuntimeError("YouTube read-back mismatch: " + ", ".join(mismatches))
+            row["status"] = "verified"
+            row["result_message"] = "Published and verified."
+        except Exception as error:
+            failure = (row, video_id, error)
+            row["result_message"] = f"{type(error).__name__}: {error}"
+            break
+
+    if failure is None:
+        result.update(success_count=len(prepared), message=f"All {len(prepared)} videos were published and verified.")
+        return result
+
+    # Compensate in reverse order, including the failed/uncertain write: an API
+    # error can occur after YouTube accepted the update.
+    rollback_failed = []
+    for row, video_id, original in reversed(attempted):
+        try:
+            current = connector.fetch_video_snippet(youtube, video_id)
+            if not isinstance(current, dict) or current.get("channelId") != connector.CHANNEL_ID:
+                raise RuntimeError("Could not verify owner channel during rollback.")
+            if not batch_metadata_readback_mismatches(current, original):
+                row["status"] = "rolled_back"
+                row["result_message"] = "Batch aborted; original metadata confirmed unchanged/restored."
+                continue
+            restore = deepcopy(original)
+            restore_digest = connector.metadata_proposal_digest(video_id, current, restore)
+            restored = connector.apply_approved_dashboard_proposal(
+                youtube, video_id, current, restore, restore_digest,
+                audit_callback=audit_callback or (lambda entry: None),
+            )
+            if not isinstance(restored, dict) or restored.get("result") != "success":
+                raise RuntimeError("YouTube did not confirm the restore request.")
+            check = connector.fetch_video_snippet(youtube, video_id)
+            mismatches = batch_metadata_readback_mismatches(check, original)
+            if mismatches:
+                raise RuntimeError("Restore verification mismatch: " + ", ".join(mismatches))
+            row["status"] = "rolled_back"
+            row["result_message"] = "Batch aborted; original metadata restored and verified."
+        except Exception as rollback_error:
+            rollback_failed.append(video_id)
+            row["status"] = "rollback_failed"
+            row["result_message"] = f"Rollback could not be verified: {rollback_error}"
+
+    # Nothing remains eligible or queued in this selected batch after a failure.
+    for row in selected_rows:
+        if row.get("status") in {"ready", "approved", "publishing"}:
+            row["status"] = "failed"
+            row["result_message"] = "Batch aborted; this video was not published."
+    result["rollback_failed"] = rollback_failed
+    result["rolled_back"] = not rollback_failed
+    result["failure_count"] = len(selected_rows)
+    result["success_count"] = 0
+    result["message"] = (
+        f"Batch aborted after a publish/verification failure. All attempted videos were restored and verified; "
+        f"{len(selected_rows)} selected queue rows are now terminal."
+        if not rollback_failed else
+        f"Batch aborted, but rollback could not be verified for: {', '.join(rollback_failed)}. "
+        "The active batch is terminal; these videos require manual inspection."
+    )
+    return result
+
+
 def fetch_owner_verified_snippets(youtube, rows: List[Dict[str, Any]]):
     """Fetch each parsed video's live snippet once, in YouTube API chunks of at most 50."""
     if youtube is None:
