@@ -79,8 +79,39 @@ def process_one_request(store, cipher, worker_id: str | None = None) -> bool:
     video_id = request["video_id"]
     digest = ""
     try:
-        if not request.get("approved_at") or not str(request.get("approved_by") or "").strip():
-            raise RuntimeError("Publishing request has no explicit approval record.")
+        request_source = str(request.get("request_source") or "chatgpt")
+        authorization_mode = str(request.get("authorization_mode") or "explicit_user_command")
+        authorized_by = str(request.get("authorized_by") or "").strip()
+        authorized_at = request.get("authorized_at")
+
+        if request_source == "chatgpt":
+            if authorization_mode != "explicit_user_command" or not authorized_by or not authorized_at:
+                raise RuntimeError("ChatGPT publishing requires a recorded explicit user publish command.")
+        elif request_source == "monitor":
+            if authorization_mode != "monitor_policy" or not authorized_by or not authorized_at:
+                raise RuntimeError("Monitor publishing requires a recorded autonomous-policy authorization.")
+            policies = store._request("GET", "owner_publish_policies", params={
+                "owner_key": f"eq.{owner_key}",
+                "select": "monitor_auto_publish_enabled,max_daily_publishes",
+                "limit": "1",
+            })
+            policy = policies[0] if policies else {
+                "monitor_auto_publish_enabled": True, "max_daily_publishes": 5
+            }
+            if policy.get("monitor_auto_publish_enabled") is not True:
+                raise RuntimeError("Monitor autonomous publishing has been disabled; no YouTube write was attempted.")
+            cap = max(1, min(int(policy.get("max_daily_publishes") or 5), 25))
+            day_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).isoformat()
+            todays = store._request("GET", "assistant_publish_requests", params={
+                "owner_key": f"eq.{owner_key}", "request_source": "eq.monitor",
+                "status": "eq.verified", "created_at": f"gte.{day_start}", "select": "id",
+            })
+            if len(todays or []) > cap:
+                raise RuntimeError(f"Monitor daily publishing limit reached ({cap} per UTC day).")
+        else:
+            raise RuntimeError("Unknown publishing request source; refusing to write.")
 
         credentials = _get_owner_credentials(store, owner_key, cipher)
         youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
@@ -130,8 +161,8 @@ def process_one_request(store, cipher, worker_id: str | None = None) -> bool:
         row["digest"] = digest
         fingerprint = batch_metadata.compute_batch_approval_fingerprint([row], review_revision=1)
 
-        # Explicit approval is the immutable queue record created after the user confirms
-        # this exact before/after proposal. No monitor cooldown is consulted here.
+        # The immutable queue record carries its trusted source authorization. ChatGPT
+        # requires an explicit publish command; monitors require the owner's autonomous policy.
         publish_result = batch_metadata.publish_approved_batch_rows(
             youtube,
             [row],
@@ -161,9 +192,14 @@ def process_one_request(store, cipher, worker_id: str | None = None) -> bool:
             return True
 
         after = after_items[0].get("snippet") or {}
-        _record_live_metadata_snapshot(store, owner_key, video_id, after, source="manual")
+        _record_live_metadata_snapshot(
+            store, owner_key, video_id, after,
+            source="monitor" if request_source == "monitor" else "manual",
+        )
         _finish(store, request_id, "verified", {
             "message": "Metadata update published and verified against YouTube.",
+            "request_source": request_source,
+            "authorized_by": authorized_by,
             "video_id": video_id,
             "title": after.get("title", ""),
             "url": f"https://www.youtube.com/watch?v={video_id}",
