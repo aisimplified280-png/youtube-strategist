@@ -159,7 +159,7 @@ def _daily_auto_count(store, owner_key: str) -> int:
     rows = store._request("GET", "channel_strategy_actions", params={
         "owner_key": f"eq.{owner_key}",
         "classification": "eq.minor",
-        "status": "in.(auto_published,auto_publishing)",
+        "status": "in.(auto_published,auto_publishing,verification_unavailable,failed)",
         "executed_at": f"gte.{start}",
         "select": "id",
         "limit": "100",
@@ -169,6 +169,30 @@ def _daily_auto_count(store, owner_key: str) -> int:
 
 def _update_action(store, action_id: str, owner_key: str, values: dict):
     store.update_strategy_action(action_id, owner_key, values)
+
+
+def _recover_interrupted_actions(store, owner_key: str, *, stale_minutes: int = 20) -> int:
+    """Never retry a possibly-sent write after a worker crash; mark it for manual verification."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
+    rows = store._request("GET", "channel_strategy_actions", params={
+        "owner_key": f"eq.{owner_key}",
+        "status": "eq.auto_publishing",
+        "executed_at": f"lt.{cutoff}",
+        "select": "id,video_title,video_id",
+        "limit": "100",
+    })
+    recovered = 0
+    for item in rows or []:
+        action_id = item.get("id")
+        if not action_id:
+            continue
+        _update_action(store, action_id, owner_key, {
+            "status": "verification_unavailable",
+            "error": "The scheduled worker was interrupted during a metadata write. The request was not retried because YouTube may already have accepted it. Reload the live video metadata and verify manually before taking another action.",
+            "updated_at": _utc_now(),
+        })
+        recovered += 1
+    return recovered
 
 
 def _process_candidate(
@@ -361,6 +385,7 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
         "failed": 0, "no_change": 0, "verification_unavailable": 0,
     }
     try:
+        counters["verification_unavailable"] += _recover_interrupted_actions(store, owner_key)
         snapshot = collect_channel_snapshot(
             youtube, analytics, reporting, credentials, OWNER_CHANNEL_ID,
             catalogue_limit=int(os.getenv("STRATEGY_CATALOGUE_LIMIT", "500")),
