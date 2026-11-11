@@ -56,7 +56,7 @@ begin
     if p_video_id is null or p_video_id !~ '^[A-Za-z0-9_-]{11}$' then
         raise exception 'A valid 11-character YouTube video ID is required';
     end if;
-    if p_source not in ('monitor', 'copilot', 'worker', 'manual') then
+    if coalesce(p_source, '') not in ('monitor', 'copilot', 'worker', 'manual') then
         raise exception 'Unsupported metadata snapshot source';
     end if;
     if p_tags is not null and jsonb_typeof(p_tags) <> 'array' then
@@ -92,7 +92,7 @@ begin
           from public.video_metadata_snapshots s
          where s.owner_key = p_owner_key and s.video_id = p_video_id
          for update;
-        if v_existing.metadata_hash is distinct from v_hash then
+        if v_existing.metadata_snapshot is distinct from v_snapshot then
             v_changed := true;
             update public.video_metadata_snapshots s
                set metadata_snapshot = v_snapshot,
@@ -111,7 +111,7 @@ begin
              returning * into v_existing;
         end if;
     else
-        v_changed := v_existing.metadata_hash is distinct from v_hash;
+        v_changed := v_existing.metadata_snapshot is distinct from v_snapshot;
         update public.video_metadata_snapshots s
            set metadata_snapshot = v_snapshot,
                metadata_hash = v_hash,
