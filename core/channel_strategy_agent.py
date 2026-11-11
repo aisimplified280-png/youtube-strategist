@@ -417,10 +417,10 @@ Evidence:
         except requests.RequestException as error:
             failures.append(f"{candidate}: {type(error).__name__}")
             continue
+        if response.status_code in (401, 403):
+            raise RuntimeError("Gemini rejected the API key or access. Check GEMINI_API_KEY and API permissions.")
         if response.status_code >= 400:
             failures.append(f"{candidate}: HTTP {response.status_code}")
-            if response.status_code in (401, 403):
-                continue
             if response.status_code not in (404, 408, 429, 500, 502, 503, 504):
                 break
             continue
