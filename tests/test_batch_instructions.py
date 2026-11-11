@@ -953,37 +953,36 @@ class TestAuditFollowUpRegression(unittest.TestCase):
 
     @patch("strategist_chat._groq_generate")
     @patch("strategist_chat._gemini_generate")
-    def test_02_groq_primary_and_gemini_fallback(self, mock_gemini, mock_groq):
-        mock_groq.side_effect = RuntimeError("Groq service unavailable")
-        mock_gemini.return_value = (
-            json.dumps({
-                "title": "Gemini Fallback Title",
-                "recommended_title": "Gemini Fallback Title",
+    def test_02_gemini_primary_and_groq_fallback(self, mock_gemini, mock_groq):
+        mock_gemini.side_effect = RuntimeError("Gemini service unavailable")
+        mock_groq.return_value = (
+            {
+                "title": "Groq Fallback Title",
+                "recommended_title": "Groq Fallback Title",
                 "recommendation_reason": "The fallback title is concise and clearly searchable.",
                 "title_angles": [
                     {"angle": "curiosity", "label": "Curiosity", "title": "Curious Title"},
-                    {"angle": "value", "label": "Value", "title": "Gemini Fallback Title"},
+                    {"angle": "value", "label": "Direct Value", "title": "Groq Fallback Title"},
                     {"angle": "search", "label": "Search", "title": "Search Title"},
                 ],
-                "description": "Gemini Description",
+                "description": "Groq Description",
                 "tags": ["ai", "gemini"],
-                "rationale": "Groq down, Gemini recovered",
-            }),
-            "gemini-2.5-flash",
+                "rationale": "Gemini unavailable, Groq recovered",
+            },
+            "openai/gpt-oss-120b",
         )
         gen = strategist_chat.build_batch_metadata_generator(
             secrets={
                 "groq": {"api_key": "groq-key"},
-                "gemini": {"api_key": "gemini-key"},
+                "gemini": {"api_key": "gemini-key", "model": "gemini-4-argon"},
             }
         )
         self.assertIsNotNone(gen)
         result = gen(VIDEO_ID_1, make_snippet(VIDEO_ID_1), instruction="Optimize title")
-        self.assertEqual(result["title"], "Gemini Fallback Title")
-        self.assertEqual(result["provider"], "Gemini")
-        self.assertTrue(mock_groq.called)
+        self.assertEqual(result["title"], "Groq Fallback Title")
+        self.assertEqual(result["provider"], "Groq")
         self.assertTrue(mock_gemini.called)
-
+        self.assertTrue(mock_groq.called)
     @patch("youtube_analytics_connector.fetch_video_transcript")
     def test_03_correct_transcript_passed_to_generator(self, mock_transcript):
         mock_transcript.return_value = "This is a detailed video transcript about neural networks."
