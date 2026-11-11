@@ -287,22 +287,21 @@ class SupabasePersistentStore:
         """Queue a monitor optimization under the owner's autonomous-publishing policy."""
         if not self.owner_key:
             raise PersistentStoreError("A verified owner-scoped store is required.")
-        policy = self.get_monitor_publish_policy()
-        if policy.get("monitor_auto_publish_enabled") is not True:
-            raise PersistentStoreError("Autonomous monitor publishing is disabled for this owner.")
-        cap = max(1, min(int(policy.get("max_daily_publishes") or 5), 25))
-        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        todays = self._request("GET", "assistant_publish_requests", params={
-            "owner_key": f"eq.{self.owner_key}",
-            "request_source": "eq.monitor",
-            "created_at": f"gte.{day_start}",
-            "select": "id",
+        import re
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(video_id or "")):
+            raise ValueError("A valid 11-character YouTube video ID is required.")
+        if not isinstance(before_metadata, dict) or not isinstance(proposed_metadata, dict):
+            raise ValueError("Before metadata and proposed metadata must be objects.")
+        if not proposed_metadata or set(proposed_metadata) - {"title", "description", "tags"}:
+            raise ValueError("Only non-empty title, description, and tags changes can be queued.")
+        rows = self._request("POST", "rpc/enqueue_monitor_publish_request", payload={
+            "p_owner_key": self.owner_key,
+            "p_video_id": video_id,
+            "p_before_metadata": before_metadata,
+            "p_proposed_metadata": proposed_metadata,
+            "p_authorized_by": str(authorized_by)[:160],
+            "p_idempotency_key": idempotency_key,
         })
-        if len(todays or []) >= cap:
-            raise PersistentStoreError(f"Monitor daily publishing limit reached ({cap} per UTC day).")
-        return self._enqueue_publish_request(
-            video_id=video_id, before_metadata=before_metadata,
-            proposed_metadata=proposed_metadata, request_source="monitor",
-            authorization_mode="monitor_policy", authorized_by=authorized_by,
-            idempotency_key=idempotency_key,
-        )
+        if not rows:
+            raise PersistentStoreError("Supabase did not return the monitor publishing queue record.")
+        return rows[0]
