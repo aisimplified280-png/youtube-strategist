@@ -31,5 +31,4 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           YOUTUBE_STRATEGIST_STATE_SECRET: ${{ secrets.YOUTUBE_STRATEGIST_STATE_SECRET }}
-          YOUTUBE_OWNER_KEY: "ba3fa6ce535dbab1920f1116863fabfc5343ee5d4f4d89ed766489b979aa871b"
         run: python metadata_snapshot_worker.py
