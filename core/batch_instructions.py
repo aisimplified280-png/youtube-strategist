@@ -147,7 +147,16 @@ def extract_video_references_from_text(text: str) -> List[Dict[str, Any]]:
     )
     for match in list_pattern.finditer(text):
         vid = match.group(1)
-        if _is_probable_video_id(vid):
+        # In free-form prose, an all-lowercase alphabetic word is too ambiguous
+        # to treat as a YouTube ID (for example, "recommended" in "Recommended title:").
+        # Lowercase-only IDs remain supported when explicitly labelled or on a
+        # dedicated ID line by the stricter patterns above.
+        looks_like_unambiguous_id = (
+            any(c.isdigit() for c in vid)
+            or any(c in "_-" for c in vid)
+            or (any(c.isupper() for c in vid) and any(c.islower() for c in vid))
+        )
+        if looks_like_unambiguous_id and _is_probable_video_id(vid):
             _add_ref(vid, vid, "id", match.start(1), match.end(1))
 
     found_refs.sort(key=lambda r: r["start"])

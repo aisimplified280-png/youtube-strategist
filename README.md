@@ -27,6 +27,44 @@ This repository contains two complementary components:
 
 ---
 
+## Source-Aware Direct Publishing (Separate Private API)
+
+The Streamlit Copilot and trusted external callers use different publishing policies:
+
+- **Streamlit Copilot:** continues to stage proposals and requires the owner's approval of the exact before/after metadata.
+- **ChatGPT bridge:** a publish request is queued only when the caller sends an explicit `publish_confirmed: true` after the user asks to publish. It is not treated as an approval for Streamlit-originated proposals.
+- **Authorized monitor:** can enqueue a direct write under the owner's autonomous monitor policy. The default policy is enabled with a conservative maximum of five monitor requests per UTC day; an owner-specific row in `owner_publish_policies` can disable it or change the cap.
+- **Backend publisher:** rechecks the source authorization, monitor policy, YouTube channel ownership, exact live before-state, metadata validity, and post-write read-back. It records the source and result in the durable request row and live metadata snapshot ledger.
+
+The private API is a separate process; Streamlit Community Cloud does not host this API automatically. Deploy it on a private HTTPS-capable Python service and run the existing `assistant_publish_worker.py` as a scheduled/worker process. Do not expose the Supabase service-role key or YouTube state secret to ChatGPT or a browser.
+
+Required API environment variables:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `YOUTUBE_STRATEGIST_OWNER_SUBJECT` (the same verified Google OpenID Connect `sub` used by Streamlit)
+- `YOUTUBE_STRATEGIST_STATE_SECRET`
+- `CHATGPT_PUBLISH_API_TOKEN` (high-entropy bearer token)
+- `MONITOR_PUBLISH_API_TOKEN` (separate high-entropy monitor token)
+
+Run the API with:
+
+```bash
+uvicorn assistant_publish_api:app --host 0.0.0.0 --port 8000
+```
+
+API routes:
+- `GET /v1/videos/{video_id}` — read current owner-channel metadata for ChatGPT analysis.
+- `POST /v1/videos/{video_id}/publish` — enqueue a ChatGPT change after explicit publish confirmation.
+- `GET /v1/publish-requests/{request_id}` — check the verified publishing result.
+- `POST /v1/monitor/videos/{video_id}/publish` — enqueue monitor changes under the autonomous policy.
+- `PUT /v1/monitor/policy` — enable/disable monitor auto-publishing and set the daily cap (ChatGPT token only).
+- `GET /v1/monitor/policy` — read the current autonomous publishing setting (ChatGPT token only).
+- `GET /health` — health check.
+
+The monitor endpoint is an integration surface, not a monitor implementation: an existing monitor must call it using the separate monitor token. No monitor process is currently bundled in this repository.
+
+---
+
 ## Non-Negotiable Safety & Privacy Rules
 
 1. **Owner-Only Gate:** Strict Google OpenID Connect email and verified-email check against `secrets.access.owner_email` occurs *before* any API client is instantiated or private channel data is shown.

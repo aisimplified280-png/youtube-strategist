@@ -43,6 +43,5 @@ jobs:
           WORKER_MAX_JOBS: "10"
           WORKER_IDLE_SECONDS: "5"
         run: python worker.py
-      # The assistant queue worker is intentionally not scheduled yet. The live
-      # app uses the persistent batch path; the single-request worker is not
-      # batch-atomic and its Supabase migration has not been deployed.
+      # Trusted direct-publish requests are processed by the separate
+      # assistant-publish-worker.yml workflow after its additive migration is applied.
