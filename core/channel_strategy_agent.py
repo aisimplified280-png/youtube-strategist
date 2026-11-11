@@ -107,6 +107,18 @@ def _growth(current, previous):
     return round(((current - previous) / abs(previous)) * 100, 2)
 
 
+def _benchmarkable_video_rows(video_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Only uploads over 180 seconds are confirmed standard videos for peer benchmarking.
+
+    Shorter uploads may be vertical Shorts or horizontal videos; YouTube Data API
+    does not expose orientation, so they must not be blended into a peer cohort.
+    """
+    return [
+        row for row in video_rows
+        if _number(row.get("duration_seconds")) and row["duration_seconds"] > 180
+    ]
+
+
 def collect_channel_snapshot(
     youtube,
     analytics,
@@ -235,7 +247,8 @@ def collect_channel_snapshot(
             ),
         })
 
-    ranked = connector.rank_channel_video_opportunities(video_rows, limit=15)
+    benchmarkable_rows = _benchmarkable_video_rows(video_rows)
+    ranked = connector.rank_channel_video_opportunities(benchmarkable_rows, limit=15)
     current_channel, current_status = _query_or_status(
         analytics, start_date, end_date, CHANNEL_METRICS, max_results=10
     )
@@ -307,6 +320,10 @@ def collect_channel_snapshot(
         "video_analytics_statuses": analytics_statuses,
         "top_videos_by_views": [compact_video(row) for row in winners_by_views],
         "top_videos_by_subscriber_conversion": [compact_video(row) for row in winners_by_subs],
+        "unscored_short_duration_uploads": [
+            compact_video(row) for row in video_rows
+            if not (_number(row.get("duration_seconds")) and row["duration_seconds"] > 180)
+        ],
         "opportunities": [compact_video(row) for row in ranked],
         "video_rows": video_rows,
     }
@@ -369,7 +386,9 @@ Evidence:
     "daily_trend_status": snapshot.get("daily_trend_status"),
     "daily_trend_90_days": daily_trend,
     "top_videos_by_views": top_views,
+    "top_videos_by_views": top_views,
     "top_videos_by_subscriber_conversion": winners,
+    "unscored_short_duration_uploads": snapshot.get("unscored_short_duration_uploads") or [],
     "opportunities": opportunities,
 }, ensure_ascii=False)}
 """
