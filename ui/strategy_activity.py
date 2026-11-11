@@ -143,7 +143,7 @@ def render_strategy_activity(store, youtube=None):
             st.warning(str(latest["error"]))
         snapshot = latest.get("metrics_snapshot") or {}
         channel_metrics = snapshot.get("channel_metrics") or {}
-        deltas = latest.get("period_deltas_percent") or {}
+        deltas = snapshot.get("period_deltas_percent") or {}
         kpi_values = [
             ("28-day views", channel_metrics.get("views"), deltas.get("views")),
             ("Watch time (minutes)", channel_metrics.get("estimatedMinutesWatched"), deltas.get("estimatedMinutesWatched")),
