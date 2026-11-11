@@ -428,12 +428,19 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
                     "errors": ["No generated proposal row was returned."],
                 }
                 counters["proposals"] += 1
+                actual_provider = row.get("ai_provider")
+                actual_model = row.get("ai_model")
+                metadata_model = (
+                    f"{actual_provider}:{actual_model}"
+                    if actual_provider and actual_model
+                    else proposal_model
+                )
                 result, auto_count = _process_candidate(
                     store, youtube, owner_key, run_id, candidate, row,
                     auto_minor_enabled=bool(settings.get("auto_minor_enabled", True)),
                     auto_daily_cap=int(settings.get("max_daily_minor_publishes", 3)),
                     auto_count=auto_count,
-                    model_name=proposal_model,
+                    model_name=metadata_model,
                 )
                 if result in counters:
                     counters[result] += 1
