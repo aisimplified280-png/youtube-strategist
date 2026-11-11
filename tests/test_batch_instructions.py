@@ -13,7 +13,7 @@ import io
 import json
 import unittest
 from collections import UserDict
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import core.batch_instructions as batch_instructions
 import core.batch_metadata as batch_metadata
