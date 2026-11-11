@@ -1025,12 +1025,15 @@ def _publish_persistent_batch_selection(youtube, store, job_id, rows, selected_i
     )
     selected_set = {str(video_id) for video_id in selected_ids}
     for row in rows:
-        if str(row.get("video_id") or "") not in selected_set or not row.get("attempted"):
+        if str(row.get("video_id") or "") not in selected_set:
             continue
         details = dict(row.get("_record", {}).get("proposal_details") or {})
         details["result_message"] = row.get("result_message") or ""
         details["changed_fields"] = row.get("changed_fields") or []
         details["proposed_title"] = row.get("proposed", {}).get("title", "")
+        # Every selected row is persisted to a terminal state, including rows
+        # that were not reached after an earlier failure and rows restored by
+        # compensation. No selected proposal is left READY/queued after abort.
         persisted_status = row.get("status") if row.get("status") in {
             "verified", "failed", "no_change", "verification_unavailable"
         } else "failed"
