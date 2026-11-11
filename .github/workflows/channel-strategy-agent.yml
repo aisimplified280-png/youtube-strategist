@@ -1,0 +1,44 @@
+name: AI Simplified Lab channel strategist
+
+on:
+  # Metadata snapshots run at 02:15 UTC. The strategist starts afterwards,
+  # at 08:00 Asia/Kolkata, using the stable seven-day metadata cooldown.
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-simplified-lab-channel-strategist
+  cancel-in-progress: false
+
+jobs:
+  strategist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run evidence-first channel strategist
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          YOUTUBE_STRATEGIST_STATE_SECRET: ${{ secrets.YOUTUBE_STRATEGIST_STATE_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: "gemini-4-argon"
+          GEMINI_FALLBACK_MODELS: "gemini-3.8-flash"
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: "openai/gpt-oss-120b"
+          STRATEGY_TRIGGER_SOURCE: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'schedule' }}
+          STRATEGY_CATALOGUE_LIMIT: "500"
+          LOG_LEVEL: "INFO"
+        run: python channel_strategy_worker.py
