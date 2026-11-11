@@ -58,7 +58,7 @@ def _compact_snapshot(snapshot: dict) -> dict:
             "daily_trend_status", "daily_trend", "traffic_sources_status",
             "traffic_sources", "reach_status", "video_analytics_statuses",
             "top_videos_by_views", "top_videos_by_subscriber_conversion",
-            "opportunities",
+            "unscored_short_duration_uploads", "opportunities",
         )
     }
 
