@@ -134,7 +134,7 @@ def process_one_job(store, cipher, groq_key, gemini_key):
             "groq": {"api_key": groq_key, "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")},
             "gemini": {
                 "api_key": gemini_key,
-                "model": os.getenv("GEMINI_MODEL", "gemini-4-argon"),
+                "model": os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
                 "fallback_models": [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.8-flash").split(",") if m.strip()],
             },
         }

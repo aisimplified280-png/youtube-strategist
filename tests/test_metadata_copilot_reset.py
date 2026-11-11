@@ -516,7 +516,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             groq_model="groq-model",
             groq_fallbacks=[],
             gemini_key="gemini-key",
-            gemini_model="gemini-4-argon",
+            gemini_model="gemini-3.1-pro-preview",
             gemini_fallbacks=["gemini-3.8-flash"],
             prompt="Optimize video",
         )

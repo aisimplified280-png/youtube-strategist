@@ -147,7 +147,7 @@ def render_settings(secrets=None, subject=None, youtube_creds=None, memory_creds
             st.markdown("**Primary: Gemini reasoning**")
             has_gemini = bool(gemini_cfg.get("api_key"))
             st.markdown(f"Status: {'✅ Configured' if has_gemini else '⚠️ Missing api_key'}")
-            st.caption(f"Model: `{gemini_cfg.get('model', 'gemini-4-argon')}`")
+            st.caption(f"Model: `{gemini_cfg.get('model', 'gemini-3.1-pro-preview')}`")
 
     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 

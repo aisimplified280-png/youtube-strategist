@@ -974,7 +974,7 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         gen = strategist_chat.build_batch_metadata_generator(
             secrets={
                 "groq": {"api_key": "groq-key"},
-                "gemini": {"api_key": "gemini-key", "model": "gemini-4-argon"},
+                "gemini": {"api_key": "gemini-key", "model": "gemini-3.1-pro-preview"},
             }
         )
         self.assertIsNotNone(gen)
@@ -2022,11 +2022,11 @@ class GeminiBatchInstructionFallbackTests(unittest.TestCase):
         post.side_effect = [quota, success]
 
         result = batch_instructions._call_gemini_json(
-            "gemini-key", "gemini-4-argon", "prompt", ["gemini-3.8-flash"]
+            "gemini-key", "gemini-3.1-pro-preview", "prompt", ["gemini-3.8-flash"]
         )
         self.assertEqual(result["videos"], [])
         self.assertEqual(post.call_count, 2)
-        self.assertIn("gemini-4-argon", post.call_args_list[0].args[0])
+        self.assertIn("gemini-3.1-pro-preview", post.call_args_list[0].args[0])
         self.assertIn("gemini-3.8-flash", post.call_args_list[1].args[0])
 
     @patch("core.batch_instructions.requests.post")
@@ -2034,7 +2034,7 @@ class GeminiBatchInstructionFallbackTests(unittest.TestCase):
         post.return_value = Mock(status_code=403)
         with self.assertRaisesRegex(RuntimeError, "rejected the API key"):
             batch_instructions._call_gemini_json(
-                "invalid-key", "gemini-4-argon", "prompt", ["gemini-3.8-flash"]
+                "invalid-key", "gemini-3.1-pro-preview", "prompt", ["gemini-3.8-flash"]
             )
         self.assertEqual(post.call_count, 1)
 
