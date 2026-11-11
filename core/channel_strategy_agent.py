@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import date, timedelta
 from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -429,6 +430,14 @@ def _phrase_in_source(tag: str, source: str) -> bool:
     return any(source_tokens[index:index + width] == tag_tokens for index in range(len(source_tokens) - width + 1))
 
 
+def _formatting_signature(value: str) -> str:
+    """Normalize case, punctuation and whitespace; preserve symbols, emoji and word/number tokens."""
+    normalized = unicodedata.normalize("NFKC", value or "").casefold()
+    return "".join(
+        character for character in normalized
+        if not character.isspace() and not unicodedata.category(character).startswith("P")
+    )
+
 def classify_metadata_change(
     before: Dict[str, Any],
     proposed: Dict[str, Any],
@@ -440,7 +449,7 @@ def classify_metadata_change(
     Auto-publish is limited to one-field, meaning-preserving edits only:
     title/description casing, punctuation or whitespace; or at most two new
     tags that are exact phrases already present in the video's supplied source.
-    Any word-level title/description rewrite is major and requires review.
+    Any word, number, symbol or emoji change is major and requires review.
     """
     changed = [
         field for field in ("title", "description", "tags")
@@ -456,9 +465,9 @@ def classify_metadata_change(
     if field in {"title", "description"}:
         original = before.get(field) or ""
         replacement = proposed.get(field) or ""
-        if _tokens(original) == _tokens(replacement):
-            return "minor", f"{field.title()} changes only casing, punctuation, or whitespace; word and number sequence is unchanged.", changed
-        return "major", f"{field.title()} changes words or meaning-bearing tokens; owner review is required.", changed
+        if _formatting_signature(original) == _formatting_signature(replacement):
+            return "minor", f"{field.title()} changes only casing, punctuation, or whitespace; every word, number, symbol and emoji is preserved.", changed
+        return "major", f"{field.title()} changes words, numbers, symbols or meaning-bearing characters; owner review is required.", changed
 
     old_tags = [str(tag).strip() for tag in before.get("tags", [])]
     new_tags = [str(tag).strip() for tag in proposed.get("tags", [])]
