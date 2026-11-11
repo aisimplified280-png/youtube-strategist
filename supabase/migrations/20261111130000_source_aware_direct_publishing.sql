@@ -102,6 +102,8 @@ begin
     raise exception 'only title, description, and tags may be changed';
   end if;
 
+  perform pg_advisory_xact_lock(hashtextextended(p_owner_key, 0));
+
   if p_idempotency_key is not null then
     select * into v_existing
       from public.assistant_publish_requests
