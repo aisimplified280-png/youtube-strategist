@@ -994,6 +994,9 @@ def prepare_metadata_batch(
                 )
 
                 ai_result = ai_generator(**gen_kwargs)
+                if isinstance(ai_result, dict):
+                    row["ai_provider"] = ai_result.get("provider")
+                    row["ai_model"] = ai_result.get("model")
                 if not isinstance(ai_result, dict):
                     row["status"] = "invalid"
                     row["errors"].append("AI generator did not return a valid metadata proposal dictionary.")
