@@ -35,22 +35,36 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
         )
         if not isinstance(result, dict) or result.get("result") != "success":
             raise RuntimeError("YouTube did not confirm the metadata update.")
-        after = connector.fetch_video_snippet(youtube, video_id)
-        after_metadata = {
-            "title": after.get("title") or "",
-            "description": after.get("description") or "",
-            "tags": list(after.get("tags") or []),
-            "categoryId": after.get("categoryId") or "",
-        }
+        after_metadata = None
+        after_snapshot_warning = None
+        try:
+            after = connector.fetch_video_snippet(youtube, video_id)
+            after_metadata = {
+                "title": after.get("title") or "",
+                "description": after.get("description") or "",
+                "tags": list(after.get("tags") or []),
+                "categoryId": after.get("categoryId") or "",
+            }
+        except Exception as snapshot_error:
+            # apply_approved_dashboard_proposal has already verified the write.
+            # This second fetch only enriches the audit record.
+            after_snapshot_warning = f"{type(snapshot_error).__name__}: {str(snapshot_error)[:800]}"
         store.update_strategy_action(action_id, store.owner_key, {
             "status": "approved_published",
-            "after_metadata": after,
-            "result": {"result": result.get("result"), "url": result.get("url")},
+            "after_metadata": after_metadata,
+            "result": {
+                "result": result.get("result"),
+                "url": result.get("url"),
+                "post_write_snapshot_warning": after_snapshot_warning,
+            },
             "error": None,
             "executed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         })
-        return True, "Approved metadata update was published and verified."
+        message = "Approved metadata update was published and verified."
+        if after_snapshot_warning:
+            message += " The extra after-snapshot could not be collected; the publisher verification is retained in the audit log."
+        return True, message
     except connector.MetadataVerificationUnavailableError as error:
         store.update_strategy_action(action_id, store.owner_key, {
             "status": "verification_unavailable",
