@@ -241,8 +241,6 @@ class BatchMetadataTests(unittest.TestCase):
         self.assertEqual(rows[0]["changed_fields"], "title, tags")
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class AtomicBatchPublishingTests(unittest.TestCase):
@@ -299,3 +297,6 @@ class AtomicBatchPublishingTests(unittest.TestCase):
         self.assertTrue(all(r["status"] not in {"ready", "approved", "publishing"} for r in rows))
         for row in rows:
             self.assertEqual(live[row["video_id"]]["title"], row["before"]["title"])
+
+if __name__ == "__main__":
+    unittest.main()
