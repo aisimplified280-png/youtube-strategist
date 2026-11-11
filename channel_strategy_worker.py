@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from googleapiclient.discovery import build
 
@@ -152,7 +153,9 @@ def _prepare_metadata_proposals(youtube, secrets, candidates):
 
 
 def _daily_auto_count(store, owner_key: str) -> int:
-    start = datetime.combine(date.today(), time.min, tzinfo=timezone.utc).isoformat()
+    # Match the configured owner timezone rather than UTC midnight.
+    local_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    start = datetime.combine(local_today, time.min, tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc).isoformat()
     rows = store._request("GET", "channel_strategy_actions", params={
         "owner_key": f"eq.{owner_key}",
         "classification": "eq.minor",
