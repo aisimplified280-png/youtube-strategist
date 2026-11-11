@@ -317,3 +317,20 @@ class SupabasePersistentStore:
             "limit": "1",
         })
         return rows[0] if rows else None
+
+
+    def set_monitor_publish_policy(self, enabled: bool, max_daily_publishes: int = 5):
+        """Persist the owner's explicit autonomous-monitor publishing preference."""
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        if not isinstance(enabled, bool):
+            raise ValueError("Monitor publishing enabled must be a boolean.")
+        cap = max(1, min(int(max_daily_publishes), 25))
+        return self._request("POST", "owner_publish_policies", params={
+            "on_conflict": "owner_key",
+        }, payload={
+            "owner_key": self.owner_key,
+            "monitor_auto_publish_enabled": enabled,
+            "max_daily_publishes": cap,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, prefer="resolution=merge-duplicates,return=representation")
