@@ -92,6 +92,15 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _complete_reach_value(reach_status: str, value):
+    """Expose a reach value to ranking only when every requested report day is present."""
+    complete = (
+        isinstance(reach_status, str)
+        and reach_status.startswith("Loaded daily reach reports for all ")
+    )
+    return value if complete and _number(value) else None
+
+
 def _growth(current, previous):
     if not _number(current) or not _number(previous) or previous == 0:
         return None
@@ -211,11 +220,19 @@ def collect_channel_snapshot(
             "subscribers_gained": subs,
             "subscribers_lost": metrics.get("subscribersLost"),
             "subscribers_per_1000_views": subs_per_1000,
-            "impressions": reach.get("impressions"),
-            "ctr_percent": reach.get("ctr"),
-            "ctr_source": "YouTube Reporting API channel_reach_basic_a1",
+            "impressions": _complete_reach_value(reach_status, reach.get("impressions")),
+            "ctr_percent": _complete_reach_value(reach_status, reach.get("ctr")),
+            "ctr_source": (
+                "YouTube Reporting API channel_reach_basic_a1"
+                if reach_status.startswith("Loaded daily reach reports for all ")
+                else None
+            ),
             "ctr_period": f"{start_date.isoformat()}..{end_date.isoformat()}",
-            "ctr_status": reach.get("ctr_status", "unavailable"),
+            "ctr_status": (
+                reach.get("ctr_status", "unavailable")
+                if reach_status.startswith("Loaded daily reach reports for all ")
+                else f"Unavailable for strategy ranking: incomplete reach-report coverage ({reach_status})"
+            ),
         })
 
     ranked = connector.rank_channel_video_opportunities(video_rows, limit=15)
