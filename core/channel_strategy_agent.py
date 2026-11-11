@@ -448,12 +448,10 @@ def _phrase_in_source(tag: str, source: str) -> bool:
 
 
 def _formatting_signature(value: str) -> str:
-    """Normalize case, punctuation and whitespace; preserve symbols, emoji and word/number tokens."""
+    """Normalize case and whitespace only; punctuation and every other character remain significant."""
     normalized = unicodedata.normalize("NFKC", value or "").casefold()
-    return "".join(
-        character for character in normalized
-        if not character.isspace() and not unicodedata.category(character).startswith("P")
-    )
+    return "".join(character for character in normalized if not character.isspace())
+
 
 def classify_metadata_change(
     before: Dict[str, Any],
@@ -464,9 +462,9 @@ def classify_metadata_change(
     """Return (minor|major|none, rationale, changed_fields).
 
     Auto-publish is limited to one-field, meaning-preserving edits only:
-    title/description casing, punctuation or whitespace; or at most two new
+    title/description case or whitespace only; or at most two new
     tags that are exact phrases already present in the video's supplied source.
-    Any word, number, symbol or emoji change is major and requires review.
+    Any punctuation, word, number, symbol or emoji change is major and requires review.
     """
     changed = [
         field for field in ("title", "description", "tags")
@@ -484,7 +482,7 @@ def classify_metadata_change(
         replacement = proposed.get(field) or ""
         if _formatting_signature(original) == _formatting_signature(replacement):
             return "minor", f"{field.title()} changes only casing, punctuation, or whitespace; every word, number, symbol and emoji is preserved.", changed
-        return "major", f"{field.title()} changes words, numbers, symbols or meaning-bearing characters; owner review is required.", changed
+        return "major", f"{field.title()} changes punctuation, words, numbers, symbols or other meaning-bearing characters; owner review is required.", changed
 
     old_tags = [str(tag).strip() for tag in before.get("tags", [])]
     new_tags = [str(tag).strip() for tag in proposed.get("tags", [])]
