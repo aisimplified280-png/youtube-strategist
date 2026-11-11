@@ -2,7 +2,7 @@
 
 Interprets ordinary-language paragraphs, numbered lists, or structured text
 describing which YouTube videos to change and what to change.
-Uses Groq/Gemini structured interpretation with strict JSON schema validation,
+Uses Gemini-first structured interpretation with Groq fallback and strict JSON schema validation,
 fallback recovery, and deterministic reference reconciliation.
 """
 
@@ -25,7 +25,7 @@ MAX_BATCH_VIDEOS = 25
 GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-4-argon"
 
 YOUTUBE_URL_PATTERN = re.compile(
     r"https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s\"'>)]+|shorts/[A-Za-z0-9_-]{11}|embed/[A-Za-z0-9_-]{11}|live/[A-Za-z0-9_-]{11})|youtu\.be/[A-Za-z0-9_-]{11}[^\s\"'>)]*)",
@@ -492,11 +492,15 @@ def _call_groq_json(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
 
 
 def _call_gemini_json(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
-    url = f"{GEMINI_ENDPOINT.format(model=model or DEFAULT_GEMINI_MODEL)}?key={api_key}"
-    headers = {"Content-Type": "application/json"}
+    url = GEMINI_ENDPOINT.format(model=model or DEFAULT_GEMINI_MODEL)
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingLevel": "HIGH"},
+        },
     }
     response = requests.post(url, headers=headers, json=body, timeout=60)
     response.raise_for_status()
@@ -512,7 +516,7 @@ def _interpret_batch_instructions_with_ai(
     gemini_key: Optional[str] = None,
     gemini_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Use Groq-first, Gemini-fallback AI to interpret natural-language instructions into structured JSON."""
+    """Use Gemini reasoning first, with Groq as fallback, for structured natural-language instructions."""
     # JSON-encode the user's entire input instead of wrapping it in triple quotes.
     # User instructions may themselves contain triple-quoted descriptions, JSON,
     # markdown fences, or arbitrary punctuation; a JSON string keeps those as data.
@@ -560,15 +564,15 @@ Parsing rules:
 10. Return a complete plan for every referenced video.
 """
 
-    if groq_key:
-        try:
-            return _call_groq_json(groq_key, groq_model, prompt)
-        except Exception:
-            pass
-
     if gemini_key:
         try:
             return _call_gemini_json(gemini_key, gemini_model, prompt)
+        except Exception:
+            pass
+
+    if groq_key:
+        try:
+            return _call_groq_json(groq_key, groq_model, prompt)
         except Exception:
             pass
 
