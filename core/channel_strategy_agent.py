@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import unicodedata
 from datetime import date, timedelta
 from statistics import median
@@ -15,8 +16,17 @@ import youtube_analytics_connector as connector
 import youtube_dashboard
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-DEFAULT_STRATEGY_MODEL = "gemini-3.1-pro-preview"
-DEFAULT_STRATEGY_FALLBACKS = ("gemini-3.8-flash", "gemini-2.5-flash")
+GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
+# Use current stable Flash models by default. The 2.5 family can appear in
+# models.list while generation is restricted for newer projects, so it is
+# intentionally excluded from the automatic fallback chain.
+DEFAULT_STRATEGY_MODEL = "gemini-3.8-flash"
+DEFAULT_STRATEGY_FALLBACKS = (
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+)
 VIDEO_METRICS = (
     "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,"
     "likes,comments,shares,subscribersGained,subscribersLost"
@@ -437,6 +447,77 @@ def _clean_json(raw: str) -> Dict[str, Any]:
     return result
 
 
+def _list_available_strategy_models(api_key: str, timeout_seconds: int = 15) -> Optional[set]:
+    """Return model IDs that advertise generateContent for this API key.
+
+    Google notes that models.list can still show legacy models whose generation
+    access is restricted, so this discovery result is used only to filter the
+    current stable allowlist; it never adds arbitrary or retired model IDs.
+    """
+    available = set()
+    page_token = None
+    try:
+        for _ in range(5):
+            params = {"pageSize": 100}
+            if page_token:
+                params["pageToken"] = page_token
+            response = requests.get(
+                GEMINI_MODELS_ENDPOINT,
+                headers={"x-goog-api-key": api_key},
+                params=params,
+                timeout=timeout_seconds,
+            )
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+            for item in payload.get("models") or []:
+                if "generateContent" not in (item.get("supportedGenerationMethods") or []):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if name.startswith("models/"):
+                    name = name[len("models/"):]
+                if name:
+                    available.add(name)
+            page_token = payload.get("nextPageToken")
+            if not page_token:
+                break
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return None
+    return available
+
+
+def _gemini_error_message(response) -> str:
+    """Extract a useful API error without exposing request credentials."""
+    try:
+        payload = response.json()
+        error = payload.get("error") or {}
+        message = str(error.get("message") or "").strip()
+        status = str(error.get("status") or "").strip()
+        details = error.get("details") or []
+        reason = ""
+        if isinstance(details, list):
+            reasons = [
+                str(item.get("reason") or item.get("metadata", {}).get("quotaId") or "")
+                for item in details if isinstance(item, dict)
+            ]
+            reason = ", ".join(value for value in reasons if value)
+        parts = [value for value in (status, message, reason) if value]
+        if parts:
+            return " — ".join(parts)[:1000]
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return str(getattr(response, "text", "") or "No error details returned.")[:500]
+
+
+def _is_gemini_quota_exhaustion(message: str) -> bool:
+    text_value = str(message or "").casefold()
+    return any(term in text_value for term in (
+        "quota_exceeded", "daily quota", "per day", "requests per day",
+        "resource has been exhausted", "limit: 0", "billing account",
+        "prepayment credits", "quota exceeded",
+    ))
+
+
 def generate_strategy_report(
     snapshot: Dict[str, Any],
     api_key: str,
@@ -540,38 +621,98 @@ Evidence:
     "opportunities": opportunities,
 }, ensure_ascii=False)}
 """
+    requested_models = [model]
+    configured_fallbacks = (
+        DEFAULT_STRATEGY_FALLBACKS if fallback_models is None else fallback_models
+    )
+    requested_models.extend(configured_fallbacks)
     candidates = []
-    for candidate in [model, *(fallback_models or list(DEFAULT_STRATEGY_FALLBACKS))]:
+    for candidate in requested_models:
         candidate = str(candidate or "").strip()
         if candidate and re.fullmatch(r"[A-Za-z0-9._-]+", candidate) and candidate not in candidates:
             candidates.append(candidate)
+    if not candidates:
+        raise RuntimeError("No valid Gemini strategy model IDs were configured.")
+
     failures = []
-    for candidate in candidates:
-        try:
-            response = requests.post(
-                GEMINI_ENDPOINT.format(model=candidate),
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json={
-                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "responseMimeType": "application/json",
-                        "temperature": 0.2,
-                        "maxOutputTokens": 8000,
-                        "thinkingConfig": {"thinkingLevel": "HIGH"},
-                    },
-                },
-                timeout=timeout_seconds,
+    available_models = _list_available_strategy_models(api_key)
+    if available_models:
+        matched = [candidate for candidate in candidates if candidate in available_models]
+        if matched:
+            skipped = [candidate for candidate in candidates if candidate not in available_models]
+            if skipped:
+                failures.append(
+                    "Skipped models not listed for this API key: " + ", ".join(skipped)
+                )
+            candidates = matched
+        else:
+            failures.append(
+                "The models.list response did not include any configured stable strategy models; "
+                "trying the curated model list directly."
             )
-        except requests.RequestException as error:
-            failures.append(f"{candidate}: {type(error).__name__}")
-            continue
-        if response.status_code in (401, 403):
-            raise RuntimeError("Gemini rejected the API key or access. Check GEMINI_API_KEY and API permissions.")
-        if response.status_code >= 400:
-            failures.append(f"{candidate}: HTTP {response.status_code}")
-            if response.status_code not in (404, 408, 429, 500, 502, 503, 504):
+
+    for candidate in candidates:
+        response = None
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    GEMINI_ENDPOINT.format(model=candidate),
+                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    json={
+                        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "responseMimeType": "application/json",
+                            "temperature": 0.2,
+                            "maxOutputTokens": 8000,
+                            "thinkingConfig": {"thinkingLevel": "HIGH"},
+                        },
+                    },
+                    timeout=timeout_seconds,
+                )
+            except requests.RequestException as error:
+                if attempt < 1:
+                    time.sleep(1)
+                    continue
+                failures.append(f"{candidate}: {type(error).__name__}")
                 break
+
+            if response.status_code < 400:
+                break
+
+            error_text = _gemini_error_message(response)
+            status_code = response.status_code
+
+            if status_code == 401:
+                raise RuntimeError(
+                    "Gemini API authentication failed (HTTP 401). Check the GEMINI_API_KEY secret."
+                )
+            if status_code == 403 and any(
+                phrase in error_text.casefold()
+                for phrase in ("project has been denied access", "project is denied", "permission denied")
+            ):
+                raise RuntimeError(
+                    "Gemini API access is denied for this Google Cloud project (HTTP 403). "
+                    "Check AI Studio project access and API billing/permissions."
+                )
+
+            # Retry temporary overloads with short exponential backoff.
+            if status_code == 503 and attempt < 2:
+                time.sleep(1 * (2 ** attempt))
+                continue
+
+            # Retry only transient per-minute/per-second throttles once. Daily
+            # quota exhaustion will not recover in a few seconds; move to the
+            # next stable model instead.
+            if status_code == 429 and not _is_gemini_quota_exhaustion(error_text) and attempt < 1:
+                time.sleep(1)
+                continue
+
+            failures.append(f"{candidate}: HTTP {status_code} ({error_text})")
+            break
+
+        if response is None or response.status_code >= 400:
             continue
+
         try:
             text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
             report = _clean_json(text)
@@ -642,7 +783,11 @@ Evidence:
             return report, candidate
         except (ValueError, KeyError, IndexError, TypeError) as error:
             failures.append(f"{candidate}: invalid structured response ({type(error).__name__})")
-    raise RuntimeError("Gemini strategy analysis failed: " + "; ".join(failures))
+
+    raise RuntimeError(
+        "Gemini strategy analysis failed after trying the available stable models: "
+        + "; ".join(failures)
+    )
 
 
 def _tokens(value: str) -> List[str]:
