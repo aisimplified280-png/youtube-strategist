@@ -1,0 +1,46 @@
+name: AI Simplified Lab monthly channel strategist
+
+on:
+  # Runs on the 5th of each month at 10:00 Asia/Kolkata (04:30 UTC)
+  # after full calendar month analytics and reach reports have matured.
+  schedule:
+    - cron: "30 4 5 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-simplified-lab-channel-strategist
+  cancel-in-progress: false
+
+jobs:
+  monthly_strategist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run monthly strategic macro review and back-catalogue refresh
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          YOUTUBE_STRATEGIST_STATE_SECRET: ${{ secrets.YOUTUBE_STRATEGIST_STATE_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: "gemini-3.1-pro-preview"
+          GEMINI_FALLBACK_MODELS: "gemini-3.8-flash,gemini-2.5-flash"
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: "openai/gpt-oss-120b"
+          STRATEGY_CADENCE: "monthly"
+          STRATEGY_TRIGGER_SOURCE: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'schedule' }}
+          STRATEGY_CATALOGUE_LIMIT: "all"
+          LOG_LEVEL: "INFO"
+        run: python channel_strategy_worker.py --cadence=monthly
+
