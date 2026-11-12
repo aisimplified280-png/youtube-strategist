@@ -75,7 +75,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
             "gemini-3-flash-preview",
         ]
         self.assertEqual(DEFAULT_MODEL, "gemini-3.6-flash")
-        self.assertEqual(DEFAULT_BATCH_GEMINI_MODEL, "gemini-3.6-flash")
+        self.assertEqual(DEFAULT_BATCH_GEMINI_MODEL, "gemini-3.5-flash-lite")
         self.assertEqual(DEFAULT_GEMINI_MODEL, "gemini-3.6-flash")
         self.assertEqual(DEFAULT_STRATEGY_MODEL, "gemini-3.6-flash")
         self.assertEqual(DEFAULT_GEMINI_FALLBACKS, expected_fallbacks)
