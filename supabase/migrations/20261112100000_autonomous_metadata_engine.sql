@@ -70,3 +70,4 @@ alter table public.strategy_action_evaluations enable row level security;
 
 revoke all on public.strategy_action_evaluations from public, anon, authenticated;
 grant select, insert, update, delete on public.strategy_action_evaluations to service_role;
+

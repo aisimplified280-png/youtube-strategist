@@ -136,7 +136,7 @@ def collect_channel_snapshot(
     channel_id: str,
     *,
     today: Optional[date] = None,
-    catalogue_limit: Optional[int] = 500,
+    catalogue_limit: Optional[int] = None,
     cadence: str = "daily",
     learning_context: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
@@ -568,15 +568,21 @@ Evidence:
                     continue
                 v_id = str(item["video_id"])
                 conf = item.get("confidence")
-                try:
-                    conf_float = float(conf) if conf is not None else 0.75
-                    conf_float = max(0.0, min(conf_float, 1.0))
-                except (ValueError, TypeError):
-                    conf_float = 0.75
+                conf_float = None
+                if conf is not None:
+                    try:
+                        conf_float = float(conf)
+                        conf_float = max(0.0, min(conf_float, 1.0))
+                    except (ValueError, TypeError):
+                        conf_float = None
 
-                dec = str(item.get("decision") or "review").strip().lower()
-                if dec not in {"auto_publish", "review", "no_change"}:
-                    dec = "review"
+                raw_dec = item.get("decision")
+                if raw_dec is None:
+                    dec = "missing"
+                else:
+                    dec = str(raw_dec).strip().lower()
+                    if dec not in {"auto_publish", "review", "no_change"}:
+                        dec = "invalid"
 
                 diag = str(item.get("diagnosis") or "packaging").strip().lower()
                 risk = str(item.get("risk_classification") or "medium").strip().lower()
@@ -690,40 +696,73 @@ def evaluate_autonomous_policy(
     if settings.get("emergency_pause") is True:
         return "pending_review", "Global emergency pause is active. Action held for owner review.", changed
 
-    mode = str(settings.get("automation_mode", "shadow")).strip().lower()
+    mode = str(
+        settings.get("automation_mode")
+        or ("autonomous" if settings.get("autonomous_mode_enabled") else "shadow")
+    ).strip().lower()
     if mode == "paused":
         return "pending_review", "Automation mode is paused by owner. Proposal held for manual review.", changed
 
-    # Confidence and decision gates
-    confidence = float(candidate_decision.get("confidence") or 0.0)
+    # Missing or invalid Gemini decision must fail closed
+    conf_raw = candidate_decision.get("confidence")
+    if conf_raw is None:
+        return "pending_review", "Missing Gemini confidence score. Fail-closed: held for manual review.", changed
+    try:
+        confidence = float(conf_raw)
+    except (ValueError, TypeError):
+        return "pending_review", f"Invalid Gemini confidence score '{conf_raw}'. Fail-closed: held for manual review.", changed
+
+    decision_raw = candidate_decision.get("decision")
+    if not decision_raw:
+        return "pending_review", "Missing Gemini decision. Fail-closed: held for manual review.", changed
+    decision = str(decision_raw).strip().lower()
+    if decision not in {"auto_publish", "review", "no_change"}:
+        return "pending_review", f"Invalid Gemini decision '{decision_raw}'. Fail-closed: held for manual review.", changed
+
     min_confidence = float(settings.get("min_confidence_auto_publish", 0.85))
-    decision = str(candidate_decision.get("decision") or "review").strip().lower()
     rationale = str(candidate_decision.get("rationale") or candidate_decision.get("reason") or "").strip()
 
-    if confidence < 0.65 or decision == "no_change":
-        return "no_change", f"Confidence ({confidence:.2f}) or decision '{decision}' indicates no change is warranted: {rationale}", changed
+    # no_change is never published
+    if decision == "no_change":
+        return "no_change", f"Model decision is 'no_change' (confidence {confidence:.2f}): {rationale}", changed
 
-    if decision == "review" or confidence < min_confidence:
-        return "pending_review", f"Confidence ({confidence:.2f}) is below autonomous threshold ({min_confidence:.2f}) or model requested review: {rationale}", changed
+    # Low confidence floor
+    if confidence < 0.65:
+        return "no_change", f"Confidence ({confidence:.2f}) is below 0.65 floor; no change warranted: {rationale}", changed
 
-    # Check 7-day quiet period / cooldown
+    # review is never published
+    if decision == "review":
+        return "pending_review", f"Model requested review (confidence {confidence:.2f}): {rationale}", changed
+
+    # Insufficient confidence never publishes
+    if confidence < min_confidence:
+        return "pending_review", f"Confidence ({confidence:.2f}) is below autonomous threshold ({min_confidence:.2f}): {rationale}", changed
+
+    # Here decision is explicitly 'auto_publish' and confidence >= min_confidence
+    cadence = str(candidate_decision.get("cadence", "daily")).strip().lower()
+    daily_cap = int(settings.get("max_daily_minor_publishes", 3))
+    cadence_cap = int(settings.get(f"max_{cadence}_publishes", daily_cap))
+
+    # Shadow mode semantics: accurately records what would have been published without writing to YouTube,
+    # clearly representing cooldown-blocked status when cooldown is active.
+    if mode == "shadow":
+        if not cooldown_allows_publish:
+            return "shadow_publish", f"Shadow mode (cooldown active): Would have auto-published (confidence {confidence:.2f}), but 7-day cooldown is active: {cooldown_reason or '7-day quiet period not satisfied.'}", changed
+        if daily_count >= daily_cap:
+            return "shadow_publish", f"Shadow mode (daily cap reached): Would have auto-published (confidence {confidence:.2f}), but daily cap of {daily_cap} is reached.", changed
+        if cadence_count >= cadence_cap:
+            return "shadow_publish", f"Shadow mode ({cadence} cap reached): Would have auto-published (confidence {confidence:.2f}), but {cadence} cap of {cadence_cap} is reached.", changed
+        return "shadow_publish", f"Shadow mode active: would have auto-published (confidence {confidence:.2f}): {rationale}", changed
+
+    # Autonomous mode requires all deterministic gates to pass:
     if not cooldown_allows_publish:
         return "pending_review", f"Autonomous publish held (cooldown): {cooldown_reason or '7-day metadata quiet period not satisfied.'}", changed
 
-    # Check daily cap
-    daily_cap = int(settings.get("max_daily_minor_publishes", 3))
     if daily_count >= daily_cap:
         return "pending_review", f"Autonomous publish held: daily limit of {daily_cap} updates reached.", changed
 
-    # Check cadence cap
-    cadence = str(candidate_decision.get("cadence", "daily")).strip().lower()
-    cadence_cap = int(settings.get(f"max_{cadence}_publishes", daily_cap))
     if cadence_count >= cadence_cap:
         return "pending_review", f"Autonomous publish held: {cadence.title()} limit of {cadence_cap} updates reached.", changed
-
-    # Mode resolution: shadow vs autonomous
-    if mode == "shadow":
-        return "shadow_publish", f"Shadow mode active: would have auto-published (confidence {confidence:.2f}): {rationale}", changed
 
     if mode == "autonomous":
         return "auto_publish", f"Autonomous publication approved (confidence {confidence:.2f}): {rationale}", changed

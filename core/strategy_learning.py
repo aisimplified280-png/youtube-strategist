@@ -419,3 +419,4 @@ def rollback_strategy_action(
         return True, f"Successfully rolled back video '{target_meta['title']}' to its pre-optimization state."
     except Exception as error:
         return False, f"Rollback failed: {type(error).__name__}: {str(error)[:500]}"
+

@@ -40,6 +40,6 @@ jobs:
           GROQ_MODEL: "openai/gpt-oss-120b"
           STRATEGY_CADENCE: "daily"
           STRATEGY_TRIGGER_SOURCE: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'schedule' }}
-          STRATEGY_CATALOGUE_LIMIT: "500"
+          STRATEGY_CATALOGUE_LIMIT: "all"
           LOG_LEVEL: "INFO"
         run: python channel_strategy_worker.py --cadence=daily
