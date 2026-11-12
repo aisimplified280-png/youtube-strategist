@@ -16,7 +16,8 @@ This repository uses one owner-authenticated Streamlit application as the contro
 - **One owner-only Streamlit workspace:** Google sign-in, YouTube OAuth, conversational metadata optimization, strategist settings, major-change approvals, and run history stay in the existing app.
 - **Daily channel scan:** a scheduled worker inspects up to 500 uploads, compares the latest mature 28-day period with the previous 28 days, and stores a 90-day channel trend. The Analytics window ends three days before the run to reduce the impact of reporting delays.
 - **Evidence-first diagnosis:** it evaluates views, watch time, average percentage viewed, subscriber gains/losses, traffic sources, impressions, and impression CTR where the YouTube Reporting API returns them. Missing metrics remain unavailable; uploads under 180 seconds stay unclassified and are excluded from peer-underperformance ranking and automatic metadata candidates until orientation can be confirmed.
-- **Gemini reasoning primary:** Gemini 3.1 Pro Preview is the primary model through the Gemini Developer API; Gemini 3.8 Flash is the configured model fallback. Groq is an optional provider fallback. The model interprets measured channel evidence; deterministic ranking and publishing gates remain in code.
+- **Gemini reasoning primary for the daily strategist:** Gemini 3.1 Pro Preview is the primary model through the Gemini Developer API; Gemini 3.8 Flash is its model fallback. Groq remains an optional provider fallback for this path.
+- **Batch metadata routing:** Groq is tried first for natural-language batch parsing and metadata proposals. If it is unavailable, rate-limited (including HTTP 429), or returns invalid output, the batch path falls back to Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`), then Gemini 3.5 Flash and 3.6 Flash. This batch-only setting does not change the daily strategist model.
 - **Automatic low-risk fixes:** only one-field title/description changes that preserve punctuation, every word, number, symbol, and emoji while changing case or whitespace can be auto-published. Up to two new tags can also qualify only when they are exact phrases already present in the source title/description, and no existing tag is removed.
 - **Major changes need approval:** any word/number/meaning change, multi-field rewrite, unsupported tag, removal, or larger metadata edit is saved as a proposal for review inside Streamlit. The worker does not publish it autonomously.
 - **Auditable YouTube writes:** automatic changes require the existing seven-day metadata baseline/cooldown, an owner-configured daily cap (default 3 minor updates), a fresh live before-state, metadata validation, and a successful YouTube read-back. Each run/action stores evidence, before/after metadata, model, result, and errors in Supabase.
@@ -29,7 +30,7 @@ This repository uses one owner-authenticated Streamlit application as the contro
 | Channel strategist | 02:30 | 08:00 | Gather analytics, reason with Gemini, prepare proposals, and publish only eligible minor fixes |
 | Batch metadata worker | Every 5 minutes | Every 5 minutes | Process manually submitted batch instructions and save proposals for review |
 
-The strategy workflow can also be started manually with GitHub Actions **workflow_dispatch**. Scheduled execution requires these GitHub Actions repository secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `YOUTUBE_STRATEGIST_STATE_SECRET`, and `GEMINI_API_KEY`. `GROQ_API_KEY` is optional.
+The strategy workflow can also be started manually with GitHub Actions **workflow_dispatch**. Scheduled execution requires these GitHub Actions repository secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `YOUTUBE_STRATEGIST_STATE_SECRET`, and `GEMINI_API_KEY`. `GROQ_API_KEY` is optional for the daily strategist but preferred for metadata batches. The background-worker workflow sets the batch model via `GEMINI_MODEL` and `GEMINI_FALLBACK_MODELS`; the channel-strategy workflow remains on Gemini 3.1 Pro Preview.
 
 ## Owner controls in Streamlit
 
@@ -91,17 +92,20 @@ redirect_uri = "https://<app-name>.streamlit.app/~/+/"
 [security]
 state_secret = "REPLACE_WITH_ANOTHER_RANDOM_STRING_AT_LEAST_32_CHARS"
 
-# Primary AI Provider
+# Daily strategist reasoning model
+[gemini]
+api_key = "AIza_YOUR_GEMINI_API_KEY"
+model = "gemini-3.1-pro-preview"
+fallback_models = ["gemini-3.8-flash"]
+# Batch-only low-cost fallback; Groq is attempted first for metadata batches.
+batch_model = "gemini-3.5-flash-lite"
+batch_fallback_models = ["gemini-3.5-flash", "gemini-3.6-flash"]
+
+# Groq is the primary provider for metadata batches.
 [groq]
 api_key = "gsk_YOUR_GROQ_API_KEY"
 model = "openai/gpt-oss-120b"
 fallback_models = []
-
-# Fallback AI Provider
-[gemini]
-api_key = "AIzaSy_YOUR_GEMINI_API_KEY"
-model = "gemini-2.5-flash"
-fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
 ```
 
 ---
