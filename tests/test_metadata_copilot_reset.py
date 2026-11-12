@@ -55,6 +55,20 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertNotIn("page_ideas", app_code, "app.py must not define ideas page")
         self.assertNotIn("page_memory", app_code, "app.py must not define memory page")
         self.assertIn("render_copilot_chat", app_code, "app.py must render the copilot chat directly")
+        self.assertIn('st.tabs(["Metadata Copilot", "Channel Strategist"])', app_code)
+        self.assertIn("copilot_history_{conversation_id}", app_code)
+        self.assertNotIn("st.selectbox(", app_code, "Conversation history must use clickable items, not a dropdown.")
+
+    def test_channel_strategist_sections_are_separated(self):
+        """Monitoring, review, history, learning and policy controls are separate user work areas."""
+        activity_path = os.path.join(os.path.dirname(__file__), "..", "ui", "strategy_activity.py")
+        with open(activity_path, "r", encoding="utf-8") as f:
+            activity_code = f.read()
+
+        self.assertIn('["Overview", f"Review queue ({len(pending)})", "Run & action history", "Learning", "Settings"]', activity_code)
+        self.assertIn("def _friendly_gemini_error", activity_code)
+        self.assertIn("Gemini 3.8 Flash", activity_code)
+        self.assertNotIn("Monitoring Cadence", activity_code)
 
     # Criterion 2: Regular video URL parsing
     def test_02_regular_video_url_parsing(self):
