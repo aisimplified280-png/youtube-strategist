@@ -512,9 +512,9 @@ def _gemini_error_message(response) -> str:
 def _is_gemini_quota_exhaustion(message: str) -> bool:
     text_value = str(message or "").casefold()
     return any(term in text_value for term in (
-        "quota_exceeded", "daily quota", "per day", "requests per day",
-        "resource has been exhausted", "limit: 0", "billing account",
-        "prepayment credits", "quota exceeded",
+        "quota_exceeded", "resource_exhausted", "daily quota", "per day",
+        "requests per day", "current quota", "resource has been exhausted",
+        "limit: 0", "billing account", "prepayment credits", "quota exceeded",
     ))
 
 
