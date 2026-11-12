@@ -82,248 +82,237 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
         return False, f"Publishing failed safely: {type(error).__name__}: {str(error)[:500]}"
 
 
+def _friendly_gemini_error(error: str) -> str:
+    """Translate noisy provider failures into clear, actionable UI messages."""
+    message = str(error or "")
+    lowered = message.casefold()
+    if "http 429" in lowered or "resource_exhausted" in lowered:
+        return (
+            "Gemini API limits were reached for the models attempted. The worker tried its lower-cost "
+            "Flash fallbacks, then saved the analytics briefing without model-generated recommendations. "
+            "Check AI Studio → Usage and the API project's billing/quota; your Google AI Pro app plan "
+            "does not automatically raise this API key's quota."
+        )
+    if "http 503" in lowered or "service unavailable" in lowered:
+        return (
+            "Gemini was temporarily overloaded. The worker retried and moved through the stable Flash "
+            "fallbacks; the channel metrics were still saved, but Gemini's analysis could not be completed."
+        )
+    if "http 404" in lowered or "not_found" in lowered:
+        return (
+            "A Gemini model ID was unavailable to this API project. The strategist now checks the "
+            "model catalogue and skips unavailable IDs; run a fresh scan after the code update."
+        )
+    if "http 401" in lowered or "authentication failed" in lowered:
+        return "Gemini rejected the API key. Check that the GitHub Actions GEMINI_API_KEY secret is current."
+    if "http 403" in lowered or "access is denied" in lowered:
+        return (
+            "Google denied Gemini API access for this project. Check the selected AI Studio project, "
+            "API access and billing permissions."
+        )
+    return message[:1600]
+
+
+def _short_timestamp(value: str) -> str:
+    raw = str(value or "").replace("T", " ")
+    if raw.endswith("+00:00"):
+        raw = raw[:-6] + " UTC"
+    return raw[:19] or "Not recorded"
+
+
 def render_strategy_activity(store, youtube=None):
-    """Render strategist automation controls, pending proposals, learning feedback, and audit records."""
+    """Render a separated, user-centred channel strategist workspace."""
     if not store:
+        st.info("Connect the owner workspace to load the Channel Strategist.")
         return
 
-    st.divider()
-    st.markdown("### Autonomous YouTube Strategist")
+    st.markdown("## Channel Strategist")
     st.caption(
-        "Cadence monitoring (Daily · Weekly · Monthly) · Gemini reasoning · Autonomous/Shadow policy · 7/14/28d evaluation loop"
+        "A dedicated workspace for scheduled channel monitoring, Gemini analysis, "
+        "metadata approvals and measured outcomes."
     )
 
     try:
         settings = store.get_strategy_settings()
+        runs = store.list_strategy_runs(limit=30)
+        pending = store.list_strategy_actions(status="pending_review", limit=100)
+        recent_actions = store.list_strategy_actions(limit=40)
+        evaluations = store.list_action_evaluations(limit=50)
     except Exception as error:
-        st.warning(f"Strategist settings are unavailable: {error}")
+        st.warning(f"Could not load strategist activity: {error}")
         return
 
-    # Check emergency pause banner
     is_emergency_paused = bool(settings.get("emergency_pause", False))
     if is_emergency_paused:
-        st.error("🚨 **GLOBAL EMERGENCY PAUSE ACTIVE** — All automated YouTube publishing is paused across all cadences.")
-
-    with st.expander("Automation Controls & Policy Settings", expanded=False):
-        emergency_pause = st.toggle(
-            "Global Emergency Pause",
-            value=is_emergency_paused,
-            key="strategy_emergency_pause_toggle",
-            help="Immediately halts all autonomous publishing across all cadences. All proposals hold for review.",
+        st.error(
+            "GLOBAL EMERGENCY PAUSE IS ACTIVE — automated publishing is blocked across all monitoring schedules."
         )
 
-        current_mode = str(settings.get("automation_mode", "shadow")).strip().lower()
-        mode_map = {"paused": "Paused", "shadow": "Shadow mode", "autonomous": "Autonomous mode"}
-        mode_index = ["paused", "shadow", "autonomous"].index(current_mode) if current_mode in ["paused", "shadow", "autonomous"] else 1
-
-        selected_mode_label = st.radio(
-            "Automation Mode",
-            options=["Paused", "Shadow mode", "Autonomous mode"],
-            index=mode_index,
-            key="strategy_automation_mode_radio",
-            help=(
-                "• Paused: Analysis and briefings run; no proposals are published automatically.\n"
-                "• Shadow mode: Full analysis and proposal generation runs; records shadow_published logs without writing to YouTube.\n"
-                "• Autonomous mode: High-confidence updates (>= threshold) publish automatically after passing cooldown and safety gates."
-            ),
-        )
-        selected_mode = {"Paused": "paused", "Shadow mode": "shadow", "Autonomous mode": "autonomous"}[selected_mode_label]
-
-        min_confidence = st.slider(
-            "Minimum confidence for autonomous publishing",
-            min_value=0.70,
-            max_value=0.95,
-            value=float(settings.get("min_confidence_auto_publish", 0.85)),
-            step=0.01,
-            key="strategy_min_confidence_slider",
-            help="Gemini confidence score required to auto-publish in Autonomous mode. Lower-confidence proposals queue for review.",
+    # A quick status strip for the three schedules. No cadence filter or dropdown.
+    latest_by_cadence = {}
+    for cadence in ("daily", "weekly", "monthly"):
+        latest_by_cadence[cadence] = next(
+            (run for run in runs if str(run.get("cadence") or "daily").lower() == cadence),
+            None,
         )
 
-        cap_cols = st.columns(4)
-        with cap_cols[0]:
-            max_daily = st.number_input(
-                "Max daily updates",
-                min_value=0, max_value=10,
-                value=int(settings.get("max_daily_minor_publishes", 3)),
-                key="strategy_daily_cap",
-            )
-        with cap_cols[1]:
-            max_weekly = st.number_input(
-                "Max weekly updates",
-                min_value=0, max_value=20,
-                value=int(settings.get("max_weekly_publishes", 5)),
-                key="strategy_weekly_cap",
-            )
-        with cap_cols[2]:
-            max_monthly = st.number_input(
-                "Max monthly updates",
-                min_value=0, max_value=50,
-                value=int(settings.get("max_monthly_publishes", 10)),
-                key="strategy_monthly_cap",
-            )
-        with cap_cols[3]:
-            max_review = st.number_input(
-                "Max review candidates/run",
-                min_value=0, max_value=10,
-                value=int(settings.get("max_metadata_reviews_per_run", 3)),
-                key="strategy_review_cap",
-            )
+    cadence_cols = st.columns(3)
+    cadence_descriptions = {
+        "daily": "Daily monitoring · 08:00 IST",
+        "weekly": "Weekly review · Sunday 09:00 IST",
+        "monthly": "Monthly review · Day 5, 10:00 IST",
+    }
+    for col, cadence in zip(cadence_cols, ("daily", "weekly", "monthly")):
+        run = latest_by_cadence[cadence]
+        with col:
+            with st.container(border=True):
+                st.markdown(f"**{cadence.title()}**")
+                st.caption(cadence_descriptions[cadence])
+                if run:
+                    result = run.get("result") or {}
+                    status = _pretty_status(run.get("status"))
+                    st.markdown(f"**{status}**")
+                    st.caption(_short_timestamp(run.get("started_at") or run.get("created_at")))
+                    st.caption(
+                        f"{int(result.get('proposals') or 0)} proposals · "
+                        f"{int(result.get('shadow_published') or 0)} shadow · "
+                        f"{int(result.get('pending_review') or 0)} review"
+                    )
+                else:
+                    st.caption("No run recorded yet")
 
-        if st.button("Save Strategist Settings", key="strategy_save_settings", type="primary"):
-            try:
-                store.set_strategy_settings({
-                    "emergency_pause": emergency_pause,
-                    "automation_mode": selected_mode,
-                    "min_confidence_auto_publish": min_confidence,
-                    "max_daily_minor_publishes": max_daily,
-                    "max_weekly_publishes": max_weekly,
-                    "max_monthly_publishes": max_monthly,
-                    "max_metadata_reviews_per_run": max_review,
-                })
-                st.success("Strategist settings saved successfully.")
-                st.rerun()
-            except Exception as error:
-                st.error(f"Could not save strategist settings: {error}")
-
-    # Cadence filter selection
-    cadence_filter_tab = st.radio(
-        "Monitoring Cadence",
-        options=["All Cadences", "Daily", "Weekly", "Monthly"],
-        horizontal=True,
-        key="strategy_cadence_filter_radio",
+    overview_tab, review_tab, history_tab, learning_tab, settings_tab = st.tabs(
+        ["Overview", f"Review queue ({len(pending)})", "Run & action history", "Learning", "Settings"]
     )
-    selected_cadence = None if cadence_filter_tab == "All Cadences" else cadence_filter_tab.lower()
 
-    try:
-        runs = store.list_strategy_runs(limit=10, cadence=selected_cadence)
-        pending = store.list_strategy_actions(status="pending_review", cadence=selected_cadence, limit=100)
-        recent_actions = store.list_strategy_actions(cadence=selected_cadence, limit=30)
-        evaluations = store.list_action_evaluations(limit=25)
-    except Exception as error:
-        st.warning(f"Could not load strategist activity logs: {error}")
-        return
+    with overview_tab:
+        latest = runs[0] if runs else None
+        if not latest:
+            st.info(
+                "No strategist runs have been recorded yet. The scheduled GitHub Actions jobs "
+                "will populate this overview after their first run."
+            )
+        else:
+            metrics_period = latest.get("metrics_period") or {}
+            result = latest.get("result") or {}
+            st.markdown("### Latest channel scan")
+            top_cols = st.columns(4)
+            top_cols[0].metric("Run status", _pretty_status(latest.get("status")))
+            top_cols[1].metric("Proposals", int(result.get("proposals") or 0))
+            top_cols[2].metric("Shadow-tested", int(result.get("shadow_published") or 0))
+            top_cols[3].metric("Needs review", int(result.get("pending_review") or 0))
 
-    if runs:
-        latest = runs[0]
-        metrics_period = latest.get("metrics_period") or {}
-        result = latest.get("result") or {}
-        cols = st.columns(5)
-        cols[0].metric("Latest Run", _pretty_status(latest.get("status")), help=f"Cadence: {latest.get('cadence', 'daily').title()}")
-        cols[1].metric("Auto-published", int(result.get("auto_published") or 0))
-        cols[2].metric("Shadow-published", int(result.get("shadow_published") or 0))
-        cols[3].metric("Awaiting review", int(result.get("pending_review") or 0))
-        cols[4].metric("Issues", int(result.get("failed") or 0) + int(result.get("verification_unavailable") or 0))
+            model_used = str(latest.get("model_name") or "Not recorded")
+            st.caption(
+                f"{str(latest.get('cadence') or 'daily').title()} cycle · "
+                f"{_short_timestamp(latest.get('started_at'))} · "
+                f"Analytics: {metrics_period.get('current_start', '?')} to "
+                f"{metrics_period.get('current_end', '?')} · Model: {model_used}"
+            )
 
-        st.caption(
-            f"Cadence: **{latest.get('cadence', 'daily').title()}** · "
-            f"Last run: {latest.get('started_at', 'Unknown')} · "
-            f"Analytics period: {metrics_period.get('current_start', '?')} to {metrics_period.get('current_end', '?')} · "
-            f"Model: {latest.get('model_name') or 'not recorded'}"
-        )
-        if latest.get("error"):
-            st.warning(str(latest["error"]))
-        snapshot = latest.get("metrics_snapshot") or {}
-        channel_metrics = snapshot.get("channel_metrics") or {}
-        deltas = snapshot.get("period_deltas_percent") or {}
-        kpi_values = [
-            ("Period views", channel_metrics.get("views"), deltas.get("views")),
-            ("Watch time (min)", channel_metrics.get("estimatedMinutesWatched"), deltas.get("estimatedMinutesWatched")),
-            ("Subscribers gained", channel_metrics.get("subscribersGained"), deltas.get("subscribersGained")),
-            ("Subscribers lost", channel_metrics.get("subscribersLost"), None),
-        ]
-        kpi_cols = st.columns(4)
-        for col, (label, value, delta) in zip(kpi_cols, kpi_values):
-            number = f"{value:,.0f}" if isinstance(value, (int, float)) else "Unavailable"
-            delta_text = f"{delta:+.1f}% vs prior period" if isinstance(delta, (int, float)) else None
-            col.metric(label, number, delta=delta_text)
+            if latest.get("error"):
+                st.warning(_friendly_gemini_error(latest.get("error")))
+                with st.expander("Technical error details"):
+                    st.code(str(latest.get("error"))[:4000])
 
-        report = latest.get("strategy_report") or {}
-        if report:
-            st.markdown("#### Gemini Strategic Growth Briefing")
+            snapshot = latest.get("metrics_snapshot") or {}
+            channel_metrics = snapshot.get("channel_metrics") or {}
+            deltas = snapshot.get("period_deltas_percent") or {}
+            st.markdown("### Channel performance")
+            metric_cols = st.columns(4)
+            metric_items = [
+                ("Period views", channel_metrics.get("views"), deltas.get("views")),
+                ("Watch time (min)", channel_metrics.get("estimatedMinutesWatched"), deltas.get("estimatedMinutesWatched")),
+                ("Subscribers gained", channel_metrics.get("subscribersGained"), deltas.get("subscribersGained")),
+                ("Subscribers lost", channel_metrics.get("subscribersLost"), None),
+            ]
+            for col, (label, value, delta) in zip(metric_cols, metric_items):
+                number = f"{value:,.0f}" if isinstance(value, (int, float)) else "Unavailable"
+                delta_text = f"{delta:+.1f}% vs prior period" if isinstance(delta, (int, float)) else None
+                col.metric(label, number, delta=delta_text)
+
+            report = latest.get("strategy_report") or {}
+            st.markdown("### Gemini growth briefing")
             if report.get("executive_summary"):
                 st.write(report["executive_summary"])
+            if model_used == "deterministic":
+                st.info(
+                    "This run contains the deterministic analytics summary only. "
+                    "No Gemini-generated strategy or metadata proposal was accepted."
+                )
+
             patterns = report.get("patterns") or []
+            actions = report.get("growth_actions") or []
+            ideas = report.get("content_ideas") or []
             if patterns:
-                with st.expander("Detected Channel Patterns", expanded=True):
+                with st.expander(f"Patterns detected ({len(patterns)})", expanded=True):
                     for item in patterns:
                         st.markdown(f"**{item.get('pattern', 'Channel pattern')}**")
-                        st.write(item.get("evidence") or "")
+                        st.write(item.get("evidence") or "No supporting evidence was recorded.")
                         if item.get("implication"):
-                            st.caption(f"Implication: {item.get('implication')} · Confidence: {item.get('confidence', 'Unstated')}")
-            actions = report.get("growth_actions") or []
+                            st.caption(
+                                f"Implication: {item.get('implication')} · "
+                                f"Confidence: {item.get('confidence', 'Not stated')}"
+                            )
             if actions:
-                with st.expander("Prioritized Growth Actions", expanded=True):
+                with st.expander(f"Recommended growth actions ({len(actions)})", expanded=True):
                     for item in actions:
-                        st.markdown(f"**{item.get('priority', 'Action')}: {item.get('action', 'Review channel')}**")
+                        st.markdown(
+                            f"**{item.get('priority', 'Action')}: "
+                            f"{item.get('action', 'Review channel')}**"
+                        )
                         st.write(item.get("reason") or "")
-            ideas = report.get("content_ideas") or []
+                        related = item.get("related_video_ids") or []
+                        if related:
+                            st.caption("Related videos: " + ", ".join(str(value) for value in related))
             if ideas:
-                with st.expander("Content Opportunities & Hooks", expanded=False):
+                with st.expander(f"Content opportunities ({len(ideas)})", expanded=False):
                     for item in ideas:
-                        st.markdown(f"**{item.get('topic', 'Topic idea')}** · {item.get('format', 'Format unconfirmed')}")
+                        st.markdown(
+                            f"**{item.get('topic', 'Topic idea')}** · "
+                            f"{item.get('format', 'Format not stated')}"
+                        )
                         if item.get("hook"):
-                            st.write(f"Hook: {item.get('hook')}")
+                            st.write(f"Suggested hook: {item['hook']}")
                         st.caption(item.get("evidence") or "")
-    else:
-        st.info("No strategy run recorded for the selected cadence. Daily, Weekly, and Monthly workers will populate this panel.")
 
-    # Performance Evaluation & Feedback Loop
-    if evaluations:
-        with st.expander("📊 Optimization Feedback Loop (7d / 14d / 28d Post-Publish Evaluations)", expanded=False):
-            st.caption("Empirical measurements tracking whether published metadata changes improved, held, or declined CTR and views.")
-            for ev in evaluations:
-                video_id = ev.get("video_id")
-                days = ev.get("observation_days")
-                outcome = str(ev.get("outcome") or "inconclusive").upper()
-                badge_color = "green" if outcome == "IMPROVED" else ("red" if outcome == "DECLINED" else "gray")
-                deltas = ev.get("metric_deltas") or {}
-                ctr_d = deltas.get("ctr_delta_absolute")
-                views_g = deltas.get("views_growth_percent")
-
-                ctr_txt = f"{ctr_d:+.2f}% CTR" if isinstance(ctr_d, (int, float)) else "CTR N/A"
-                views_txt = f"{views_g:+.1f}% views" if isinstance(views_g, (int, float)) else "views N/A"
-
-                st.markdown(
-                    f"**Video `{video_id}`** · {days}-day observation window: "
-                    f":{badge_color}[**{outcome}**] ({ctr_txt}, {views_txt})"
-                )
-                base = ev.get("baseline_metrics") or {}
-                post = ev.get("post_metrics") or {}
-                st.caption(
-                    f"Baseline ({base.get('period', '?')}): {base.get('views', 0):,} views, CTR {base.get('ctr_percent', '?')}% | "
-                    f"Post ({post.get('period', '?')}): {post.get('views', 0):,} views, CTR {post.get('ctr_percent', '?')}%"
-                )
-                st.divider()
-
-    if pending:
-        st.markdown("#### Metadata proposals awaiting owner approval")
-        st.caption("Proposals with confidence < auto threshold, structural rewrites, or held by emergency pause appear here.")
+    with review_tab:
+        st.markdown("### Metadata proposals")
+        st.caption(
+            "Review the exact original and proposed metadata. Nothing in this queue is published "
+            "until you approve the individual proposal."
+        )
+        if not pending:
+            st.success("The review queue is clear.")
         for index, action in enumerate(pending, 1):
             action_id = str(action.get("id") or f"pending-{index}")
             title = action.get("video_title") or "Untitled video"
-            conf = action.get("confidence")
-            conf_str = f"Confidence {float(conf):.2f}" if conf is not None else ""
-            diag_str = f"Diagnosis: {action.get('diagnosis', 'packaging')}"
-            header_str = f"{index}. {title} · {_pretty_status(action.get('classification'))} ({action.get('cadence', 'daily').title()})"
-            if conf_str:
-                header_str += f" · {conf_str}"
-
-            with st.expander(header_str, expanded=index == 1):
+            confidence = action.get("confidence")
+            confidence_label = (
+                f" · confidence {float(confidence):.2f}" if confidence is not None else ""
+            )
+            with st.container(border=True):
+                st.markdown(f"**{index}. {title}**")
+                st.caption(
+                    f"{_pretty_status(action.get('classification'))} · "
+                    f"{str(action.get('cadence') or 'daily').title()}"
+                    f"{confidence_label}"
+                )
                 video_id = action.get("video_id") or ""
                 if video_id:
                     st.markdown(f"[Open video on YouTube](https://www.youtube.com/watch?v={video_id})")
                 st.write(action.get("reason") or "No rationale was recorded.")
-                st.caption(diag_str)
+                st.caption(f"Diagnosis: {action.get('diagnosis') or 'Not recorded'}")
 
                 evidence = action.get("evidence") or {}
-                reasons = evidence.get("reasons") or []
-                for reason in reasons:
+                for reason in evidence.get("reasons") or []:
                     st.caption(str(reason))
+
                 before = action.get("before_metadata") or {}
                 proposed = action.get("proposed_metadata") or {}
                 left, right = st.columns(2)
                 with left:
-                    st.markdown("**Current Metadata**")
+                    st.markdown("**Current metadata**")
                     st.text_area(
                         "Current title",
                         value=str(before.get("title") or ""),
@@ -333,13 +322,13 @@ def render_strategy_activity(store, youtube=None):
                     st.text_area(
                         "Current description",
                         value=str(before.get("description") or ""),
-                        height=160,
+                        height=140,
                         disabled=True,
                         key=f"strategy_before_desc_{action_id}",
                     )
-                    st.caption("Current tags: " + ", ".join(before.get("tags") or []))
+                    st.caption("Tags: " + ", ".join(before.get("tags") or []))
                 with right:
-                    st.markdown("**Proposed Metadata**")
+                    st.markdown("**Proposed metadata**")
                     st.text_area(
                         "Proposed title",
                         value=str(proposed.get("title") or ""),
@@ -349,12 +338,14 @@ def render_strategy_activity(store, youtube=None):
                     st.text_area(
                         "Proposed description",
                         value=str(proposed.get("description") or ""),
-                        height=160,
+                        height=140,
                         disabled=True,
                         key=f"strategy_after_desc_{action_id}",
                     )
-                    st.caption("Proposed tags: " + ", ".join(proposed.get("tags") or []))
-                st.caption("Changes: " + ", ".join(evidence.get("changed_fields") or []))
+                    st.caption("Tags: " + ", ".join(proposed.get("tags") or []))
+
+                changed_fields = evidence.get("changed_fields") or []
+                st.caption("Fields changing: " + (", ".join(changed_fields) or "None"))
                 reviewed = st.checkbox(
                     "I reviewed the exact before/after metadata and approve this update.",
                     value=False,
@@ -369,7 +360,7 @@ def render_strategy_activity(store, youtube=None):
                         disabled=not reviewed or youtube is None,
                         use_container_width=True,
                     ):
-                        with st.spinner("Checking live metadata, publishing, and verifying…"):
+                        with st.spinner("Checking live metadata, publishing and verifying…"):
                             success, message = _publish_review_action(store, youtube, action)
                         if success:
                             st.success(message)
@@ -377,50 +368,61 @@ def render_strategy_activity(store, youtube=None):
                             st.error(message)
                         st.rerun()
                 with reject_col:
-                    if st.button("Skip this proposal", key=f"strategy_skip_{action_id}", use_container_width=True):
+                    if st.button(
+                        "Skip proposal",
+                        key=f"strategy_skip_{action_id}",
+                        use_container_width=True,
+                    ):
                         try:
+                            import datetime as _datetime
                             store.update_strategy_action(action_id, store.owner_key, {
                                 "status": "rejected",
-                                "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                                "updated_at": _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
                             })
                             st.toast("Proposal skipped. YouTube metadata was not changed.")
                             st.rerun()
                         except Exception as error:
                             st.error(f"Could not update the action log: {error}")
-    else:
-        st.caption("No metadata proposals are currently waiting for review.")
 
-    with st.expander("Recent Strategist Audit Log & Rollback", expanded=False):
+    with history_tab:
+        st.markdown("### Monitoring run history")
+        if not runs:
+            st.caption("No strategy runs recorded yet.")
+        else:
+            run_rows = []
+            for run in runs:
+                run_result = run.get("result") or {}
+                run_rows.append({
+                    "Cadence": str(run.get("cadence") or "daily").title(),
+                    "Status": _pretty_status(run.get("status")),
+                    "Started": _short_timestamp(run.get("started_at")),
+                    "Model": run.get("model_name") or "Not recorded",
+                    "Proposals": int(run_result.get("proposals") or 0),
+                    "Shadow": int(run_result.get("shadow_published") or 0),
+                    "Review": int(run_result.get("pending_review") or 0),
+                    "Issues": int(run_result.get("failed") or 0) + int(run_result.get("verification_unavailable") or 0),
+                })
+            st.dataframe(run_rows, use_container_width=True, hide_index=True)
+
+        st.markdown("### Recent metadata actions")
         if not recent_actions:
             st.caption("No metadata actions recorded yet.")
-        else:
-            for action in recent_actions:
-                act_id = action.get("id")
-                title = action.get("video_title") or "Untitled video"
-                status_raw = action.get("status")
-                status = _pretty_status(status_raw)
-                cadence = (action.get("cadence") or "daily").title()
-                st.markdown(f"**{title}** · {status} · `{cadence}`")
+        for action in recent_actions:
+            action_id = action.get("id")
+            title = action.get("video_title") or "Untitled video"
+            status_raw = action.get("status")
+            with st.expander(
+                f"{title} · {_pretty_status(status_raw)} · "
+                f"{str(action.get('cadence') or 'daily').title()}"
+            ):
                 st.caption(
-                    f"{action.get('created_at', '')} · {action.get('classification', 'unknown')} · "
-                    f"{action.get('reason', '')}"
+                    f"{_short_timestamp(action.get('created_at'))} · "
+                    f"{action.get('classification') or 'unknown'} · "
+                    f"{action.get('reason') or ''}"
                 )
                 if action.get("error"):
-                    st.error(str(action["error"]))
-
-                # Rollback action button if published
-                if status_raw in {"auto_published", "approved_published", "shadow_published"} and youtube is not None:
-                    col_roll, _ = st.columns([1, 3])
-                    with col_roll:
-                        if st.button(f"Rollback to original", key=f"strategy_rollback_{act_id}", help="Restore original before_metadata"):
-                            with st.spinner("Rolling back metadata..."):
-                                success, message = rollback_strategy_action(store, youtube, store.owner_key, act_id)
-                            if success:
-                                st.success(message)
-                                st.rerun()
-                            else:
-                                st.error(message)
-
+                    st.error(_friendly_gemini_error(action.get("error")))
+                    st.code(str(action.get("error"))[:2500])
                 audit = action.get("audit_log") or {}
                 if audit:
                     st.json({
@@ -429,4 +431,137 @@ def render_strategy_activity(store, youtube=None):
                         "before": audit.get("before"),
                         "after": audit.get("after"),
                     }, expanded=False)
-                st.divider()
+                if status_raw in {"auto_published", "approved_published"} and youtube is not None:
+                    if st.button(
+                        "Rollback to original",
+                        key=f"strategy_rollback_{action_id}",
+                    ):
+                        with st.spinner("Rolling back metadata…"):
+                            success, message = rollback_strategy_action(
+                                store, youtube, store.owner_key, action_id
+                            )
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
+                        st.rerun()
+
+    with learning_tab:
+        st.markdown("### Metadata performance feedback")
+        st.caption(
+            "The worker compares eligible published changes against their baselines at 7, 14 "
+            "and 28 days. These observations help tune future Gemini decisions."
+        )
+        if not evaluations:
+            st.info("No post-publish evaluations are available yet.")
+        else:
+            evaluation_rows = []
+            for item in evaluations:
+                deltas = item.get("metric_deltas") or {}
+                ctr_delta = deltas.get("ctr_delta_absolute")
+                views_delta = deltas.get("views_growth_percent")
+                evaluation_rows.append({
+                    "Video ID": item.get("video_id"),
+                    "Window": f"{item.get('observation_days')} days",
+                    "Outcome": str(item.get("outcome") or "inconclusive").title(),
+                    "CTR change": f"{ctr_delta:+.2f} pp" if isinstance(ctr_delta, (int, float)) else "N/A",
+                    "Views change": f"{views_delta:+.1f}%" if isinstance(views_delta, (int, float)) else "N/A",
+                    "Evaluated": _short_timestamp(item.get("evaluated_at")),
+                })
+            st.dataframe(evaluation_rows, use_container_width=True, hide_index=True)
+
+    with settings_tab:
+        st.markdown("### Automation policy")
+        st.caption(
+            "These controls govern future scheduled runs. Shadow mode records what Gemini would "
+            "change without writing to YouTube."
+        )
+        emergency_pause = st.toggle(
+            "Global emergency pause",
+            value=is_emergency_paused,
+            key="strategy_emergency_pause_toggle",
+            help="Blocks automated publishing across daily, weekly and monthly cycles.",
+        )
+        current_mode = str(settings.get("automation_mode", "shadow")).strip().lower()
+        mode_options = ["Paused", "Shadow mode", "Autonomous mode"]
+        mode_lookup = {"paused": "Paused", "shadow": "Shadow mode", "autonomous": "Autonomous mode"}
+        selected_mode_label = st.radio(
+            "Automation mode",
+            options=mode_options,
+            index=mode_options.index(mode_lookup.get(current_mode, "Shadow mode")),
+            horizontal=True,
+            key="strategy_automation_mode_radio",
+            help=(
+                "Paused: analysis only. Shadow: proposals are logged without YouTube writes. "
+                "Autonomous: only eligible high-confidence changes can publish after all safety gates."
+            ),
+        )
+        selected_mode = {
+            "Paused": "paused",
+            "Shadow mode": "shadow",
+            "Autonomous mode": "autonomous",
+        }[selected_mode_label]
+
+        min_confidence = st.slider(
+            "Minimum confidence for autonomous publishing",
+            min_value=0.70,
+            max_value=0.95,
+            value=max(0.70, min(float(settings.get("min_confidence_auto_publish", 0.85)), 0.95)),
+            step=0.01,
+            key="strategy_min_confidence_slider",
+        )
+        cap_cols = st.columns(4)
+        with cap_cols[0]:
+            max_daily = st.number_input(
+                "Max daily updates", min_value=0, max_value=10,
+                value=int(settings.get("max_daily_minor_publishes", 3)),
+                key="strategy_daily_cap",
+            )
+        with cap_cols[1]:
+            max_weekly = st.number_input(
+                "Max weekly updates", min_value=0, max_value=20,
+                value=int(settings.get("max_weekly_publishes", 5)),
+                key="strategy_weekly_cap",
+            )
+        with cap_cols[2]:
+            max_monthly = st.number_input(
+                "Max monthly updates", min_value=0, max_value=50,
+                value=int(settings.get("max_monthly_publishes", 10)),
+                key="strategy_monthly_cap",
+            )
+        with cap_cols[3]:
+            max_review = st.number_input(
+                "Max review candidates/run", min_value=0, max_value=10,
+                value=int(settings.get("max_metadata_reviews_per_run", 3)),
+                key="strategy_review_cap",
+            )
+
+        st.divider()
+        st.markdown("### Gemini model routing")
+        st.markdown("**Primary:** Gemini 3.8 Flash")
+        st.markdown(
+            "**Fallbacks:** Gemini 3.6 Flash → Gemini 3.5 Flash → "
+            "Gemini 3.5 Flash-Lite → Gemini 3.1 Flash-Lite"
+        )
+        st.caption(
+            "The worker checks which configured models advertise generateContent for the API key, "
+            "skips unavailable model IDs, retries temporary overloads, and moves to the next model "
+            "when a quota is exhausted. These are Developer API model limits, separate from Gemini "
+            "app subscription limits."
+        )
+
+        if st.button("Save strategist settings", key="strategy_save_settings", type="primary"):
+            try:
+                store.set_strategy_settings({
+                    "emergency_pause": emergency_pause,
+                    "automation_mode": selected_mode,
+                    "min_confidence_auto_publish": min_confidence,
+                    "max_daily_minor_publishes": max_daily,
+                    "max_weekly_publishes": max_weekly,
+                    "max_monthly_publishes": max_monthly,
+                    "max_metadata_reviews_per_run": max_review,
+                })
+                st.success("Strategist settings saved.")
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not save strategist settings: {error}")

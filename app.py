@@ -211,21 +211,36 @@ def render_app():
             if conversations:
                 with st.sidebar:
                     st.markdown("### Chat history")
-                    labels = {f"{item['title']} · {item['updated_at'][:10]}": item["id"] for item in conversations}
-                    current_label = next((label for label, cid in labels.items() if cid == selected_id), None)
-                    chosen_label = st.selectbox(
-                        "Previous conversations", list(labels), index=list(labels).index(current_label) if current_label in labels else 0,
-                        key="copilot_history_selector",
-                    )
-                    chosen_id = labels[chosen_label]
-                    if chosen_id != selected_id:
-                        st.session_state["_copilot_conversation_id"] = chosen_id
-                        st.session_state["_copilot_history_loaded"] = False
-                        st.session_state["strategist_chat_history"] = []
-                        for key in ("strategist_target_reference", "strategist_chat_proposal", "strategist_chat_digest",
-                                    "batch_metadata_review", "batch_metadata_payload", "batch_flow_step"):
-                            st.session_state.pop(key, None)
-                        st.rerun()
+                    st.caption("Select a previous conversation")
+                    # A compact clickable list is easier to scan than a single selectbox.
+                    for item in conversations[:12]:
+                        conversation_id = item.get("id")
+                        if not conversation_id:
+                            continue
+                        is_selected = conversation_id == selected_id
+                        title = str(item.get("title") or "Untitled conversation").strip()
+                        if len(title) > 42:
+                            title = title[:39].rstrip() + "…"
+                        updated = str(item.get("updated_at") or "")[:10]
+                        label = f"{'● ' if is_selected else ''}{title}\n{updated}"
+                        if st.button(
+                            label,
+                            key=f"copilot_history_{conversation_id}",
+                            type="primary" if is_selected else "secondary",
+                            use_container_width=True,
+                        ) and not is_selected:
+                            st.session_state["_copilot_conversation_id"] = conversation_id
+                            st.session_state["_copilot_history_loaded"] = False
+                            st.session_state["strategist_chat_history"] = []
+                            for key in (
+                                "strategist_target_reference", "strategist_chat_proposal",
+                                "strategist_chat_digest", "batch_metadata_review",
+                                "batch_metadata_payload", "batch_flow_step",
+                            ):
+                                st.session_state.pop(key, None)
+                            st.rerun()
+                    if len(conversations) > 12:
+                        st.caption(f"Showing the 12 most recent of {len(conversations)} saved conversations.")
         except Exception as error:
             st.session_state["_copilot_persistence_warning"] = (
                 "Could not load saved chat history. Your current session remains available."
@@ -330,19 +345,21 @@ def render_app():
                 if yt_err:
                     st.caption(yt_err)
 
-    # Canonical Single-Chat Landing
-    render_copilot_chat(
-        youtube=youtube,
-        secrets=secrets,
-        credentials=yt_creds,
-        memory_credentials=memory_creds,
-        analytics=analytics,
-        reporting=reporting,
-        subject=subject,
-    )
+    # Keep the conversational copilot and scheduled channel strategist as separate workspaces.
+    copilot_tab, strategist_tab = st.tabs(["Metadata Copilot", "Channel Strategist"])
+    with copilot_tab:
+        render_copilot_chat(
+            youtube=youtube,
+            secrets=secrets,
+            credentials=yt_creds,
+            memory_credentials=memory_creds,
+            analytics=analytics,
+            reporting=reporting,
+            subject=subject,
+        )
 
-    # Scheduled channel strategy remains inside the single owner-authenticated Streamlit app.
-    render_strategy_activity(persistent_store, youtube=youtube)
+    with strategist_tab:
+        render_strategy_activity(persistent_store, youtube=youtube)
 
 
 def main():
