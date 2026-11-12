@@ -59,6 +59,48 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIn("copilot_history_{conversation_id}", app_code)
         self.assertNotIn("st.selectbox(", app_code, "Conversation history must use clickable items, not a dropdown.")
 
+    def test_gemini_defaults_match_owner_api_key_benchmark(self):
+        from strategist_chat import (
+            DEFAULT_MODEL,
+            DEFAULT_GEMINI_FALLBACKS,
+            DEFAULT_BATCH_GEMINI_MODEL,
+            DEFAULT_BATCH_GEMINI_FALLBACKS,
+        )
+        from core.llm import DEFAULT_GEMINI_MODEL, DEFAULT_GEMINI_FALLBACKS as ROUTER_FALLBACKS
+        from core.channel_strategy_agent import DEFAULT_STRATEGY_MODEL, DEFAULT_STRATEGY_FALLBACKS
+
+        expected_fallbacks = [
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3-flash-preview",
+        ]
+        self.assertEqual(DEFAULT_MODEL, "gemini-3.6-flash")
+        self.assertEqual(DEFAULT_BATCH_GEMINI_MODEL, "gemini-3.6-flash")
+        self.assertEqual(DEFAULT_GEMINI_MODEL, "gemini-3.6-flash")
+        self.assertEqual(DEFAULT_STRATEGY_MODEL, "gemini-3.6-flash")
+        self.assertEqual(DEFAULT_GEMINI_FALLBACKS, expected_fallbacks)
+        self.assertEqual(DEFAULT_BATCH_GEMINI_FALLBACKS, expected_fallbacks)
+        self.assertEqual(ROUTER_FALLBACKS, expected_fallbacks)
+        self.assertEqual(list(DEFAULT_STRATEGY_FALLBACKS), expected_fallbacks)
+
+    def test_gemini_workflows_use_owner_benchmarked_model_chain(self):
+        repository_root = os.path.join(os.path.dirname(__file__), "..")
+        workflow_paths = [
+            ".github/workflows/channel-strategy-agent.yml",
+            ".github/workflows/weekly-strategy-agent.yml",
+            ".github/workflows/monthly-strategy-agent.yml",
+            ".github/workflows/background-worker.yml",
+        ]
+        for relative_path in workflow_paths:
+            with self.subTest(workflow=relative_path):
+                with open(os.path.join(repository_root, relative_path), "r", encoding="utf-8") as f:
+                    workflow = f.read()
+                self.assertIn('GEMINI_MODEL: "gemini-3.6-flash"', workflow)
+                self.assertIn(
+                    'GEMINI_FALLBACK_MODELS: "gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3-flash-preview"',
+                    workflow,
+                )
+
     def test_channel_strategist_sections_are_separated(self):
         """Monitoring, review, history, learning and policy controls are separate user work areas."""
         activity_path = os.path.join(os.path.dirname(__file__), "..", "ui", "strategy_activity.py")
