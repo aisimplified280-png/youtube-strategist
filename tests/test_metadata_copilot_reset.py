@@ -67,7 +67,7 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
 
         self.assertIn('["Overview", f"Review queue ({len(pending)})", "Run & action history", "Learning", "Settings"]', activity_code)
         self.assertIn("def _friendly_gemini_error", activity_code)
-        self.assertIn("Gemini 3.8 Flash", activity_code)
+        self.assertIn("Gemini 3.6 Flash", activity_code)
         self.assertNotIn("Monitoring Cadence", activity_code)
 
     # Criterion 2: Regular video URL parsing
