@@ -106,9 +106,9 @@ state_secret = "REPLACE_WITH_ANOTHER_RANDOM_STRING_AT_LEAST_32_CHARS"
 api_key = "AIza_YOUR_GEMINI_API_KEY"
 model = "gemini-3.6-flash"
 fallback_models = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3-flash-preview"]
-# Batch Metadata Copilot uses the same API-key-tested Gemini order; Groq remains first for batches.
-batch_model = "gemini-3.6-flash"
-batch_fallback_models = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3-flash-preview"]
+# Batch Metadata Copilot keeps its cost-efficient Flash-Lite default; Groq is attempted first.
+batch_model = "gemini-3.5-flash-lite"
+batch_fallback_models = ["gemini-3.5-flash", "gemini-3.6-flash"]
 
 # Groq is the primary provider for metadata batches.
 [groq]
