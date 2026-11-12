@@ -538,8 +538,8 @@ def render_strategy_activity(store, youtube=None):
 
         st.divider()
         st.markdown("### Gemini model routing")
+        st.markdown("**Primary:** Gemini 3.8 Flash")
         st.markdown(
-            "**Primary:** Gemini 3.8 Flash  \\n"
             "**Fallbacks:** Gemini 3.6 Flash → Gemini 3.5 Flash → "
             "Gemini 3.5 Flash-Lite → Gemini 3.1 Flash-Lite"
         )
