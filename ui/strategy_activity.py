@@ -538,10 +538,10 @@ def render_strategy_activity(store, youtube=None):
 
         st.divider()
         st.markdown("### Gemini model routing")
-        st.markdown("**Primary:** Gemini 3.8 Flash")
+        st.markdown("**Primary:** Gemini 3.6 Flash")
         st.markdown(
-            "**Fallbacks:** Gemini 3.6 Flash → Gemini 3.5 Flash → "
-            "Gemini 3.5 Flash-Lite → Gemini 3.1 Flash-Lite"
+            "**Fallbacks:** Gemini 3.5 Flash-Lite → Gemini Flash-Lite Latest → "
+            "Gemini 3 Flash Preview"
         )
         st.caption(
             "The worker checks which configured models advertise generateContent for the API key, "
