@@ -85,13 +85,12 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
 
     def test_gemini_workflows_use_owner_benchmarked_model_chain(self):
         repository_root = os.path.join(os.path.dirname(__file__), "..")
-        workflow_paths = [
+        strategy_workflows = [
             ".github/workflows/channel-strategy-agent.yml",
             ".github/workflows/weekly-strategy-agent.yml",
             ".github/workflows/monthly-strategy-agent.yml",
-            ".github/workflows/background-worker.yml",
         ]
-        for relative_path in workflow_paths:
+        for relative_path in strategy_workflows:
             with self.subTest(workflow=relative_path):
                 with open(os.path.join(repository_root, relative_path), "r", encoding="utf-8") as f:
                     workflow = f.read()
@@ -100,6 +99,15 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
                     'GEMINI_FALLBACK_MODELS: "gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3-flash-preview"',
                     workflow,
                 )
+
+        # The batch worker is intentionally a separate, cheaper Groq-first path.
+        with open(os.path.join(repository_root, ".github/workflows/background-worker.yml"), "r", encoding="utf-8") as f:
+            batch_workflow = f.read()
+        self.assertIn('GEMINI_MODEL: "gemini-3.5-flash-lite"', batch_workflow)
+        self.assertIn(
+            'GEMINI_FALLBACK_MODELS: "gemini-3.5-flash,gemini-3.6-flash"',
+            batch_workflow,
+        )
 
     def test_channel_strategist_sections_are_separated(self):
         """Monitoring, review, history, learning and policy controls are separate user work areas."""
