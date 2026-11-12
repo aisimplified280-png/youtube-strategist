@@ -533,11 +533,16 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
         self.assertIn("Do not add factual claims", prompt)
         self.assertEqual(report["metadata_candidates"][0]["fields_to_modify"], [])
 
-    def test_strategy_model_defaults_use_current_stable_flash_chain(self):
-        self.assertEqual(DEFAULT_STRATEGY_MODEL, "gemini-3.8-flash")
-        self.assertIn("gemini-3.5-flash-lite", DEFAULT_STRATEGY_FALLBACKS)
-        self.assertIn("gemini-3.1-flash-lite", DEFAULT_STRATEGY_FALLBACKS)
-        self.assertFalse(any("2.5" in model for model in DEFAULT_STRATEGY_FALLBACKS))
+    def test_strategy_model_defaults_match_api_key_benchmark(self):
+        self.assertEqual(DEFAULT_STRATEGY_MODEL, "gemini-3.6-flash")
+        self.assertEqual(
+            list(DEFAULT_STRATEGY_FALLBACKS),
+            [
+                "gemini-3.5-flash-lite",
+                "gemini-flash-lite-latest",
+                "gemini-3-flash-preview",
+            ],
+        )
 
     def test_gemini_skips_models_not_advertised_for_api_key(self):
         model_response = {
