@@ -20,7 +20,7 @@ This repository uses one owner-authenticated Streamlit application as the contro
   - **Monthly strategic review (`30 4 5 * *` UTC / Day 5 10:00 AM IST):** strategic macro review, subscriber conversion compounding, back-catalogue packaging refreshes, evergreen vs decay analysis.
 - **Full catalogue pagination beyond 500 uploads:** upload playlist discovery scans the entire catalogue with resumable pagination without artificial ceilings.
 - **Evidence-first diagnosis:** evaluates views, watch time, average percentage viewed, subscriber conversion per 1,000 views, traffic sources, impressions, and impression CTR from the YouTube Reporting API. Missing metrics remain unavailable; uploads under 180 seconds stay unclassified and are excluded from peer-underperformance ranking and automatic metadata candidates until orientation can be confirmed.
-- **Gemini as the central decision maker:** Gemini 3.1 Pro Preview is the primary model through the Gemini Developer API (`gemini-3.1-pro-preview`), with fallbacks to `gemini-3.8-flash` and `gemini-2.5-flash`. Gemini produces structured decisions with diagnosis, proposed fields, confidence score (0.0 to 1.0), and factual evidence.
+- **Gemini as the central decision maker:** the autonomous Strategist uses the API-key-benchmarked Gemini 3.6 Flash model (`gemini-3.6-flash`), with fallbacks to `gemini-3.5-flash-lite`, `gemini-flash-lite-latest`, and `gemini-3-flash-preview`. The order was selected from direct structured-JSON and thinking-config probes against the configured API key. Gemini produces structured decisions with diagnosis, proposed fields, confidence score (0.0 to 1.0), and factual evidence.
 - **Three Automation Modes:**
   - **Paused:** Scanning and briefings run; no proposals are published automatically.
   - **Shadow mode:** Runs full analysis and proposal generation; logs `shadow_published` records with before/proposed diffs without writing to YouTube.
@@ -104,9 +104,9 @@ state_secret = "REPLACE_WITH_ANOTHER_RANDOM_STRING_AT_LEAST_32_CHARS"
 # Daily strategist reasoning model
 [gemini]
 api_key = "AIza_YOUR_GEMINI_API_KEY"
-model = "gemini-3.1-pro-preview"
-fallback_models = ["gemini-3.8-flash"]
-# Batch-only low-cost fallback; Groq is attempted first for metadata batches.
+model = "gemini-3.6-flash"
+fallback_models = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3-flash-preview"]
+# Batch Metadata Copilot keeps its cost-efficient Flash-Lite default; Groq is attempted first.
 batch_model = "gemini-3.5-flash-lite"
 batch_fallback_models = ["gemini-3.5-flash", "gemini-3.6-flash"]
 

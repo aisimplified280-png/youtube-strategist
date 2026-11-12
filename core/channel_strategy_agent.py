@@ -17,15 +17,13 @@ import youtube_dashboard
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
-# Use current stable Flash models by default. The 2.5 family can appear in
-# models.list while generation is restricted for newer projects, so it is
-# intentionally excluded from the automatic fallback chain.
-DEFAULT_STRATEGY_MODEL = "gemini-3.8-flash"
+# This order is based on direct generateContent + structured-JSON probes
+# performed against the owner's API key. Keep the alias as a late fallback.
+DEFAULT_STRATEGY_MODEL = "gemini-3.6-flash"
 DEFAULT_STRATEGY_FALLBACKS = (
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3-flash-preview",
 )
 VIDEO_METRICS = (
     "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,"
