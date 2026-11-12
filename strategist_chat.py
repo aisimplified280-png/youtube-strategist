@@ -34,10 +34,18 @@ import youtube_dashboard
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
-DEFAULT_MODEL = "gemini-3.1-pro-preview"
-DEFAULT_GEMINI_FALLBACKS = ["gemini-3.8-flash"]
-DEFAULT_BATCH_GEMINI_MODEL = "gemini-3.5-flash-lite"
-DEFAULT_BATCH_GEMINI_FALLBACKS = ["gemini-3.5-flash", "gemini-3.6-flash"]
+DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_GEMINI_FALLBACKS = [
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3-flash-preview",
+]
+DEFAULT_BATCH_GEMINI_MODEL = "gemini-3.6-flash"
+DEFAULT_BATCH_GEMINI_FALLBACKS = [
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3-flash-preview",
+]
 MAX_TRANSCRIPT_CHARS = 12000
 MAX_HISTORY_TURNS = 10
 
