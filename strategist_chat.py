@@ -40,12 +40,8 @@ DEFAULT_GEMINI_FALLBACKS = [
     "gemini-flash-lite-latest",
     "gemini-3-flash-preview",
 ]
-DEFAULT_BATCH_GEMINI_MODEL = "gemini-3.6-flash"
-DEFAULT_BATCH_GEMINI_FALLBACKS = [
-    "gemini-3.5-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-3-flash-preview",
-]
+DEFAULT_BATCH_GEMINI_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_BATCH_GEMINI_FALLBACKS = ["gemini-3.5-flash", "gemini-3.6-flash"]
 MAX_TRANSCRIPT_CHARS = 12000
 MAX_HISTORY_TURNS = 10
 
