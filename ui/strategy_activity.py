@@ -292,9 +292,8 @@ def render_strategy_activity(store, youtube=None):
                 f" · confidence {float(confidence):.2f}" if confidence is not None else ""
             )
             with st.container(border=True):
-                st.markdown(
-                    f"**{index}. {title}**  
-"
+                st.markdown(f"**{index}. {title}**")
+                st.caption(
                     f"{_pretty_status(action.get('classification'))} · "
                     f"{str(action.get('cadence') or 'daily').title()}"
                     f"{confidence_label}"
