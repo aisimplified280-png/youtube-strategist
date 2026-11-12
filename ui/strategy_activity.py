@@ -423,8 +423,7 @@ def render_strategy_activity(store, youtube=None):
                 )
                 if action.get("error"):
                     st.error(_friendly_gemini_error(action.get("error")))
-                    with st.expander("Technical details"):
-                        st.code(str(action.get("error"))[:2500])
+                    st.code(str(action.get("error"))[:2500])
                 audit = action.get("audit_log") or {}
                 if audit:
                     st.json({
