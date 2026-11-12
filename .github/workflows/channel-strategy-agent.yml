@@ -1,8 +1,8 @@
-name: AI Simplified Lab channel strategist
+name: AI Simplified Lab daily channel strategist
 
 on:
-  # Metadata snapshots run at 02:15 UTC. The strategist starts afterwards,
-  # at 08:00 Asia/Kolkata, using the stable seven-day metadata cooldown.
+  # Metadata snapshots run at 02:15 UTC. The daily strategist starts afterwards,
+  # at 08:00 Asia/Kolkata (02:30 UTC), using the stable seven-day metadata cooldown.
   schedule:
     - cron: "30 2 * * *"
   workflow_dispatch:
@@ -28,17 +28,18 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Run evidence-first channel strategist
+      - name: Run evidence-first daily channel strategist
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           YOUTUBE_STRATEGIST_STATE_SECRET: ${{ secrets.YOUTUBE_STRATEGIST_STATE_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: "gemini-3.1-pro-preview"
-          GEMINI_FALLBACK_MODELS: "gemini-3.8-flash"
+          GEMINI_FALLBACK_MODELS: "gemini-3.8-flash,gemini-2.5-flash"
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: "openai/gpt-oss-120b"
+          STRATEGY_CADENCE: "daily"
           STRATEGY_TRIGGER_SOURCE: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'schedule' }}
           STRATEGY_CATALOGUE_LIMIT: "500"
           LOG_LEVEL: "INFO"
-        run: python channel_strategy_worker.py
+        run: python channel_strategy_worker.py --cadence=daily

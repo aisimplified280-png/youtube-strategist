@@ -17,9 +17,15 @@ from core.channel_strategy_agent import (
     DEFAULT_STRATEGY_MODEL,
     classify_metadata_change,
     collect_channel_snapshot,
+    evaluate_autonomous_policy,
     generate_strategy_report,
 )
 from core.persistent_store import SupabasePersistentStore
+from core.strategy_learning import (
+    format_learning_feedback_for_prompt,
+    record_channel_evaluations,
+    rollback_strategy_action,
+)
 from strategist_chat import build_batch_metadata_generator
 from metadata_snapshot_worker import resolve_channel_owner
 from worker import (
@@ -158,7 +164,26 @@ def _daily_auto_count(store, owner_key: str) -> int:
     start = datetime.combine(local_today, time.min, tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc).isoformat()
     rows = store._request("GET", "channel_strategy_actions", params={
         "owner_key": f"eq.{owner_key}",
-        "classification": "eq.minor",
+        "status": "in.(auto_published,auto_publishing,verification_unavailable,failed)",
+        "executed_at": f"gte.{start}",
+        "select": "id",
+        "limit": "100",
+    })
+    return len(rows or [])
+
+
+def _cadence_auto_count(store, owner_key: str, cadence: str) -> int:
+    local_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    if cadence == "monthly":
+        period_start = date(local_today.year, local_today.month, 1)
+    elif cadence == "weekly":
+        period_start = local_today - timedelta(days=local_today.weekday())
+    else:
+        period_start = local_today
+    start = datetime.combine(period_start, time.min, tzinfo=ZoneInfo("Asia/Kolkata")).astimezone(timezone.utc).isoformat()
+    rows = store._request("GET", "channel_strategy_actions", params={
+        "owner_key": f"eq.{owner_key}",
+        "cadence": f"eq.{cadence}",
         "status": "in.(auto_published,auto_publishing,verification_unavailable,failed)",
         "executed_at": f"gte.{start}",
         "select": "id",
@@ -202,12 +227,13 @@ def _process_candidate(
     run_id: str,
     candidate: dict,
     row: dict,
+    settings: dict,
     *,
-    auto_minor_enabled: bool,
-    auto_daily_cap: int,
-    auto_count: int,
-    model_name: str,
-) -> tuple[str, int]:
+    cadence: str = "daily",
+    daily_count: int = 0,
+    cadence_count: int = 0,
+    model_name: str = "",
+) -> tuple[str, int, int]:
     video_id = str(row.get("video_id") or candidate.get("video_id") or "")
     before_full = row.get("before") or {}
     proposed_full = row.get("proposed") or {}
@@ -221,6 +247,9 @@ def _process_candidate(
             "action_type": "metadata_optimization",
             "classification": "major",
             "status": "failed",
+            "cadence": cadence,
+            "confidence": candidate.get("confidence"),
+            "diagnosis": candidate.get("diagnosis"),
             "reason": "The metadata proposal could not be validated.",
             "evidence": {"reasons": candidate.get("reasons") or []},
             "before_metadata": before_full if before_full else {},
@@ -230,15 +259,43 @@ def _process_candidate(
             "created_at": _utc_now(),
             "updated_at": _utc_now(),
         })
-        return "failed", auto_count
+        return "failed", daily_count, cadence_count
 
     before = _safe_metadata(before_full)
     proposed = _safe_metadata(proposed_full)
-    classification, reason, changed_fields = classify_metadata_change(
-        before, proposed,
-        source_text=f"{before.get('title', '')}\n{before.get('description', '')}",
+
+    # Check cooldown ledger
+    try:
+        cooldown = _record_live_metadata_snapshot(
+            store, owner_key, video_id, before_full, source="worker"
+        )
+        cooldown_allowed = _snapshot_allows_publish(cooldown)
+        cooldown_reason = "" if cooldown_allowed else "The seven-day metadata baseline/cooldown is not satisfied."
+    except Exception as error:
+        cooldown = {}
+        cooldown_allowed = False
+        cooldown_reason = f"Could not check cooldown ledger: {error}"
+
+    candidate_decision = {
+        "confidence": candidate.get("confidence", 0.85),
+        "decision": candidate.get("decision", "auto_publish"),
+        "rationale": candidate.get("rationale") or candidate.get("reason") or "",
+        "cadence": cadence,
+        "diagnosis": candidate.get("diagnosis", "packaging"),
+    }
+
+    policy_decision, policy_reason, changed_fields = evaluate_autonomous_policy(
+        settings,
+        candidate_decision,
+        before,
+        proposed,
+        cooldown_allows_publish=cooldown_allowed,
+        cooldown_reason=cooldown_reason,
+        daily_count=daily_count,
+        cadence_count=cadence_count,
     )
-    if classification == "none":
+
+    if policy_decision == "no_change":
         store.create_strategy_action(owner_key, {
             "run_id": run_id,
             "video_id": video_id,
@@ -247,7 +304,10 @@ def _process_candidate(
             "action_type": "metadata_optimization",
             "classification": "none",
             "status": "no_change",
-            "reason": reason,
+            "cadence": cadence,
+            "confidence": candidate.get("confidence"),
+            "diagnosis": candidate.get("diagnosis"),
+            "reason": policy_reason,
             "evidence": {"reasons": candidate.get("reasons") or []},
             "before_metadata": before_full,
             "proposed_metadata": proposed_full,
@@ -255,9 +315,100 @@ def _process_candidate(
             "created_at": _utc_now(),
             "updated_at": _utc_now(),
         })
-        return "no_change", auto_count
+        return "no_change", daily_count, cadence_count
+
+    if policy_decision == "rejected":
+        store.create_strategy_action(owner_key, {
+            "run_id": run_id,
+            "video_id": video_id,
+            "video_title": before.get("title") or candidate.get("title") or "Untitled video",
+            "priority": int(candidate.get("opportunity_score") or 0),
+            "action_type": "metadata_optimization",
+            "classification": "major",
+            "status": "failed",
+            "cadence": cadence,
+            "confidence": candidate.get("confidence"),
+            "diagnosis": candidate.get("diagnosis"),
+            "reason": policy_reason,
+            "evidence": {"reasons": candidate.get("reasons") or [], "changed_fields": changed_fields},
+            "before_metadata": before_full,
+            "proposed_metadata": proposed_full,
+            "error": policy_reason[:1500],
+            "model_name": model_name,
+            "created_at": _utc_now(),
+            "updated_at": _utc_now(),
+        })
+        return "failed", daily_count, cadence_count
 
     digest = connector.metadata_proposal_digest(video_id, before_full, proposed_full)
+    classification = "minor" if len(changed_fields) == 1 and changed_fields[0] == "tags" else "major"
+
+    if policy_decision == "shadow_publish":
+        store.create_strategy_action(owner_key, {
+            "run_id": run_id,
+            "video_id": video_id,
+            "video_title": before.get("title") or candidate.get("title") or "Untitled video",
+            "priority": int(candidate.get("opportunity_score") or 0),
+            "action_type": "metadata_optimization",
+            "classification": classification,
+            "status": "shadow_published",
+            "cadence": cadence,
+            "confidence": candidate.get("confidence"),
+            "diagnosis": candidate.get("diagnosis"),
+            "reason": policy_reason,
+            "evidence": {
+                "reasons": candidate.get("reasons") or [],
+                "views": candidate.get("views"),
+                "impressions": candidate.get("impressions"),
+                "ctr_percent": candidate.get("ctr_percent"),
+                "average_view_percentage": candidate.get("average_view_percentage"),
+                "subscribers_gained": candidate.get("subscribers_gained"),
+                "subscribers_per_1000_views": candidate.get("subscribers_per_1000_views"),
+                "changed_fields": changed_fields,
+                "shadow": True,
+            },
+            "before_metadata": before_full,
+            "proposed_metadata": proposed_full,
+            "approval_digest": digest,
+            "model_name": model_name,
+            "created_at": _utc_now(),
+            "updated_at": _utc_now(),
+        })
+        return "shadow_published", daily_count, cadence_count
+
+    if policy_decision == "pending_review":
+        store.create_strategy_action(owner_key, {
+            "run_id": run_id,
+            "video_id": video_id,
+            "video_title": before.get("title") or candidate.get("title") or "Untitled video",
+            "priority": int(candidate.get("opportunity_score") or 0),
+            "action_type": "metadata_optimization",
+            "classification": classification,
+            "status": "pending_review",
+            "cadence": cadence,
+            "confidence": candidate.get("confidence"),
+            "diagnosis": candidate.get("diagnosis"),
+            "reason": policy_reason,
+            "evidence": {
+                "reasons": candidate.get("reasons") or [],
+                "views": candidate.get("views"),
+                "impressions": candidate.get("impressions"),
+                "ctr_percent": candidate.get("ctr_percent"),
+                "average_view_percentage": candidate.get("average_view_percentage"),
+                "subscribers_gained": candidate.get("subscribers_gained"),
+                "subscribers_per_1000_views": candidate.get("subscribers_per_1000_views"),
+                "changed_fields": changed_fields,
+            },
+            "before_metadata": before_full,
+            "proposed_metadata": proposed_full,
+            "approval_digest": digest,
+            "model_name": model_name,
+            "created_at": _utc_now(),
+            "updated_at": _utc_now(),
+        })
+        return "pending_review", daily_count, cadence_count
+
+    # Autonomous write path
     action = store.create_strategy_action(owner_key, {
         "run_id": run_id,
         "video_id": video_id,
@@ -265,8 +416,11 @@ def _process_candidate(
         "priority": int(candidate.get("opportunity_score") or 0),
         "action_type": "metadata_optimization",
         "classification": classification,
-        "status": "pending_review",
-        "reason": reason + ((" " + str(row.get("recommendation_reason"))) if row.get("recommendation_reason") else ""),
+        "status": "auto_publishing",
+        "cadence": cadence,
+        "confidence": candidate.get("confidence"),
+        "diagnosis": candidate.get("diagnosis"),
+        "reason": policy_reason,
         "evidence": {
             "reasons": candidate.get("reasons") or [],
             "views": candidate.get("views"),
@@ -281,49 +435,11 @@ def _process_candidate(
         "proposed_metadata": proposed_full,
         "approval_digest": digest,
         "model_name": model_name,
+        "executed_at": _utc_now(),
         "created_at": _utc_now(),
         "updated_at": _utc_now(),
     })
     action_id = action.get("id")
-    if classification != "minor" or not auto_minor_enabled:
-        return "pending_review", auto_count
-    if auto_count >= auto_daily_cap:
-        _update_action(store, action_id, owner_key, {
-            "reason": reason + f" Auto-publish held: the daily limit of {auto_daily_cap} minor updates has been reached.",
-            "updated_at": _utc_now(),
-        })
-        return "pending_review", auto_count
-
-    # The seven-day baseline/quiet-period ledger is mandatory for machine-published changes.
-    try:
-        cooldown = _record_live_metadata_snapshot(
-            store, owner_key, video_id, before_full, source="worker"
-        )
-    except Exception as error:
-        _update_action(store, action_id, owner_key, {
-            "reason": reason + " Auto-publish held because the metadata cooldown ledger could not be checked.",
-            "error": f"{type(error).__name__}: {str(error)[:1200]}",
-            "updated_at": _utc_now(),
-        })
-        return "pending_review", auto_count
-
-    if not _snapshot_allows_publish(cooldown):
-        _update_action(store, action_id, owner_key, {
-            "reason": reason + " Auto-publish held: the seven-day metadata baseline/cooldown is not satisfied.",
-            "evidence": {
-                "reasons": candidate.get("reasons") or [],
-                "cooldown": cooldown,
-                "changed_fields": changed_fields,
-            },
-            "updated_at": _utc_now(),
-        })
-        return "pending_review", auto_count
-
-    _update_action(store, action_id, owner_key, {
-        "status": "auto_publishing",
-        "executed_at": _utc_now(),
-        "updated_at": _utc_now(),
-    })
 
     def audit_callback(entry):
         _update_action(store, action_id, owner_key, {
@@ -344,8 +460,6 @@ def _process_candidate(
             after_full = connector.fetch_video_snippet(youtube, video_id)
             after = _safe_metadata(after_full)
         except Exception as snapshot_error:
-            # The connector has already verified the YouTube write. Failure to
-            # collect an additional audit snapshot must not overwrite that result.
             after_snapshot_warning = f"{type(snapshot_error).__name__}: {str(snapshot_error)[:800]}"
         _update_action(store, action_id, owner_key, {
             "status": "auto_published",
@@ -358,28 +472,33 @@ def _process_candidate(
             "error": None,
             "updated_at": _utc_now(),
         })
-        return "auto_published", auto_count + 1
+        return "auto_published", daily_count + 1, cadence_count + 1
     except connector.MetadataVerificationUnavailableError as error:
         _update_action(store, action_id, owner_key, {
             "status": "verification_unavailable",
             "error": f"{type(error).__name__}: {str(error)[:1500]}",
             "updated_at": _utc_now(),
         })
-        return "verification_unavailable", auto_count
+        return "verification_unavailable", daily_count, cadence_count
     except Exception as error:
         _update_action(store, action_id, owner_key, {
             "status": "failed",
             "error": f"{type(error).__name__}: {str(error)[:1500]}",
             "updated_at": _utc_now(),
         })
-        return "failed", auto_count
+        return "failed", daily_count, cadence_count
 
 
-def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> dict:
-    """Execute one end-to-end analytics, strategy, metadata-proposal and guarded-publish cycle."""
+def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", cadence: str = "daily") -> dict:
+    """Execute one end-to-end cadence-aware analytics, strategy, proposal, and guarded-publish cycle."""
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not gemini_key:
         raise RuntimeError("GEMINI_API_KEY is required for the Gemini-first autonomous channel strategist. Configure it as a GitHub Actions repository secret.")
+
+    cadence = str(cadence or os.getenv("STRATEGY_CADENCE", "daily")).strip().lower()
+    if cadence not in {"daily", "weekly", "monthly"}:
+        cadence = "daily"
+
     owner_key, _ = resolve_channel_owner(store, cipher, OWNER_CHANNEL_ID)
     credentials = _get_owner_credentials(store, owner_key, cipher)
     youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
@@ -387,22 +506,62 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
     reporting = build("youtubereporting", "v1", credentials=credentials, cache_discovery=False)
 
     settings = store.get_strategy_settings(owner_key)
+
+    # Concurrency and idempotency protection
+    local_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    if cadence == "monthly":
+        period_key = local_now.strftime("%Y-%m")
+    elif cadence == "weekly":
+        period_key = local_now.strftime("%Y-W%W")
+    else:
+        period_key = local_now.strftime("%Y-%m-%d")
+
+    dedup_key = f"{OWNER_CHANNEL_ID}_{cadence}_{period_key}"
+
+    # Check for active running jobs in last 25 minutes
+    stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=25)).isoformat()
+    active_runs = store._request("GET", "channel_strategy_runs", params={
+        "owner_key": f"eq.{owner_key}",
+        "status": "eq.running",
+        "started_at": f"gte.{stale_cutoff}",
+        "select": "id,cadence,started_at",
+        "limit": "1",
+    })
+    if active_runs and trigger_source == "schedule":
+        log.warning("Another strategy run is currently active (%s). Concurrency guard holding execution.", active_runs[0].get("id"))
+        return {"status": "concurrency_held", "message": "Another strategy run is currently active."}
+
     run = store.create_strategy_run(owner_key, {
         "channel_id": OWNER_CHANNEL_ID,
         "trigger_source": trigger_source,
+        "cadence": cadence,
+        "dedup_key": dedup_key,
         "status": "running",
         "started_at": _utc_now(),
     })
     run_id = run["id"]
     counters = {
-        "proposals": 0, "auto_published": 0, "pending_review": 0,
-        "failed": 0, "no_change": 0, "verification_unavailable": 0,
+        "proposals": 0, "auto_published": 0, "shadow_published": 0,
+        "pending_review": 0, "failed": 0, "no_change": 0, "verification_unavailable": 0,
     }
     try:
         counters["verification_unavailable"] += _recover_interrupted_actions(store, owner_key)
+
+        # Run empirical learning loop pass before strategic evaluation
+        try:
+            record_channel_evaluations(store, analytics, reporting, credentials, owner_key)
+        except Exception as eval_error:
+            log.warning("Non-fatal learning loop evaluation check error: %s", eval_error)
+
+        learning_feedback = format_learning_feedback_for_prompt(store, owner_key)
+
+        catalogue_limit_raw = os.getenv("STRATEGY_CATALOGUE_LIMIT", "500").strip()
+        catalogue_limit = None if catalogue_limit_raw.lower() in {"none", "0", "all", "unlimited"} else int(catalogue_limit_raw)
+
         snapshot = collect_channel_snapshot(
             youtube, analytics, reporting, credentials, OWNER_CHANNEL_ID,
-            catalogue_limit=int(os.getenv("STRATEGY_CATALOGUE_LIMIT", "500")),
+            catalogue_limit=catalogue_limit,
+            cadence=cadence,
         )
         model = os.getenv("GEMINI_MODEL", DEFAULT_STRATEGY_MODEL).strip()
         fallback_models = [
@@ -415,7 +574,11 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
         analysis_error = None
         try:
             strategy_report, model_used = generate_strategy_report(
-                snapshot, gemini_key, model=model, fallback_models=fallback_models
+                snapshot, gemini_key,
+                model=model,
+                fallback_models=fallback_models,
+                cadence=cadence,
+                learning_feedback=learning_feedback,
             )
         except Exception as error:
             analysis_error = f"{type(error).__name__}: {str(error)[:1200]}"
@@ -445,12 +608,11 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
         }
 
         if candidates:
-            auto_count = _daily_auto_count(store, owner_key)
+            daily_count = _daily_auto_count(store, owner_key)
+            cadence_count = _cadence_auto_count(store, owner_key, cadence)
             try:
                 rows = _prepare_metadata_proposals(youtube, metadata_secrets, candidates)
             except Exception as proposal_error:
-                # Keep the successful analytics/Gemini strategy snapshot even if
-                # proposal generation fails; record one failed action per candidate.
                 rows = [
                     {
                         "video_id": candidate["video_id"],
@@ -473,11 +635,11 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
                     if actual_provider and actual_model
                     else proposal_model
                 )
-                result, auto_count = _process_candidate(
-                    store, youtube, owner_key, run_id, candidate, row,
-                    auto_minor_enabled=bool(settings.get("auto_minor_enabled", True)),
-                    auto_daily_cap=int(settings.get("max_daily_minor_publishes", 3)),
-                    auto_count=auto_count,
+                result, daily_count, cadence_count = _process_candidate(
+                    store, youtube, owner_key, run_id, candidate, row, settings,
+                    cadence=cadence,
+                    daily_count=daily_count,
+                    cadence_count=cadence_count,
                     model_name=metadata_model,
                 )
                 if result in counters:
@@ -487,6 +649,7 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
         stored_snapshot = _compact_snapshot(snapshot)
         store.update_strategy_run(run_id, owner_key, {
             "status": status,
+            "cadence": cadence,
             "metrics_period": snapshot.get("metrics_period") or {},
             "metrics_snapshot": stored_snapshot,
             "strategy_report": strategy_report,
@@ -496,27 +659,42 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule") -> di
             "finished_at": _utc_now(),
             "updated_at": _utc_now(),
         })
-        log.info("Channel strategy run %s completed: %s", run_id, counters)
-        return {"run_id": run_id, "status": status, **counters}
+        log.info("Channel strategy %s run %s completed: %s", cadence, run_id, counters)
+        return {"run_id": run_id, "cadence": cadence, "status": status, **counters}
     except Exception as error:
         store.update_strategy_run(run_id, owner_key, {
             "status": "failed",
+            "cadence": cadence,
             "error": f"{type(error).__name__}: {str(error)[:1800]}",
             "finished_at": _utc_now(),
             "updated_at": _utc_now(),
         })
-        log.exception("Channel strategy run %s failed", run_id)
+        log.exception("Channel strategy %s run %s failed", cadence, run_id)
         raise
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Autonomous YouTube Metadata Optimization Engine")
+    parser.add_argument(
+        "--cadence",
+        choices=["daily", "weekly", "monthly"],
+        default=os.getenv("STRATEGY_CADENCE", "daily"),
+        help="Monitoring and optimization cadence (default: daily)",
+    )
+    parser.add_argument(
+        "--trigger-source",
+        default=os.getenv("STRATEGY_TRIGGER_SOURCE", "schedule"),
+        help="Trigger source provenance (schedule, manual, workflow_dispatch)",
+    )
+    args = parser.parse_args()
+
     store = SupabasePersistentStore.worker_client(
         os.environ["SUPABASE_URL"],
         os.environ["SUPABASE_SERVICE_ROLE_KEY"],
     )
     cipher = _cipher(os.environ["YOUTUBE_STRATEGIST_STATE_SECRET"])
-    trigger_source = os.getenv("STRATEGY_TRIGGER_SOURCE", "schedule")
-    result = run_strategy_agent(store, cipher, trigger_source=trigger_source)
+    result = run_strategy_agent(store, cipher, trigger_source=args.trigger_source, cadence=args.cadence)
     print(json.dumps(result, ensure_ascii=False))
 
 

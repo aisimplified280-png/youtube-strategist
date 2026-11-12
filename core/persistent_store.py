@@ -208,17 +208,28 @@ class SupabasePersistentStore:
             raise PersistentStoreError("A verified owner is required for strategy settings.")
         rows = self._request("GET", "owner_strategy_settings", params={
             "owner_key": f"eq.{owner}",
-            "select": "owner_key,auto_minor_enabled,max_daily_minor_publishes,max_metadata_reviews_per_run,updated_at",
+            "select": "owner_key,auto_minor_enabled,max_daily_minor_publishes,max_metadata_reviews_per_run,automation_mode,emergency_pause,min_confidence_auto_publish,max_weekly_publishes,max_monthly_publishes,updated_at",
             "limit": "1",
         })
         if rows:
-            return rows[0]
-        # The owner explicitly requested low-risk automation. Defaults are intentionally
-        # conservative: one-field meaning-preserving edits only, capped at three/day.
+            row = rows[0]
+            # Ensure defaults for newly added fields if existing row lacks them
+            row.setdefault("automation_mode", "shadow")
+            row.setdefault("emergency_pause", False)
+            row.setdefault("min_confidence_auto_publish", 0.85)
+            row.setdefault("max_weekly_publishes", 5)
+            row.setdefault("max_monthly_publishes", 10)
+            return row
+        # Conservative defaults for new owner
         return {
             "owner_key": owner,
+            "automation_mode": "shadow",
+            "emergency_pause": False,
+            "min_confidence_auto_publish": 0.85,
             "auto_minor_enabled": True,
             "max_daily_minor_publishes": 3,
+            "max_weekly_publishes": 5,
+            "max_monthly_publishes": 10,
             "max_metadata_reviews_per_run": 3,
         }
 
@@ -229,14 +240,28 @@ class SupabasePersistentStore:
         enabled = values.get("auto_minor_enabled", True)
         if not isinstance(enabled, bool):
             raise ValueError("auto_minor_enabled must be a boolean.")
+        automation_mode = str(values.get("automation_mode", "shadow")).strip().lower()
+        if automation_mode not in {"paused", "shadow", "autonomous"}:
+            raise ValueError("automation_mode must be 'paused', 'shadow', or 'autonomous'.")
+        emergency_pause = bool(values.get("emergency_pause", False))
+        min_conf = float(values.get("min_confidence_auto_publish", 0.85))
+        min_conf = max(0.50, min(min_conf, 1.00))
         daily_cap = max(0, min(int(values.get("max_daily_minor_publishes", 3)), 10))
+        weekly_cap = max(0, min(int(values.get("max_weekly_publishes", 5)), 20))
+        monthly_cap = max(0, min(int(values.get("max_monthly_publishes", 10)), 50))
         review_cap = max(0, min(int(values.get("max_metadata_reviews_per_run", 3)), 10))
+
         return self._request("POST", "owner_strategy_settings", params={
             "on_conflict": "owner_key",
         }, payload={
             "owner_key": owner,
             "auto_minor_enabled": enabled,
+            "automation_mode": automation_mode,
+            "emergency_pause": emergency_pause,
+            "min_confidence_auto_publish": min_conf,
             "max_daily_minor_publishes": daily_cap,
+            "max_weekly_publishes": weekly_cap,
+            "max_monthly_publishes": monthly_cap,
             "max_metadata_reviews_per_run": review_cap,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, prefer="resolution=merge-duplicates,return=representation")
@@ -245,11 +270,12 @@ class SupabasePersistentStore:
         if not owner_key:
             raise ValueError("A channel strategy run requires an owner key.")
         safe = {key: value for key, value in values.items() if key in {
-            "channel_id", "trigger_source", "status", "metrics_period",
-            "metrics_snapshot", "strategy_report", "result", "model_name",
-            "error", "started_at", "finished_at", "updated_at",
+            "channel_id", "trigger_source", "cadence", "dedup_key", "status",
+            "metrics_period", "metrics_snapshot", "strategy_report", "result",
+            "model_name", "error", "started_at", "finished_at", "updated_at",
         }}
         safe["owner_key"] = owner_key
+        safe.setdefault("cadence", "daily")
         rows = self._request("POST", "channel_strategy_runs", payload=safe, prefer="return=representation")
         if not rows:
             raise PersistentStoreError("Supabase did not return the created strategy run.")
@@ -269,11 +295,13 @@ class SupabasePersistentStore:
             raise ValueError("A channel strategy action requires an owner key.")
         safe = {key: value for key, value in values.items() if key in {
             "run_id", "video_id", "video_title", "priority", "action_type",
-            "classification", "status", "reason", "evidence", "before_metadata",
+            "classification", "status", "cadence", "confidence", "diagnosis",
+            "rollback_of", "reason", "evidence", "before_metadata",
             "proposed_metadata", "after_metadata", "approval_digest", "model_name",
             "audit_log", "result", "error", "created_at", "updated_at", "executed_at",
         }}
         safe["owner_key"] = owner_key
+        safe.setdefault("cadence", "daily")
         rows = self._request("POST", "channel_strategy_actions", payload=safe, prefer="return=representation")
         if not rows:
             raise PersistentStoreError("Supabase did not return the created strategy action.")
@@ -281,9 +309,9 @@ class SupabasePersistentStore:
 
     def update_strategy_action(self, action_id: str, owner_key: str, values: Dict[str, Any]):
         safe = {key: value for key, value in values.items() if key in {
-            "status", "reason", "evidence", "before_metadata", "proposed_metadata",
-            "after_metadata", "approval_digest", "audit_log", "result", "error",
-            "updated_at", "executed_at",
+            "status", "confidence", "diagnosis", "reason", "evidence", "before_metadata",
+            "proposed_metadata", "after_metadata", "approval_digest", "audit_log",
+            "result", "error", "rollback_of", "updated_at", "executed_at",
         }}
         return self._request("PATCH", "channel_strategy_actions", params={
             "id": f"eq.{action_id}", "owner_key": f"eq.{owner_key}",
@@ -298,28 +326,64 @@ class SupabasePersistentStore:
         })
         return rows[0] if rows else None
 
-    def list_strategy_runs(self, limit: int = 10) -> list[Dict[str, Any]]:
-        if not self.owner_key:
-            raise PersistentStoreError("A verified owner-scoped store is required.")
-        return self._request("GET", "channel_strategy_runs", params={
-            "owner_key": f"eq.{self.owner_key}",
-            "select": "id,channel_id,trigger_source,status,metrics_period,metrics_snapshot,strategy_report,result,model_name,error,started_at,finished_at,created_at",
-            "order": "created_at.desc",
-            "limit": str(max(1, min(int(limit), 50))),
-        })
-
-    def list_strategy_actions(self, *, status: Optional[str] = None, limit: int = 20) -> list[Dict[str, Any]]:
+    def list_strategy_runs(self, limit: int = 10, cadence: Optional[str] = None) -> list[Dict[str, Any]]:
         if not self.owner_key:
             raise PersistentStoreError("A verified owner-scoped store is required.")
         params = {
             "owner_key": f"eq.{self.owner_key}",
-            "select": "id,run_id,video_id,video_title,priority,action_type,classification,status,reason,evidence,before_metadata,proposed_metadata,after_metadata,approval_digest,model_name,error,result,created_at,updated_at,executed_at",
+            "select": "id,channel_id,trigger_source,cadence,dedup_key,status,metrics_period,metrics_snapshot,strategy_report,result,model_name,error,started_at,finished_at,created_at",
+            "order": "created_at.desc",
+            "limit": str(max(1, min(int(limit), 50))),
+        }
+        if cadence:
+            params["cadence"] = f"eq.{cadence}"
+        return self._request("GET", "channel_strategy_runs", params=params)
+
+    def list_strategy_actions(self, *, status: Optional[str] = None, cadence: Optional[str] = None, limit: int = 20) -> list[Dict[str, Any]]:
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        params = {
+            "owner_key": f"eq.{self.owner_key}",
+            "select": "id,run_id,video_id,video_title,priority,action_type,classification,status,cadence,confidence,diagnosis,rollback_of,reason,evidence,before_metadata,proposed_metadata,after_metadata,approval_digest,model_name,error,result,created_at,updated_at,executed_at",
             "order": "created_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }
         if status:
             params["status"] = f"eq.{status}"
+        if cadence:
+            params["cadence"] = f"eq.{cadence}"
         return self._request("GET", "channel_strategy_actions", params=params)
+
+    # --- Strategy action evaluations ---------------------------------------------------
+
+    def create_action_evaluation(self, owner_key: str, values: Dict[str, Any]) -> Dict[str, Any]:
+        if not owner_key:
+            raise ValueError("An action evaluation requires an owner key.")
+        safe = {key: value for key, value in values.items() if key in {
+            "action_id", "video_id", "observation_days", "baseline_metrics",
+            "post_metrics", "metric_deltas", "outcome", "evaluated_at", "created_at",
+        }}
+        safe["owner_key"] = owner_key
+        rows = self._request("POST", "strategy_action_evaluations", payload=safe, prefer="return=representation")
+        if not rows:
+            raise PersistentStoreError("Supabase did not return the created evaluation.")
+        return rows[0]
+
+    def list_action_evaluations(self, *, action_id: Optional[str] = None, video_id: Optional[str] = None, limit: int = 50) -> list[Dict[str, Any]]:
+        owner = self.owner_key
+        if not owner:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        params = {
+            "owner_key": f"eq.{owner}",
+            "select": "id,action_id,video_id,observation_days,baseline_metrics,post_metrics,metric_deltas,outcome,evaluated_at,created_at",
+            "order": "evaluated_at.desc",
+            "limit": str(max(1, min(int(limit), 100))),
+        }
+        if action_id:
+            params["action_id"] = f"eq.{action_id}"
+        if video_id:
+            params["video_id"] = f"eq.{video_id}"
+        return self._request("GET", "strategy_action_evaluations", params=params)
 
     def _enqueue_publish_request(self, *, video_id: str, before_metadata: Dict[str, Any],
                                  proposed_metadata: Dict[str, Any], request_source: str,

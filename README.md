@@ -9,26 +9,35 @@
 
 This repository uses one owner-authenticated Streamlit application as the control centre. GitHub Actions supplies reliable scheduled execution because Streamlit Community Cloud is not an always-on worker. Supabase stores encrypted OAuth grants, run snapshots, proposals, and an audit trail. No second dashboard is required.
 
-# Part 1: Streamlit Copilot and Autonomous Channel Strategist
+# Part 1: Streamlit Copilot and Autonomous YouTube Strategist
 
 ## What It Does
 
-- **One owner-only Streamlit workspace:** Google sign-in, YouTube OAuth, conversational metadata optimization, strategist settings, major-change approvals, and run history stay in the existing app.
-- **Daily channel scan:** a scheduled worker inspects up to 500 uploads, compares the latest mature 28-day period with the previous 28 days, and stores a 90-day channel trend. The Analytics window ends three days before the run to reduce the impact of reporting delays.
-- **Evidence-first diagnosis:** it evaluates views, watch time, average percentage viewed, subscriber gains/losses, traffic sources, impressions, and impression CTR where the YouTube Reporting API returns them. Missing metrics remain unavailable; uploads under 180 seconds stay unclassified and are excluded from peer-underperformance ranking and automatic metadata candidates until orientation can be confirmed.
-- **Gemini reasoning primary for the daily strategist:** Gemini 3.1 Pro Preview is the primary model through the Gemini Developer API; Gemini 3.8 Flash is its model fallback. Groq remains an optional provider fallback for this path.
-- **Batch metadata routing:** Groq is tried first for natural-language batch parsing and metadata proposals. If it is unavailable, rate-limited (including HTTP 429), or returns invalid output, the batch path falls back to Gemini 3.5 Flash-Lite (`gemini-3.5-flash-lite`), then Gemini 3.5 Flash and 3.6 Flash. This batch-only setting does not change the daily strategist model.
-- **Automatic low-risk fixes:** only one-field title/description changes that preserve punctuation, every word, number, symbol, and emoji while changing case or whitespace can be auto-published. Up to two new tags can also qualify only when they are exact phrases already present in the source title/description, and no existing tag is removed.
-- **Major changes need approval:** any word/number/meaning change, multi-field rewrite, unsupported tag, removal, or larger metadata edit is saved as a proposal for review inside Streamlit. The worker does not publish it autonomously.
-- **Auditable YouTube writes:** automatic changes require the existing seven-day metadata baseline/cooldown, an owner-configured daily cap (default 3 minor updates), a fresh live before-state, metadata validation, and a successful YouTube read-back. Each run/action stores evidence, before/after metadata, model, result, and errors in Supabase.
+- **One owner-only Streamlit workspace:** Google sign-in, YouTube OAuth, conversational metadata optimization, strategist settings, proposal approvals, performance evaluation, and run history stay in the existing app.
+- **Three monitoring and optimization cadences:**
+  - **Daily monitoring (`30 2 * * *` UTC / 08:00 AM IST):** rapid detection of emerging packaging underperformance, recent upload health, steady maintenance.
+  - **Weekly optimization (`30 3 * * 0` UTC / Sun 09:00 AM IST):** cross-video pattern recognition, weekly upload optimization sweep, cohort comparisons, systematic topic gaps.
+  - **Monthly strategic review (`30 4 5 * *` UTC / Day 5 10:00 AM IST):** strategic macro review, subscriber conversion compounding, back-catalogue packaging refreshes, evergreen vs decay analysis.
+- **Full catalogue pagination beyond 500 uploads:** upload playlist discovery scans the entire catalogue with resumable pagination without artificial ceilings.
+- **Evidence-first diagnosis:** evaluates views, watch time, average percentage viewed, subscriber conversion per 1,000 views, traffic sources, impressions, and impression CTR from the YouTube Reporting API. Missing metrics remain unavailable; uploads under 180 seconds stay unclassified and are excluded from peer-underperformance ranking and automatic metadata candidates until orientation can be confirmed.
+- **Gemini as the central decision maker:** Gemini 3.1 Pro Preview is the primary model through the Gemini Developer API (`gemini-3.1-pro-preview`), with fallbacks to `gemini-3.8-flash` and `gemini-2.5-flash`. Gemini produces structured decisions with diagnosis, proposed fields, confidence score (0.0 to 1.0), and factual evidence.
+- **Three Automation Modes:**
+  - **Paused:** Scanning and briefings run; no proposals are published automatically.
+  - **Shadow mode:** Runs full analysis and proposal generation; logs `shadow_published` records with before/proposed diffs without writing to YouTube.
+  - **Autonomous mode:** High-confidence updates ($\ge$ threshold, default 0.85) are automatically published and verified after passing cooldown and safety gates.
+- **Global Emergency Pause:** Immediate toggle halts all autonomous writes across all cadences.
+- **Learning & Performance Feedback Loop:** Evaluates published metadata changes at 7-day, 14-day, and 28-day observation windows against matched pre-change baselines, classifying outcomes into `improved`, `no_change`, or `declined`. Empirical results feed back into Gemini prompts for future runs.
+- **Safe 1-Click Rollback:** Allows restoring original pre-optimization metadata (`before_metadata`) directly from the audit log with read-back verification.
 
 ## Scheduled execution
 
 | Job | UTC schedule | India time | Purpose |
 |---|---:|---:|---|
-| Daily metadata snapshots | 02:15 | 07:45 | Maintain the seven-day change ledger for owner uploads |
-| Channel strategist | 02:30 | 08:00 | Gather analytics, reason with Gemini, prepare proposals, and publish only eligible minor fixes |
-| Batch metadata worker | Every 5 minutes | Every 5 minutes | Process manually submitted batch instructions and save proposals for review |
+| Daily metadata snapshots | 02:15 | 07:45 | Maintain seven-day change ledger for owner uploads |
+| Daily channel strategist | 02:30 | 08:00 | Emerging underperformance scan, mature 28d comparison |
+| Weekly channel strategist | 03:30 (Sun) | 09:00 (Sun) | Cross-video pattern recognition, weekly upload optimization sweep |
+| Monthly channel strategist | 04:30 (Day 5) | 10:00 (Day 5)| Strategic macro review, subscriber conversion compounding, catalogue refresh |
+| Batch metadata worker | Every 5 min | Every 5 min | Process manually submitted batch instructions and save proposals |
 
 The strategy workflow can also be started manually with GitHub Actions **workflow_dispatch**. Scheduled execution requires these GitHub Actions repository secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `YOUTUBE_STRATEGIST_STATE_SECRET`, and `GEMINI_API_KEY`. `GROQ_API_KEY` is optional for the daily strategist but preferred for metadata batches. The background-worker workflow sets the batch model via `GEMINI_MODEL` and `GEMINI_FALLBACK_MODELS`; the channel-strategy workflow remains on Gemini 3.1 Pro Preview.
 
