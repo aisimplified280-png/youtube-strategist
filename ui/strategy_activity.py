@@ -432,7 +432,7 @@ def render_strategy_activity(store, youtube=None):
                         "before": audit.get("before"),
                         "after": audit.get("after"),
                     }, expanded=False)
-                if status_raw in {"auto_published", "approved_published", "shadow_published"} and youtube is not None:
+                if status_raw in {"auto_published", "approved_published"} and youtube is not None:
                     if st.button(
                         "Rollback to original",
                         key=f"strategy_rollback_{action_id}",
