@@ -36,6 +36,8 @@ GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_GEMINI_FALLBACKS = ["gemini-3.8-flash"]
+DEFAULT_BATCH_GEMINI_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_BATCH_GEMINI_FALLBACKS = ["gemini-3.5-flash", "gemini-3.6-flash"]
 MAX_TRANSCRIPT_CHARS = 12000
 MAX_HISTORY_TURNS = 10
 
@@ -465,43 +467,40 @@ def _validate_proposal_payload(result, preserve_title=False):
 
 def _generate_with_fallbacks(groq_key, groq_model, groq_fallbacks,
                              gemini_key, gemini_model, gemini_fallbacks, prompt,
-                             validator=None):
-    """Prefer Gemini reasoning; use Groq only when Gemini is unavailable or fails validation."""
+                             validator=None, primary_provider="gemini"):
+    """Try the selected primary provider first, then fall back to the other provider."""
     failures = []
+    providers = {
+        "groq": (
+            "Groq",
+            groq_key,
+            lambda: _groq_generate(groq_key, groq_model, prompt, groq_fallbacks),
+        ),
+        "gemini": (
+            "Gemini",
+            gemini_key,
+            lambda: _gemini_generate(gemini_key, gemini_model, prompt, gemini_fallbacks),
+        ),
+    }
+    order = ("groq", "gemini") if primary_provider == "groq" else ("gemini", "groq")
 
-    if isinstance(gemini_key, str) and gemini_key.strip():
+    for provider_key in order:
+        provider_name, api_key, generate = providers[provider_key]
+        if not isinstance(api_key, str) or not api_key.strip():
+            failures.append(f"{provider_name}: no API key configured")
+            continue
         try:
-            result, used_model = _gemini_generate(
-                gemini_key, gemini_model, prompt, gemini_fallbacks
-            )
+            result, used_model = generate()
             if validator:
                 is_valid, val_err = validator(result)
                 if not is_valid:
-                    failures.append(f"Gemini semantic validation failed: {val_err}")
-                    result = None
+                    failures.append(f"{provider_name} semantic validation failed: {val_err}")
+                    continue
             if result is not None:
-                return result, "Gemini", used_model
+                return result, provider_name, used_model
+            failures.append(f"{provider_name}: empty response")
         except (ValueError, RuntimeError, requests.RequestException) as error:
-            failures.append(f"Gemini: {error}")
-    else:
-        failures.append("Gemini: no [gemini].api_key configured")
-
-    if isinstance(groq_key, str) and groq_key.strip():
-        try:
-            result, used_model = _groq_generate(
-                groq_key, groq_model, prompt, groq_fallbacks
-            )
-            if validator:
-                is_valid, val_err = validator(result)
-                if not is_valid:
-                    failures.append(f"Groq semantic validation failed: {val_err}")
-                    result = None
-            if result is not None:
-                return result, "Groq", used_model
-        except (ValueError, RuntimeError, requests.RequestException) as error:
-            failures.append(f"Groq: {error}")
-    else:
-        failures.append("Groq: no API key configured")
+            failures.append(f"{provider_name}: {error}")
 
     raise RuntimeError(
         "No configured AI provider could complete this request. " + " | ".join(failures)
@@ -853,8 +852,17 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
         groq_fallbacks = [i.strip() for i in groq_fallbacks.split(",") if i.strip()]
 
     gemini_key = gemini.get("api_key") or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
-    gemini_model = gemini.get("model") or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model") or DEFAULT_MODEL
-    gemini_fallbacks = gemini.get("fallback_models", DEFAULT_GEMINI_FALLBACKS)
+    gemini_model = (
+        gemini.get("batch_model")
+        or secrets.get("GEMINI_MODEL")
+        or secrets.get("gemini_model")
+        or DEFAULT_BATCH_GEMINI_MODEL
+    )
+    gemini_fallbacks = (
+        gemini.get("batch_fallback_models")
+        or secrets.get("GEMINI_FALLBACK_MODELS")
+        or DEFAULT_BATCH_GEMINI_FALLBACKS
+    )
     if isinstance(gemini_fallbacks, str):
         gemini_fallbacks = [i.strip() for i in gemini_fallbacks.split(",") if i.strip()]
 
@@ -953,6 +961,7 @@ def build_batch_metadata_generator(secrets: Optional[Dict[str, Any]] = None, you
             gemini_fallbacks=gemini_fallbacks,
             prompt=prompt,
             validator=_json_validator,
+            primary_provider="groq",
         )
 
         # Provider helpers return decoded dictionaries. Accept raw JSON text too

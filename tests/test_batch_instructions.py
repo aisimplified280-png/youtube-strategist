@@ -916,6 +916,50 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         self.assertEqual(result["model"], "openai/gpt-oss-120b")
         mock_groq.assert_called_once()
 
+    @patch("core.batch_instructions._call_gemini_json")
+    @patch("core.batch_instructions._call_groq_json")
+    def test_batch_instruction_parser_uses_groq_before_gemini(self, mock_groq, mock_gemini):
+        plan = {"videos": [], "shared_instructions": ""}
+        mock_groq.return_value = plan
+
+        result = batch_instructions._interpret_batch_instructions_with_ai(
+            "Optimize the listed videos",
+            groq_key="groq-key",
+            groq_model="openai/gpt-oss-120b",
+            gemini_key="gemini-key",
+            gemini_model="gemini-3.5-flash-lite",
+            gemini_fallback_models=["gemini-3.5-flash", "gemini-3.6-flash"],
+        )
+
+        self.assertEqual(result, plan)
+        mock_groq.assert_called_once()
+        mock_gemini.assert_not_called()
+
+    @patch("core.batch_instructions._call_gemini_json")
+    @patch("core.batch_instructions._call_groq_json")
+    def test_batch_instruction_parser_falls_back_to_flashlite_after_groq_429(self, mock_groq, mock_gemini):
+        plan = {"videos": [], "shared_instructions": ""}
+        mock_groq.side_effect = RuntimeError("Groq HTTP 429 rate limit")
+        mock_gemini.return_value = plan
+
+        result = batch_instructions._interpret_batch_instructions_with_ai(
+            "Optimize the listed videos",
+            groq_key="groq-key",
+            groq_model="openai/gpt-oss-120b",
+            gemini_key="gemini-key",
+            gemini_model="gemini-3.5-flash-lite",
+            gemini_fallback_models=["gemini-3.5-flash", "gemini-3.6-flash"],
+        )
+
+        self.assertEqual(result, plan)
+        mock_groq.assert_called_once()
+        mock_gemini.assert_called_once()
+        self.assertEqual(mock_gemini.call_args.args[1], "gemini-3.5-flash-lite")
+        self.assertEqual(
+            mock_gemini.call_args.args[3],
+            ["gemini-3.5-flash", "gemini-3.6-flash"],
+        )
+
     @patch("core.batch_instructions._interpret_batch_instructions_with_ai")
     def test_batch_parser_reads_nested_streamlit_provider_secrets(self, mock_interpret):
         expected_plan = {
@@ -936,7 +980,9 @@ class TestAuditFollowUpRegression(unittest.TestCase):
             }),
             "gemini": UserDict({
                 "api_key": "gemini-fallback-key",
-                "model": "gemini-2.5-flash",
+                "model": "gemini-3.1-pro-preview",
+                "batch_model": "gemini-3.5-flash-lite",
+                "batch_fallback_models": ["gemini-3.5-flash", "gemini-3.6-flash"],
             }),
         })
 
@@ -950,39 +996,54 @@ class TestAuditFollowUpRegression(unittest.TestCase):
         self.assertEqual(mock_interpret.call_args.kwargs["groq_key"], "groq-test-key")
         self.assertEqual(mock_interpret.call_args.kwargs["groq_model"], "openai/gpt-oss-120b")
         self.assertEqual(mock_interpret.call_args.kwargs["gemini_key"], "gemini-fallback-key")
+        self.assertEqual(mock_interpret.call_args.kwargs["gemini_model"], "gemini-3.5-flash-lite")
+        self.assertEqual(
+            mock_interpret.call_args.kwargs["gemini_fallback_models"],
+            ["gemini-3.5-flash", "gemini-3.6-flash"],
+        )
 
     @patch("strategist_chat._groq_generate")
     @patch("strategist_chat._gemini_generate")
-    def test_02_gemini_primary_and_groq_fallback(self, mock_gemini, mock_groq):
-        mock_gemini.side_effect = RuntimeError("Gemini service unavailable")
-        mock_groq.return_value = (
+    def test_02_groq_primary_and_gemini_flashlite_fallback(self, mock_gemini, mock_groq):
+        mock_groq.side_effect = RuntimeError("Groq HTTP 429 rate limit")
+        mock_gemini.return_value = (
             {
-                "title": "Groq Fallback Title",
-                "recommended_title": "Groq Fallback Title",
+                "title": "Gemini Fallback Title",
+                "recommended_title": "Gemini Fallback Title",
                 "recommendation_reason": "The fallback title is concise and clearly searchable.",
                 "title_angles": [
                     {"angle": "curiosity", "label": "Curiosity", "title": "Curious Title"},
-                    {"angle": "value", "label": "Direct Value", "title": "Groq Fallback Title"},
+                    {"angle": "value", "label": "Direct Value", "title": "Gemini Fallback Title"},
                     {"angle": "search", "label": "Search", "title": "Search Title"},
                 ],
-                "description": "Groq Description",
+                "description": "Gemini Description",
                 "tags": ["ai", "gemini"],
-                "rationale": "Gemini unavailable, Groq recovered",
+                "rationale": "Groq was rate-limited, Gemini recovered",
             },
-            "openai/gpt-oss-120b",
+            "gemini-3.5-flash-lite",
         )
         gen = strategist_chat.build_batch_metadata_generator(
             secrets={
                 "groq": {"api_key": "groq-key"},
-                "gemini": {"api_key": "gemini-key", "model": "gemini-3.1-pro-preview"},
+                "gemini": {
+                    "api_key": "gemini-key",
+                    "model": "gemini-3.1-pro-preview",
+                    "fallback_models": ["gemini-3.8-flash"],
+                },
             }
         )
         self.assertIsNotNone(gen)
         result = gen(VIDEO_ID_1, make_snippet(VIDEO_ID_1), instruction="Optimize title")
-        self.assertEqual(result["title"], "Groq Fallback Title")
-        self.assertEqual(result["provider"], "Groq")
-        self.assertTrue(mock_gemini.called)
-        self.assertTrue(mock_groq.called)
+        self.assertEqual(result["title"], "Gemini Fallback Title")
+        self.assertEqual(result["provider"], "Gemini")
+        self.assertEqual(result["model"], "gemini-3.5-flash-lite")
+        mock_groq.assert_called_once()
+        mock_gemini.assert_called_once()
+        self.assertEqual(mock_gemini.call_args.args[1], "gemini-3.5-flash-lite")
+        self.assertEqual(
+            mock_gemini.call_args.args[3],
+            ["gemini-3.5-flash", "gemini-3.6-flash"],
+        )
     @patch("youtube_analytics_connector.fetch_video_transcript")
     def test_03_correct_transcript_passed_to_generator(self, mock_transcript):
         mock_transcript.return_value = "This is a detailed video transcript about neural networks."

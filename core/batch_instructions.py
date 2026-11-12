@@ -27,6 +27,8 @@ GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{mode
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_GEMINI_FALLBACKS = ["gemini-3.8-flash"]
+DEFAULT_BATCH_GEMINI_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_BATCH_GEMINI_FALLBACKS = ["gemini-3.5-flash", "gemini-3.6-flash"]
 
 YOUTUBE_URL_PATTERN = re.compile(
     r"https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s\"'>)]+|shorts/[A-Za-z0-9_-]{11}|embed/[A-Za-z0-9_-]{11}|live/[A-Za-z0-9_-]{11})|youtu\.be/[A-Za-z0-9_-]{11}[^\s\"'>)]*)",
@@ -499,7 +501,7 @@ def _call_gemini_json(
     fallback_models: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     candidates = []
-    for candidate in [model or DEFAULT_GEMINI_MODEL, *(fallback_models or DEFAULT_GEMINI_FALLBACKS)]:
+    for candidate in [model or DEFAULT_BATCH_GEMINI_MODEL, *(fallback_models or DEFAULT_BATCH_GEMINI_FALLBACKS)]:
         candidate = str(candidate or "").strip()
         if candidate and candidate not in candidates and re.fullmatch(r"[A-Za-z0-9._-]+", candidate):
             candidates.append(candidate)
@@ -550,7 +552,7 @@ def _interpret_batch_instructions_with_ai(
     gemini_model: Optional[str] = None,
     gemini_fallback_models: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Use Gemini reasoning first, with Groq as fallback, for structured natural-language instructions."""
+    """Prefer Groq for batch parsing; use the low-cost Gemini batch model if Groq fails."""
     # JSON-encode the user's entire input instead of wrapping it in triple quotes.
     # User instructions may themselves contain triple-quoted descriptions, JSON,
     # markdown fences, or arbitrary punctuation; a JSON string keeps those as data.
@@ -598,15 +600,15 @@ Parsing rules:
 10. Return a complete plan for every referenced video.
 """
 
-    if gemini_key:
-        try:
-            return _call_gemini_json(gemini_key, gemini_model, prompt, gemini_fallback_models)
-        except Exception:
-            pass
-
     if groq_key:
         try:
             return _call_groq_json(groq_key, groq_model, prompt)
+        except Exception:
+            pass
+
+    if gemini_key:
+        try:
+            return _call_gemini_json(gemini_key, gemini_model, prompt, gemini_fallback_models)
         except Exception:
             pass
 
@@ -674,7 +676,7 @@ def parse_batch_instructions(
         )
 
     channel_videos = channel_videos or []
-    gemini_fallback_models = DEFAULT_GEMINI_FALLBACKS
+    gemini_fallback_models = DEFAULT_BATCH_GEMINI_FALLBACKS
     if secrets:
         groq_section = secrets.get("groq") or secrets.get("chatgroq") or {}
         gemini_section = secrets.get("gemini", {})
@@ -694,10 +696,15 @@ def parse_batch_instructions(
             or secrets.get("GEMINI_API_KEY") or secrets.get("gemini_api_key")
         )
         gemini_model = (
-            gemini_model or gemini_config.get("model")
+            gemini_model or gemini_config.get("batch_model")
             or secrets.get("GEMINI_MODEL") or secrets.get("gemini_model")
+            or DEFAULT_BATCH_GEMINI_MODEL
         )
-        gemini_fallback_models = gemini_config.get("fallback_models", DEFAULT_GEMINI_FALLBACKS)
+        gemini_fallback_models = (
+            gemini_config.get("batch_fallback_models")
+            or secrets.get("GEMINI_FALLBACK_MODELS")
+            or DEFAULT_BATCH_GEMINI_FALLBACKS
+        )
         if isinstance(gemini_fallback_models, str):
             gemini_fallback_models = [item.strip() for item in gemini_fallback_models.split(",") if item.strip()]
 

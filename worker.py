@@ -2,7 +2,7 @@
 
 Required environment:
 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, YOUTUBE_STRATEGIST_STATE_SECRET,
-GEMINI_API_KEY (primary), optional GROQ_API_KEY (fallback).
+GROQ_API_KEY (primary), GEMINI_API_KEY (batch fallback).
 This worker prepares metadata proposals for owner review. It never publishes batch proposals; approved manual publishing is handled by the separate assistant_publish_worker.
 """
 from __future__ import annotations
@@ -134,8 +134,15 @@ def process_one_job(store, cipher, groq_key, gemini_key):
             "groq": {"api_key": groq_key, "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")},
             "gemini": {
                 "api_key": gemini_key,
-                "model": os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
-                "fallback_models": [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.8-flash").split(",") if m.strip()],
+                "batch_model": os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+                "batch_fallback_models": [
+                    m.strip()
+                    for m in os.getenv(
+                        "GEMINI_FALLBACK_MODELS",
+                        "gemini-3.5-flash,gemini-3.6-flash",
+                    ).split(",")
+                    if m.strip()
+                ],
             },
         }
         generator = build_batch_metadata_generator(secrets, youtube=youtube)
