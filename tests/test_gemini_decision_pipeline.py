@@ -1,5 +1,6 @@
 """Tests verifying Gemini decision pipeline preservation, unlimited catalogue, and shadow mode semantics."""
 
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,7 @@ from channel_strategy_worker import (
 from core.channel_strategy_agent import (
     collect_channel_snapshot,
     evaluate_autonomous_policy,
+    generate_strategy_report,
 )
 import youtube_analytics_connector as connector
 
@@ -301,12 +303,28 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
             self.assertEqual(applied_args[3]["title"], "Validated High Quality Title")
 
     def test_prepare_gemini_metadata_proposals_honors_fields_to_modify(self):
+        current_one = {
+            "title": "Current Title",
+            "description": "Current Description",
+            "tags": ["Tag1", "Tag2"],
+            "category_id": "28",
+        }
+        current_two = {
+            "title": "Current Title 2",
+            "description": "Current Description 2",
+            "tags": ["OldTag"],
+            "category_id": "28",
+        }
+        current_three = {
+            "title": "Current Title 3",
+            "description": "Current Description 3",
+            "tags": ["KeepTag"],
+            "category_id": "28",
+        }
         candidates = [
             {
                 "video_id": "vid_title_only",
-                "title": "Current Title",
-                "description": "Current Description",
-                "tags": ["Tag1", "Tag2"],
+                "current_metadata": current_one,
                 "fields_to_modify": ["title"],
                 "proposed_title": "New Gemini Title",
                 "proposed_description": "Gemini suggested this description but it should be ignored",
@@ -314,17 +332,22 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
             },
             {
                 "video_id": "vid_tags_only",
-                "title": "Current Title 2",
-                "description": "Current Description 2",
-                "tags": ["OldTag"],
+                "current_metadata": current_two,
                 "fields_to_modify": ["tags"],
                 "proposed_title": "Should be ignored",
                 "proposed_tags": ["NewTag1", "NewTag2"],
             },
+            {
+                "video_id": "vid_no_fields",
+                "current_metadata": current_three,
+                "fields_to_modify": [],
+                "proposed_title": "Must not be inferred",
+                "proposed_tags": ["MustNotBeAdded"],
+            },
         ]
 
         mock_youtube = MagicMock()
-        mock_youtube.videos().list().execute.return_value = {
+        mock_youtube.videos.return_value.list.return_value.execute.return_value = {
             "items": [
                 {
                     "id": "vid_title_only",
@@ -344,23 +367,160 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
                         "categoryId": "28",
                     },
                 },
+                {
+                    "id": "vid_no_fields",
+                    "snippet": {
+                        "title": "Current Title 3",
+                        "description": "Current Description 3",
+                        "tags": ["KeepTag"],
+                        "categoryId": "28",
+                    },
+                },
             ]
         }
 
         rows = _prepare_gemini_metadata_proposals(mock_youtube, candidates)
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
 
-        # Row 1: only title modified
         row1 = rows[0]
         self.assertEqual(row1["proposed"]["title"], "New Gemini Title")
         self.assertEqual(row1["proposed"]["description"], "Current Description")
         self.assertEqual(row1["proposed"]["tags"], ["Tag1", "Tag2"])
+        self.assertEqual(row1["fields_to_modify"], ["title"])
 
-        # Row 2: only tags modified
         row2 = rows[1]
         self.assertEqual(row2["proposed"]["title"], "Current Title 2")
         self.assertEqual(row2["proposed"]["description"], "Current Description 2")
         self.assertEqual(row2["proposed"]["tags"], ["NewTag1", "NewTag2"])
+        self.assertEqual(row2["fields_to_modify"], ["tags"])
+
+        # An explicit empty list must never be expanded from proposed values.
+        row3 = rows[2]
+        self.assertEqual(row3["proposed"]["title"], "Current Title 3")
+        self.assertEqual(row3["proposed"]["description"], "Current Description 3")
+        self.assertEqual(row3["proposed"]["tags"], ["KeepTag"])
+        self.assertEqual(row3["fields_to_modify"], [])
+
+    def test_prepare_gemini_metadata_proposals_fails_closed_without_fresh_matching_context(self):
+        source = {
+            "title": "Title Gemini Saw",
+            "description": "The current description used as factual context.",
+            "tags": ["AI", "Tutorial"],
+            "category_id": "28",
+        }
+        candidate = {
+            "video_id": "vid_stale_context",
+            "current_metadata": source,
+            "fields_to_modify": ["title"],
+            "proposed_title": "Grounded Rewrite",
+        }
+        mock_youtube = MagicMock()
+        mock_youtube.videos.return_value.list.return_value.execute.return_value = {
+            "items": [{
+                "id": "vid_stale_context",
+                "snippet": {
+                    "title": "Changed after Gemini ran",
+                    "description": source["description"],
+                    "tags": source["tags"],
+                    "categoryId": "28",
+                },
+            }]
+        }
+
+        stale_rows = _prepare_gemini_metadata_proposals(mock_youtube, [candidate])
+        self.assertEqual(stale_rows[0]["status"], "failed")
+        self.assertIn("changed after Gemini", stale_rows[0]["errors"][0])
+        self.assertEqual(stale_rows[0]["fields_to_modify"], [])
+
+        # Missing live YouTube rows are also a hard failure, not a metadata fallback.
+        mock_youtube.videos.return_value.list.return_value.execute.return_value = {"items": []}
+        missing_rows = _prepare_gemini_metadata_proposals(mock_youtube, [candidate])
+        self.assertEqual(missing_rows[0]["status"], "failed")
+        self.assertIn("not returned", missing_rows[0]["errors"][0])
+
+    def test_metadata_candidates_keep_snapshot_source_metadata_authoritative(self):
+        source_metadata = {
+            "title": "Actual title",
+            "description": "Actual description",
+            "tags": ["ActualTag"],
+            "category_id": "28",
+        }
+        snapshot = {
+            "opportunities": [{
+                "video_id": "vid_ground_truth",
+                "title": "Actual title",
+                "current_metadata": source_metadata,
+                "impressions": 100,
+                "reasons": ["Thumbnail CTR is 1.2% versus a peer median."],
+            }]
+        }
+        strategy_report = {
+            "metadata_candidates": [{
+                "video_id": "vid_ground_truth",
+                "current_metadata": {"title": "Model-invented source"},
+                "fields_to_modify": ["title"],
+                "proposed_title": "Proposed title",
+            }]
+        }
+
+        candidates = _metadata_candidates(snapshot, strategy_report)
+        self.assertEqual(candidates[0]["current_metadata"], source_metadata)
+
+    def test_gemini_prompt_includes_full_source_metadata_and_preserves_empty_fields(self):
+        source_metadata = {
+            "title": "What Is RAG?",
+            "description": "A walkthrough of retrieval-augmented generation using a local document collection.",
+            "tags": ["RAG", "retrieval augmented generation", "AI tutorial"],
+            "category_id": "28",
+        }
+        model_response = {
+            "executive_summary": "No safe metadata change.",
+            "patterns": [],
+            "growth_actions": [],
+            "content_ideas": [],
+            "metadata_candidates": [{
+                "video_id": "vid_context_prompt",
+                "fields_to_modify": [],
+                "proposed_title": "",
+                "proposed_description": "",
+                "proposed_tags": [],
+                "proposed_hashtags": [],
+                "confidence": 0.2,
+                "factual_evidence": "",
+                "decision": "no_change",
+                "rationale": "The supplied source does not support a safe edit.",
+            }],
+        }
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"text": json.dumps(model_response)}]}
+            }]
+        }
+        snapshot = {
+            "opportunities": [{
+                "video_id": "vid_context_prompt",
+                "title": source_metadata["title"],
+                "current_metadata": source_metadata,
+                "impressions": 100,
+                "reasons": ["Thumbnail CTR is 1.2% versus a peer median."],
+            }]
+        }
+
+        with patch("core.channel_strategy_agent.requests.post", return_value=response) as mock_post:
+            report, _ = generate_strategy_report(
+                snapshot,
+                "fake-gemini-key",
+                model="gemini-test-model",
+                fallback_models=[],
+            )
+
+        prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn(source_metadata["description"], prompt)
+        self.assertIn("retrieval augmented generation", prompt)
+        self.assertIn("Do not add factual claims", prompt)
+        self.assertEqual(report["metadata_candidates"][0]["fields_to_modify"], [])
 
     def test_shadow_mode_records_shadow_published_and_flags_cooldown_blocked(self):
         candidate = {
