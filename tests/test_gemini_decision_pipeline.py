@@ -11,6 +11,8 @@ from channel_strategy_worker import (
     run_strategy_agent,
 )
 from core.channel_strategy_agent import (
+    DEFAULT_STRATEGY_FALLBACKS,
+    DEFAULT_STRATEGY_MODEL,
     collect_channel_snapshot,
     evaluate_autonomous_policy,
     generate_strategy_report,
@@ -508,7 +510,16 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
             }]
         }
 
-        with patch("core.channel_strategy_agent.requests.post", return_value=response) as mock_post:
+        models_response = MagicMock()
+        models_response.status_code = 200
+        models_response.json.return_value = {
+            "models": [{
+                "name": "models/gemini-test-model",
+                "supportedGenerationMethods": ["generateContent"],
+            }]
+        }
+        with patch("core.channel_strategy_agent.requests.get", return_value=models_response), \
+             patch("core.channel_strategy_agent.requests.post", return_value=response) as mock_post:
             report, _ = generate_strategy_report(
                 snapshot,
                 "fake-gemini-key",
@@ -521,6 +532,147 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
         self.assertIn("retrieval augmented generation", prompt)
         self.assertIn("Do not add factual claims", prompt)
         self.assertEqual(report["metadata_candidates"][0]["fields_to_modify"], [])
+
+    def test_strategy_model_defaults_use_current_stable_flash_chain(self):
+        self.assertEqual(DEFAULT_STRATEGY_MODEL, "gemini-3.8-flash")
+        self.assertIn("gemini-3.5-flash-lite", DEFAULT_STRATEGY_FALLBACKS)
+        self.assertIn("gemini-3.1-flash-lite", DEFAULT_STRATEGY_FALLBACKS)
+        self.assertFalse(any("2.5" in model for model in DEFAULT_STRATEGY_FALLBACKS))
+
+    def test_gemini_skips_models_not_advertised_for_api_key(self):
+        model_response = {
+            "executive_summary": "Fallback model succeeded.",
+            "patterns": [],
+            "growth_actions": [],
+            "content_ideas": [],
+            "metadata_candidates": [],
+        }
+        catalogue = MagicMock()
+        catalogue.status_code = 200
+        catalogue.json.return_value = {
+            "models": [{
+                "name": "models/gemini-3.5-flash-lite",
+                "supportedGenerationMethods": ["generateContent"],
+            }]
+        }
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"text": json.dumps(model_response)}]}
+            }]
+        }
+
+        with patch("core.channel_strategy_agent.requests.get", return_value=catalogue), \
+             patch("core.channel_strategy_agent.requests.post", return_value=success) as mock_post:
+            report, model_used = generate_strategy_report(
+                {"opportunities": []},
+                "fake-gemini-key",
+                model="gemini-3.1-pro-preview",
+                fallback_models=["gemini-3.8-flash", "gemini-3.5-flash-lite"],
+            )
+
+        self.assertEqual(model_used, "gemini-3.5-flash-lite")
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertIn("/models/gemini-3.5-flash-lite:generateContent", mock_post.call_args.args[0])
+        self.assertEqual(report["executive_summary"], "Fallback model succeeded.")
+
+    def test_gemini_retries_temporary_503_before_fallback(self):
+        model_response = {
+            "executive_summary": "Recovered after temporary overload.",
+            "patterns": [],
+            "growth_actions": [],
+            "content_ideas": [],
+            "metadata_candidates": [],
+        }
+        catalogue = MagicMock()
+        catalogue.status_code = 200
+        catalogue.json.return_value = {
+            "models": [{
+                "name": "models/gemini-3.8-flash",
+                "supportedGenerationMethods": ["generateContent"],
+            }]
+        }
+        overloaded = MagicMock()
+        overloaded.status_code = 503
+        overloaded.json.return_value = {
+            "error": {"status": "UNAVAILABLE", "message": "Temporarily overloaded."}
+        }
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"text": json.dumps(model_response)}]}
+            }]
+        }
+
+        with patch("core.channel_strategy_agent.requests.get", return_value=catalogue), \
+             patch("core.channel_strategy_agent.requests.post", side_effect=[overloaded, success]) as mock_post, \
+             patch("core.channel_strategy_agent.time.sleep") as mock_sleep:
+            report, model_used = generate_strategy_report(
+                {"opportunities": []},
+                "fake-gemini-key",
+                model="gemini-3.8-flash",
+                fallback_models=[],
+            )
+
+        self.assertEqual(model_used, "gemini-3.8-flash")
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once_with(1)
+        self.assertIn("Recovered", report["executive_summary"])
+
+    def test_gemini_daily_quota_error_moves_to_lower_flash_fallback(self):
+        model_response = {
+            "executive_summary": "The lower Flash fallback succeeded.",
+            "patterns": [],
+            "growth_actions": [],
+            "content_ideas": [],
+            "metadata_candidates": [],
+        }
+        catalogue = MagicMock()
+        catalogue.status_code = 200
+        catalogue.json.return_value = {
+            "models": [
+                {
+                    "name": "models/gemini-3.8-flash",
+                    "supportedGenerationMethods": ["generateContent"],
+                },
+                {
+                    "name": "models/gemini-3.5-flash-lite",
+                    "supportedGenerationMethods": ["generateContent"],
+                },
+            ]
+        }
+        quota_error = MagicMock()
+        quota_error.status_code = 429
+        quota_error.json.return_value = {
+            "error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "Daily quota exceeded for this model.",
+            }
+        }
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"text": json.dumps(model_response)}]}
+            }]
+        }
+
+        with patch("core.channel_strategy_agent.requests.get", return_value=catalogue), \
+             patch("core.channel_strategy_agent.requests.post", side_effect=[quota_error, success]) as mock_post, \
+             patch("core.channel_strategy_agent.time.sleep") as mock_sleep:
+            report, model_used = generate_strategy_report(
+                {"opportunities": []},
+                "fake-gemini-key",
+                model="gemini-3.8-flash",
+                fallback_models=["gemini-3.5-flash-lite"],
+            )
+
+        self.assertEqual(model_used, "gemini-3.5-flash-lite")
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_not_called()
+        self.assertIn("lower Flash", report["executive_summary"])
 
     def test_shadow_mode_records_shadow_published_and_flags_cooldown_blocked(self):
         candidate = {
