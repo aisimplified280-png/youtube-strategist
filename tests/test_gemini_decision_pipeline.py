@@ -8,6 +8,7 @@ from channel_strategy_worker import (
     _metadata_candidates,
     _prepare_gemini_metadata_proposals,
     _process_candidate,
+    _watchdog_already_claimed,
     run_strategy_agent,
 )
 from core.channel_strategy_agent import (
@@ -21,6 +22,12 @@ import youtube_analytics_connector as connector
 
 
 class TestGeminiDecisionPipeline(unittest.TestCase):
+    def test_watchdog_skips_any_existing_same_period_run(self):
+        self.assertTrue(_watchdog_already_claimed([{"status": "running"}], "supabase_watchdog"))
+        self.assertTrue(_watchdog_already_claimed([{"status": "completed"}], "supabase_watchdog"))
+        self.assertFalse(_watchdog_already_claimed([], "supabase_watchdog"))
+        self.assertFalse(_watchdog_already_claimed([{"status": "completed"}], "workflow_dispatch"))
+
     def setUp(self):
         self.before_metadata = {
             "title": "Old Safe Video Title",
