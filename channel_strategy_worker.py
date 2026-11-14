@@ -665,7 +665,7 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
         "select": "id,cadence,started_at",
         "limit": "1",
     })
-    if active_runs and trigger_source == "schedule":
+    if active_runs and trigger_source in {"schedule", "supabase_watchdog"}:
         log.warning("Another strategy run is currently active (%s). Concurrency guard holding execution.", active_runs[0].get("id"))
         return {"status": "concurrency_held", "message": "Another strategy run is currently active."}
 
@@ -678,13 +678,23 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
     })
 
     completed_runs = [r for r in (existing_period_runs or []) if r.get("status") == "completed"]
+    if trigger_source == "supabase_watchdog" and existing_period_runs:
+        latest = existing_period_runs[0]
+        log.info(
+            "Supabase watchdog found an existing %s run for %s (%s). Skipping duplicate dispatch.",
+            latest.get("status"), cadence, period_key,
+        )
+        return {"status": "already_started", "message": f"A {cadence} run for {period_key} is already recorded."}
     if completed_runs and trigger_source == "schedule":
         log.info("Strategy run for %s (%s) already completed. Skipping scheduled run.", cadence, period_key)
         return {"status": "already_completed", "message": f"Strategy run for {cadence} {period_key} has already completed."}
 
-    # Dedup key strategy for manual triggers and retries
+    # The watchdog shares the scheduled dedup key, so a race between both triggers
+    # is stopped by the existing unique (owner_key, dedup_key) index in Postgres.
     if trigger_source in ("workflow_dispatch", "manual"):
         dedup_key = f"{base_dedup_key}_manual_{datetime.now(timezone.utc).strftime('%H%M%S')}"
+    elif trigger_source == "supabase_watchdog":
+        dedup_key = base_dedup_key
     elif existing_period_runs and any(r.get("status") in ("failed", "partial") for r in existing_period_runs):
         dedup_key = f"{base_dedup_key}_retry_{datetime.now(timezone.utc).strftime('%H%M%S')}"
     else:
