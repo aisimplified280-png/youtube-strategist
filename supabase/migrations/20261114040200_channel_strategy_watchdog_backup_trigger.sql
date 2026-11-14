@@ -136,10 +136,19 @@ begin
     return;
   end if;
 
-  if v_last_status = 'dispatch_accepted'
-     and v_last_created > pg_catalog.now() - interval '20 minutes' then
-    insert into public.channel_strategy_watchdog_events (run_date, status, detail)
-    values (v_today, 'waiting_for_run', 'GitHub accepted the dispatch; waiting for the worker to record its run in Supabase.');
+  -- A 204/2xx response means GitHub accepted the dispatch. Never resend it
+  -- merely because the runner has not written its first Supabase row yet.
+  if v_last_status = 'dispatch_accepted' then
+    if not exists (
+      select 1
+        from public.channel_strategy_watchdog_events e
+       where e.run_date = v_today
+         and e.status = 'waiting_for_run'
+         and e.created_at > pg_catalog.now() - interval '10 minutes'
+    ) then
+      insert into public.channel_strategy_watchdog_events (run_date, status, detail)
+      values (v_today, 'waiting_for_run', 'GitHub accepted the dispatch; waiting for the worker to record its run in Supabase. No duplicate dispatch will be sent.');
+    end if;
     return;
   end if;
 
