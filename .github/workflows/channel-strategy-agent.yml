@@ -1,10 +1,10 @@
 name: AI Simplified Lab daily channel strategist
 
 on:
-  # Metadata snapshots run at 02:15 UTC. The daily strategist starts afterwards,
-  # at 08:01 Asia/Kolkata (02:31 UTC), using the stable seven-day metadata cooldown.
+  # Temporary timing adjustment for today's trigger verification:
+  # Primary daily strategist at 10:15 Asia/Kolkata (04:45 UTC).
   schedule:
-    - cron: "31 2 * * *"
+    - cron: "45 4 * * *"
   workflow_dispatch:
     inputs:
       trigger_source:
