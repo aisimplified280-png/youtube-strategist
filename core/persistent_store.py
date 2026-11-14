@@ -339,6 +339,16 @@ class SupabasePersistentStore:
             params["cadence"] = f"eq.{cadence}"
         return self._request("GET", "channel_strategy_runs", params=params)
 
+    def list_strategy_watchdog_events(self, limit: int = 12) -> list[Dict[str, Any]]:
+        """Return recent system-level backup-trigger checks (service-role only)."""
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner-scoped store is required.")
+        return self._request("GET", "channel_strategy_watchdog_events", params={
+            "select": "run_date,status,detail,request_id,http_status_code,response_excerpt,created_at",
+            "order": "created_at.desc",
+            "limit": str(max(1, min(int(limit), 50))),
+        })
+
     def list_strategy_actions(self, *, status: Optional[str] = None, cadence: Optional[str] = None, limit: int = 20) -> list[Dict[str, Any]]:
         if not self.owner_key:
             raise PersistentStoreError("A verified owner-scoped store is required.")
