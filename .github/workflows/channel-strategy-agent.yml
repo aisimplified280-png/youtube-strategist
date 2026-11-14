@@ -6,6 +6,15 @@ on:
   schedule:
     - cron: "31 2 * * *"
   workflow_dispatch:
+    inputs:
+      trigger_source:
+        description: "Dispatch source for run auditing"
+        type: choice
+        required: false
+        default: workflow_dispatch
+        options:
+          - workflow_dispatch
+          - supabase_watchdog
 
 permissions:
   contents: read
@@ -39,7 +48,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: "openai/gpt-oss-120b"
           STRATEGY_CADENCE: "daily"
-          STRATEGY_TRIGGER_SOURCE: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'schedule' }}
+          STRATEGY_TRIGGER_SOURCE: ${{ inputs.trigger_source || (github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || 'schedule') }}
           STRATEGY_CATALOGUE_LIMIT: "all"
           LOG_LEVEL: "INFO"
         run: python channel_strategy_worker.py --cadence=daily
