@@ -44,6 +44,11 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _watchdog_already_claimed(existing_period_runs: list[dict], trigger_source: str) -> bool:
+    """The backup trigger must not repeat a daily run already recorded by any source."""
+    return trigger_source == "supabase_watchdog" and bool(existing_period_runs)
+
+
 def _safe_metadata(snippet: dict) -> dict:
     return {
         "title": snippet.get("title") or "",
@@ -678,7 +683,7 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
     })
 
     completed_runs = [r for r in (existing_period_runs or []) if r.get("status") == "completed"]
-    if trigger_source == "supabase_watchdog" and existing_period_runs:
+    if _watchdog_already_claimed(existing_period_runs, trigger_source):
         latest = existing_period_runs[0]
         log.info(
             "Supabase watchdog found an existing %s run for %s (%s). Skipping duplicate dispatch.",
