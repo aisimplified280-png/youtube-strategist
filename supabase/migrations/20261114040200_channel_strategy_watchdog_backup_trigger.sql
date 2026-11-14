@@ -3,7 +3,8 @@
 -- when no daily run has been recorded for the current IST date.
 
 create extension if not exists pg_cron with schema pg_catalog;
-create extension if not exists pg_net;
+create schema if not exists extensions;
+create extension if not exists pg_net with schema extensions;
 
 grant usage on schema cron to postgres;
 grant all privileges on all tables in schema cron to postgres;
