@@ -135,6 +135,7 @@ def render_strategy_activity(store, youtube=None):
     try:
         settings = store.get_strategy_settings()
         runs = store.list_strategy_runs(limit=30)
+        watchdog_events = store.list_strategy_watchdog_events(limit=12)
         pending = store.list_strategy_actions(status="pending_review", limit=100)
         recent_actions = store.list_strategy_actions(limit=40)
         evaluations = store.list_action_evaluations(limit=50)
@@ -180,6 +181,35 @@ def render_strategy_activity(store, youtube=None):
                     )
                 else:
                     st.caption("No run recorded yet")
+
+    if watchdog_events:
+        latest_watchdog = watchdog_events[0]
+        st.markdown("### Backup trigger health")
+        st.caption(
+            f"Latest Supabase watchdog check: {_short_timestamp(latest_watchdog.get('created_at'))} · "
+            f"{_pretty_status(latest_watchdog.get('status'))}"
+        )
+        st.caption(str(latest_watchdog.get("detail") or "No additional details recorded."))
+        with st.expander("Recent backup-trigger checks"):
+            status_labels = {
+                "dispatch_submitted": "Dispatch submitted",
+                "dispatch_accepted": "GitHub accepted",
+                "dispatch_failed": "Dispatch failed",
+                "waiting_for_response": "Waiting for API response",
+                "waiting_for_run": "Waiting for worker run",
+                "run_detected": "Daily run already exists",
+                "secret_missing": "GitHub token missing",
+            }
+            st.dataframe(
+                [{
+                    "Checked (UTC)": _short_timestamp(item.get("created_at")),
+                    "Outcome": status_labels.get(item.get("status"), _pretty_status(item.get("status"))),
+                    "HTTP": item.get("http_status_code") or "",
+                    "Details": item.get("detail") or "",
+                } for item in watchdog_events],
+                use_container_width=True,
+                hide_index=True,
+            )
 
     overview_tab, review_tab, history_tab, learning_tab, settings_tab = st.tabs(
         ["Overview", f"Review queue ({len(pending)})", "Run & action history", "Learning", "Settings"]
