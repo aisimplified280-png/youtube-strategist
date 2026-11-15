@@ -6,7 +6,8 @@ import json
 import re
 import time
 import unicodedata
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from statistics import median
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -168,6 +169,14 @@ def _aggregate_video_analytics_rows(rows: List[Dict[str, Any]]) -> Tuple[Dict[st
     return result, content_type
 
 
+def _youtube_analytics_today(now_utc: Optional[datetime] = None) -> date:
+    """Return the current YouTube Analytics calendar date (Pacific Time), not runner UTC."""
+    current = now_utc or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("now_utc must be timezone-aware.")
+    return current.astimezone(ZoneInfo("America/Los_Angeles")).date()
+
+
 def _growth(current, previous):
     if not _number(current) or not _number(previous) or previous == 0:
         return None
@@ -212,7 +221,7 @@ def collect_channel_snapshot(
     YouTube Analytics data is delayed, so daily/weekly reports end three days before run date.
     Thumbnail reach/CTR remains separately sourced from the asynchronous Reporting API.
     """
-    today = today or date.today()
+    today = today or _youtube_analytics_today()
     cadence = str(cadence or "daily").strip().lower()
     if cadence not in {"daily", "weekly", "monthly"}:
         cadence = "daily"
