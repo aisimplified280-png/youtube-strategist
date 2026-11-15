@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -907,8 +908,13 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
                     "errors": ["No generated proposal row was returned."],
                 }
                 metadata_model = f"gemini:{model_used}" if model_used else "gemini"
+                candidate_settings = settings
+                if target_video_id and str(candidate.get("video_id") or "") == target_video_id:
+                    # A focused test is always approval-gated, even if persistent settings
+                    # are later changed to autonomous. This override is run-local only.
+                    candidate_settings = {**settings, "emergency_pause": True}
                 result, daily_count, cadence_count = _process_candidate(
-                    store, youtube, owner_key, run_id, candidate, row, settings,
+                    store, youtube, owner_key, run_id, candidate, row, candidate_settings,
                     cadence=cadence,
                     daily_count=daily_count,
                     cadence_count=cadence_count,
