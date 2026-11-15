@@ -182,7 +182,11 @@ def _benchmarkable_video_rows(video_rows: List[Dict[str, Any]]) -> List[Dict[str
     """
     return [
         row for row in video_rows
-        if _number(row.get("duration_seconds")) and row["duration_seconds"] > 180
+        if (
+            str(row.get("creator_content_type") or "").upper() == "VIDEO_ON_DEMAND"
+            and _number(row.get("duration_seconds"))
+            and row["duration_seconds"] > 180
+        )
     ]
 
 
