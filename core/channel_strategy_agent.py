@@ -109,13 +109,25 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _complete_reach_value(reach_status: str, value):
-    """Expose a reach value to ranking only when every requested report day is present."""
-    complete = (
-        isinstance(reach_status, str)
-        and reach_status.startswith("Loaded daily reach reports for all ")
+def _reach_coverage_acceptable(reach_status: str) -> bool:
+    """Allow complete reports or >=90% day coverage; never infer missing-day metrics."""
+    if not isinstance(reach_status, str):
+        return False
+    if reach_status.startswith("Loaded daily reach reports for all "):
+        return True
+    match = re.search(
+        r"Partial reach coverage: reports are available for (\\d+) of (\\d+) selected days",
+        reach_status,
     )
-    return value if complete and _number(value) else None
+    if not match:
+        return False
+    covered, expected = (int(match.group(1)), int(match.group(2)))
+    return expected > 0 and covered / expected >= 0.90
+
+
+def _complete_reach_value(reach_status: str, value):
+    """Expose returned-period reach metrics when report coverage is sufficiently complete."""
+    return value if _reach_coverage_acceptable(reach_status) and _number(value) else None
 
 
 def _growth(current, previous):
@@ -288,8 +300,8 @@ def collect_channel_snapshot(
             "ctr_period": f"{start_date.isoformat()}..{end_date.isoformat()}",
             "ctr_status": (
                 reach.get("ctr_status", "unavailable")
-                if reach_status.startswith("Loaded daily reach reports for all ")
-                else f"Unavailable for strategy ranking: incomplete reach-report coverage ({reach_status})"
+                if _reach_coverage_acceptable(reach_status)
+                else f"Unavailable for strategy ranking: insufficient reach-report coverage ({reach_status})"
             ),
         })
 
@@ -311,42 +323,47 @@ def collect_channel_snapshot(
         "median_views": median_views,
     }
 
-    # Assign deterministic diagnosis category to each video
+    # Rank every upload inside its own duration group. Under-3-minute uploads remain
+    # format-unconfirmed (not assumed to be Shorts), but can still be compared with
+    # other under-3-minute uploads and can surface direct, measured CTR weaknesses.
+    ranked = connector.rank_channel_video_opportunities(video_rows, limit=15)
+    ranked_by_id = {str(item.get("video_id")): item for item in ranked}
     for row in video_rows:
         duration = row.get("duration_seconds")
-        if not _number(duration) or duration <= 180:
-            row["diagnosis"] = "format_unconfirmed"
-            row["diagnosis_reason"] = "Under-180s upload: format cannot be confirmed as standard or Short without Studio evidence."
-            continue
-
+        is_unconfirmed_format = not _number(duration) or duration <= 180
+        ranked_row = ranked_by_id.get(str(row.get("video_id")), {})
+        reasons = ranked_row.get("reasons") or []
         ctr = row.get("ctr_percent")
         imp = row.get("impressions")
         avp = row.get("average_view_percentage")
         subs_rate = row.get("subscribers_per_1000_views")
 
-        if _number(ctr) and _number(imp) and imp >= 50 and (ctr < median_ctr or ctr < 3.5):
+        if any(reason.startswith("Thumbnail CTR is ") for reason in reasons):
             row["diagnosis"] = "packaging"
-            row["diagnosis_reason"] = f"Low CTR ({ctr}% vs cohort benchmark/median {median_ctr}%) with sufficient impressions ({imp:,}). Prime candidate for metadata packaging improvement."
-        elif _number(avp) and avp < 35.0:
+            row["diagnosis_reason"] = "Measured low thumbnail CTR against same-duration-group peers with sufficient impressions."
+        elif is_unconfirmed_format:
+            row["diagnosis"] = "format_unconfirmed"
+            row["diagnosis_reason"] = "Under-180s upload: Shorts orientation is unconfirmed; performance comparisons, where available, use only the under-3-minute duration group."
+        elif any(reason.startswith("Average percentage viewed is ") for reason in reasons):
             row["diagnosis"] = "retention"
-            row["diagnosis_reason"] = f"Low audience retention ({avp}% average view percentage). Viewer cliff occurs in content pacing; metadata update cannot fix retention."
+            row["diagnosis_reason"] = "Average percentage viewed is below the standard-video cohort median; metadata changes cannot repair content retention."
         elif _number(imp) and imp < 50:
             row["diagnosis"] = "distribution"
-            row["diagnosis_reason"] = f"Insufficient impressions ({imp} served). Topic reach or discovery bottleneck."
+            row["diagnosis_reason"] = f"Fewer than 50 thumbnail impressions ({imp}); insufficient reach for reliable CTR packaging diagnosis."
         elif _number(subs_rate) and subs_rate < 1.0 and _number(row.get("views")) and row["views"] >= 200:
             row["diagnosis"] = "conversion"
-            row["diagnosis_reason"] = f"Low subscriber conversion ({subs_rate} subs/1k views) despite traffic. Call-to-action or audience fit issue."
+            row["diagnosis_reason"] = f"Low subscriber conversion ({subs_rate} subs/1k views) despite traffic."
         else:
             row["diagnosis"] = "performing"
-            row["diagnosis_reason"] = "Healthy relative to peer benchmarks or within normal distribution."
+            row["diagnosis_reason"] = "No sufficiently strong evidence-backed weakness was detected."
 
-    ranked = connector.rank_channel_video_opportunities(benchmarkable_rows, limit=15)
-    # Augment ranked opportunities with diagnosis
-    for r in ranked:
-        match = next((row for row in video_rows if row.get("video_id") == r.get("video_id")), None)
+    # Preserve source metadata for the model's video-specific, fact-grounded review.
+    for item in ranked:
+        match = next((row for row in video_rows if row.get("video_id") == item.get("video_id")), None)
         if match:
-            r["diagnosis"] = match.get("diagnosis", "unknown")
-            r["diagnosis_reason"] = match.get("diagnosis_reason", "")
+            item["diagnosis"] = match.get("diagnosis", "unknown")
+            item["diagnosis_reason"] = match.get("diagnosis_reason", "")
+            item["current_metadata"] = match.get("current_metadata") or {}
 
     current_channel, current_status = _query_or_status(
         analytics, start_date, end_date, CHANNEL_METRICS, max_results=10
@@ -385,8 +402,9 @@ def collect_channel_snapshot(
         key: row.get(key) for key in (
             "video_id", "title", "url", "format_group", "views", "lifetime_views",
             "watch_time_minutes", "average_view_percentage", "subscribers_gained",
-            "subscribers_per_1000_views", "impressions", "ctr_percent",
-            "opportunity_score", "priority", "reasons", "diagnosis", "diagnosis_reason",
+            "subscribers_per_1000_views", "impressions", "ctr_percent", "ctr_status",
+            "duration_seconds", "current_metadata", "opportunity_score", "priority",
+            "reasons", "diagnosis", "diagnosis_reason",
         ) if key in row
     }
     return {
@@ -551,7 +569,8 @@ CADENCE SPECIFICS:
 
 COHORT RULES:
 - Standard videos (>180 sec duration) are benchmarked against cohort medians (Median CTR: {benchmarks.get('median_ctr_percent', 4.0)}%, Median AVP: {benchmarks.get('median_average_view_percentage', 40.0)}%).
-- Uploads up to 180 seconds remain format-unconfirmed unless explicit Studio evidence confirms Shorts format. You may review them individually, but NEVER label them below-benchmark from an unconfirmed cohort.
+- Uploads up to 180 seconds remain format-unconfirmed unless explicit Studio evidence confirms Shorts format. Never call them Shorts or compare them against standard videos. If supplied, their peer comparisons are only against the separate under-3-minute duration group.
+- Metadata quality review is separate from performance diagnosis. When CTR/reach evidence is unavailable, you MAY propose a REVIEW-ONLY metadata audit if the exact current_metadata clearly shows an objective packaging/SEO defect (for example, an empty or extremely thin description, no meaningful tags, or a title that is vague and omits the subject terms already present in its own description). Do not claim this defect caused low views, do not invent keywords or video facts, and do not use retention/distribution as proof that metadata is broken. Set diagnosis='metadata_quality', decision='review', confidence between 0.65 and 0.84, and include only fields that genuinely need improvement. If no clear defect is visible in the supplied metadata, choose no_change.
 
 METADATA SOURCE AND FACTUAL GROUNDING (MANDATORY):
 - Each opportunity may include current_metadata captured from the live YouTube Data API: the exact current title, full description, and tags for that video.
@@ -564,8 +583,9 @@ METADATA SOURCE AND FACTUAL GROUNDING (MANDATORY):
 - fields_to_modify must be an explicit list containing only the fields you actually intend to change. An empty list means no changes. Never infer or add fields beyond that list.
 
 DIAGNOSIS CATEGORIES:
-- packaging: low CTR (< cohort median or < 3.5%) with sufficient impressions (>= 50). A metadata rewrite CAN fix packaging.
-- retention: low average view percentage (< 35%) despite acceptable CTR. A metadata rewrite CANNOT fix retention! Mark retention bottlenecks clearly.
+- packaging: low CTR versus at least three same-period peers in the same duration group, with at least 50 impressions. A metadata rewrite CAN address packaging.
+- metadata_quality: an objectively weak title/description/tag set visible in the exact current_metadata. This is a REVIEW-ONLY audit, not a performance diagnosis.
+- retention: low average view percentage versus the relevant same-duration cohort. A metadata rewrite CANNOT fix retention! Mark retention bottlenecks clearly.
 - distribution: low impressions despite good CTR/retention. Indicates audience saturation or external traffic dependency.
 - conversion: high views/watch time but low subscribers gained per 1,000 views. Indicates weak call-to-action or non-subscriber interest.
 
