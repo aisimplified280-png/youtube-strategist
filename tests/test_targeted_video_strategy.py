@@ -48,6 +48,28 @@ class TargetedVideoEvidenceTests(unittest.TestCase):
             part="snippet,contentDetails,statistics", id=self.video_id
         )
 
+    def test_live_target_metadata_replaces_stale_unscored_evidence(self):
+        snapshot = {
+            "opportunities": [],
+            "unscored_short_duration_uploads": [{
+                "video_id": self.video_id,
+                "title": "Old title",
+                "current_metadata": {"title": "Old title", "description": "", "tags": []},
+            }],
+            "video_rows": [],
+        }
+
+        result = _inject_targeted_video_evidence(
+            snapshot, self.youtube, self.channel_id, self.video_id
+        )
+
+        self.assertEqual(len(result["opportunities"]), 1)
+        self.assertEqual(
+            result["opportunities"][0]["current_metadata"]["title"],
+            "A real target video",
+        )
+        self.assertEqual(result["unscored_short_duration_uploads"], [])
+
     def test_rejects_video_outside_configured_owner_channel(self):
         self.youtube.videos.return_value.list.return_value.execute.return_value["items"][0]["snippet"]["channelId"] = "UC_someone_else"
 
