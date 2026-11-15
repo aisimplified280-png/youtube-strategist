@@ -197,6 +197,7 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
             "reasons": reasons,
             "title": evidence.get("title") or item.get("video_title") or "",
             "current_metadata": source,
+            "targeted_test": bool(evidence.get("targeted_test")),
         }
         if metadata_review_eligible:
             merged["decision"] = "review"
@@ -453,6 +454,22 @@ def _inject_targeted_video_evidence(snapshot: dict, youtube, channel_id: str, vi
     ]
     snapshot["targeted_video_id"] = video_id
     return snapshot
+
+
+
+def _targeted_strategy_report(strategy_report: dict, video_id: str) -> dict:
+    """Keep only the requested video's metadata candidate in a focused test.
+
+    The model may rank ordinary channel opportunities ahead of the target. A
+    targeted test must not let the normal per-run review limit silently discard
+    the requested video and process unrelated candidates instead.
+    """
+    report = dict(strategy_report or {})
+    report["metadata_candidates"] = [
+        item for item in (strategy_report or {}).get("metadata_candidates") or []
+        if str(item.get("video_id") or "") == str(video_id)
+    ]
+    return report
 
 
 def _daily_auto_count(store, owner_key: str) -> int:
@@ -933,10 +950,30 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
                 "metadata_candidates": [],
             }
 
-        candidates = _metadata_candidates(
-            snapshot, strategy_report,
-            limit=max(0, min(int(settings.get("max_metadata_reviews_per_run", 3)), 10)),
+        candidate_report = (
+            _targeted_strategy_report(strategy_report, target_video_id)
+            if target_video_id else strategy_report
         )
+        candidate_limit = (
+            1 if target_video_id else
+            max(0, min(int(settings.get("max_metadata_reviews_per_run", 3)), 10))
+        )
+        candidates = _metadata_candidates(
+            snapshot, candidate_report, limit=candidate_limit,
+        )
+        if target_video_id:
+            # Defense in depth: a focused run may never process another channel video.
+            candidates = [
+                candidate for candidate in candidates
+                if str(candidate.get("video_id") or "") == target_video_id
+            ]
+            if not candidates:
+                counters["failed"] += 1
+                log.error(
+                    "Targeted test did not produce a valid review candidate for %s; "
+                    "no unrelated channel candidates will be processed.",
+                    target_video_id,
+                )
 
         if candidates:
             daily_count = _daily_auto_count(store, owner_key)

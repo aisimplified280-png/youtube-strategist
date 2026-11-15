@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from channel_strategy_worker import _inject_targeted_video_evidence
+from channel_strategy_worker import _inject_targeted_video_evidence, _targeted_strategy_report
 
 
 class TargetedVideoEvidenceTests(unittest.TestCase):
@@ -69,6 +69,37 @@ class TargetedVideoEvidenceTests(unittest.TestCase):
             "A real target video",
         )
         self.assertEqual(result["unscored_short_duration_uploads"], [])
+
+
+    def test_targeted_strategy_report_excludes_unrelated_channel_candidates(self):
+        report = {
+            "executive_summary": "Channel summary remains available.",
+            "metadata_candidates": [
+                {"video_id": "unrelated001", "decision": "auto_publish"},
+                {"video_id": self.video_id, "decision": "review"},
+                {"video_id": "unrelated002", "decision": "review"},
+            ],
+        }
+
+        result = _targeted_strategy_report(report, self.video_id)
+
+        self.assertEqual(
+            [item["video_id"] for item in result["metadata_candidates"]],
+            [self.video_id],
+        )
+        self.assertEqual(result["executive_summary"], report["executive_summary"])
+        self.assertEqual(len(report["metadata_candidates"]), 3)
+
+    def test_targeted_strategy_report_returns_no_candidate_when_target_missing(self):
+        report = {
+            "metadata_candidates": [
+                {"video_id": "unrelated001", "decision": "review"},
+            ],
+        }
+
+        result = _targeted_strategy_report(report, self.video_id)
+
+        self.assertEqual(result["metadata_candidates"], [])
 
     def test_rejects_video_outside_configured_owner_channel(self):
         self.youtube.videos.return_value.list.return_value.execute.return_value["items"][0]["snippet"]["channelId"] = "UC_someone_else"
