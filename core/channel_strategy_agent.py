@@ -257,6 +257,18 @@ def collect_channel_snapshot(
             analytics, start_date, end_date, VIDEO_METRICS,
             video_ids=batch, dimensions="video,creatorContentType", max_results=200,
         )
+        if status != "available":
+            # Preserve the established video analytics path if a future API/report
+            # combination stops supporting creatorContentType; such rows remain unclassified.
+            fallback_rows, fallback_status = _query_or_status(
+                analytics, start_date, end_date, VIDEO_METRICS,
+                video_ids=batch, dimensions="video", max_results=200,
+            )
+            if fallback_status == "available":
+                rows = fallback_rows
+                status = (
+                    "available; creatorContentType unavailable, format remains unconfirmed"
+                )
         analytics_statuses.append(status)
         for row in rows:
             video_id = row.get("video")
