@@ -2,7 +2,7 @@
 
 import unittest
 
-from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows
+from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows, _aggregate_video_analytics_rows
 from youtube_analytics_connector import rank_channel_video_opportunities
 
 
@@ -98,6 +98,26 @@ class ChannelStrategyClassificationTests(unittest.TestCase):
         status = "Partial reach coverage: reports are available for 22 of 28 selected days."
         self.assertIsNone(_complete_reach_value(status, 1250))
         self.assertIsNone(_complete_reach_value(status, 0.037))
+
+    def test_creator_content_type_metrics_are_aggregated_without_losing_format(self):
+        rows = [
+            {"creatorContentType": "SHORTS", "views": 60, "estimatedMinutesWatched": 30, "averageViewDuration": 30, "averageViewPercentage": 50, "likes": 4},
+            {"creatorContentType": "SHORTS", "views": 40, "estimatedMinutesWatched": 20, "averageViewDuration": 30, "averageViewPercentage": 75, "likes": 2},
+        ]
+        metrics, content_type = _aggregate_video_analytics_rows(rows)
+        self.assertEqual(content_type, "SHORTS")
+        self.assertEqual(metrics["views"], 100)
+        self.assertEqual(metrics["likes"], 6)
+        self.assertAlmostEqual(metrics["averageViewPercentage"], 60.0)
+
+    def test_mixed_creator_content_types_remain_unconfirmed(self):
+        rows = [
+            {"creatorContentType": "SHORTS", "views": 60},
+            {"creatorContentType": "VIDEO_ON_DEMAND", "views": 40},
+        ]
+        metrics, content_type = _aggregate_video_analytics_rows(rows)
+        self.assertEqual(content_type, "MIXED")
+        self.assertEqual(metrics["views"], 100)
 
     def test_under_three_minute_uploads_can_be_ranked_in_their_own_duration_group(self):
         period = "2026-10-16..2026-11-12"
