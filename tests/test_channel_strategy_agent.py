@@ -78,7 +78,7 @@ class ChannelStrategyClassificationTests(unittest.TestCase):
 
     def test_only_confirmed_standard_videos_enter_peer_benchmarks(self):
         rows = [
-            {"video_id": "long0000001", "duration_seconds": 240, "format_group": "Standard videos"},
+            {"video_id": "long0000001", "duration_seconds": 240, "creator_content_type": "VIDEO_ON_DEMAND", "format_group": "Standard videos"},
             {"video_id": "short000001", "duration_seconds": 45, "creator_content_type": "SHORTS", "format_group": "Shorts"},
             {"video_id": "unknown00001", "duration_seconds": 160, "creator_content_type": "UNSPECIFIED", "format_group": "Format unconfirmed"},
         ]
