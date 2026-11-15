@@ -345,7 +345,7 @@ def collect_channel_snapshot(
             "ctr_percent": _complete_reach_value(reach_status, reach.get("ctr")),
             "ctr_source": (
                 "YouTube Reporting API channel_reach_basic_a1"
-                if reach_status.startswith("Loaded daily reach reports for all ")
+                if _reach_coverage_acceptable(reach_status)
                 else None
             ),
             "ctr_period": f"{start_date.isoformat()}..{end_date.isoformat()}",
@@ -506,7 +506,7 @@ def collect_channel_snapshot(
         "top_videos_by_subscriber_conversion": [compact_video(row) for row in winners_by_subs],
         "unscored_short_duration_uploads": [
             compact_video(row) for row in video_rows
-            if not (_number(row.get("duration_seconds")) and row["duration_seconds"] > 180)
+            if str(row.get("creator_content_type") or "UNSPECIFIED").upper() in {"UNSPECIFIED", "MIXED"}
         ],
         "opportunities": [compact_video(row) for row in ranked],
         "video_rows": video_rows,
