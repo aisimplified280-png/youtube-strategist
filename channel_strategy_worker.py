@@ -400,6 +400,10 @@ def _inject_targeted_video_evidence(snapshot: dict, youtube, channel_id: str, vi
     opportunities = [item for item in opportunities if str(item.get("video_id") or "") != video_id]
     opportunities.append(evidence)
     snapshot["opportunities"] = opportunities
+    snapshot["unscored_short_duration_uploads"] = [
+        item for item in (snapshot.get("unscored_short_duration_uploads") or [])
+        if str(item.get("video_id") or "") != video_id
+    ]
     snapshot["targeted_video_id"] = video_id
     return snapshot
 
