@@ -408,7 +408,8 @@ def collect_channel_snapshot(
         if (
             any(reason.startswith("Thumbnail CTR is ") for reason in reasons)
             or (
-                not is_unconfirmed_format
+                content_type == "VIDEO_ON_DEMAND"
+                and _number(duration) and duration > 180
                 and _number(ctr) and _number(imp) and imp >= 50
                 and (ctr < median_ctr or ctr < 3.5)
             )
