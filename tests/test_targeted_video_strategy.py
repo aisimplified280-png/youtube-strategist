@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from channel_strategy_worker import _inject_targeted_video_evidence, _targeted_strategy_report
+from channel_strategy_worker import _inject_targeted_video_evidence, _targeted_strategy_report, _metadata_evidence_is_verbatim
 
 
 class TargetedVideoEvidenceTests(unittest.TestCase):
@@ -115,6 +115,41 @@ class TargetedVideoEvidenceTests(unittest.TestCase):
                 {"opportunities": []}, self.youtube, self.channel_id, "short-id"
             )
         self.youtube.videos.return_value.list.assert_not_called()
+
+
+
+class VerbatimMetadataEvidenceTests(unittest.TestCase):
+    def test_exact_source_excerpt_is_accepted(self):
+        source = {
+            "title": "Why 4 AI Agents Burn 3.7x More Tokens?",
+            "description": "A broken JSON tool call can burn 55% of your token budget."
+        }
+        self.assertTrue(_metadata_evidence_is_verbatim(
+            "burn 55% of your token budget", source
+        ))
+
+    def test_paraphrased_evidence_is_rejected(self):
+        source = {
+            "title": "Why 4 AI Agents Burn 3.7x More Tokens?",
+            "description": "A broken JSON tool call can burn 55% of your token budget."
+        }
+        self.assertFalse(_metadata_evidence_is_verbatim(
+            "Description mentions burning 55% of the token budget", source
+        ))
+
+    def test_evidence_cannot_be_assembled_across_metadata_fields(self):
+        source = {
+            "title": "Why 4 AI Agents",
+            "description": "Burn 3.7x more tokens",
+            "tags": ["automation"]
+        }
+        self.assertFalse(_metadata_evidence_is_verbatim(
+            "Why 4 AI Agents Burn 3.7x more tokens", source
+        ))
+
+    def test_exact_tag_excerpt_is_accepted(self):
+        source = {"title": "AI agents", "description": "", "tags": ["multi-agent routing"]}
+        self.assertTrue(_metadata_evidence_is_verbatim("multi-agent routing", source))
 
 
 if __name__ == "__main__":
