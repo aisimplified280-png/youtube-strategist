@@ -3,6 +3,7 @@
 import unittest
 
 from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows
+from youtube_analytics_connector import rank_channel_video_opportunities
 
 
 class ChannelStrategyClassificationTests(unittest.TestCase):
@@ -88,10 +89,27 @@ class ChannelStrategyClassificationTests(unittest.TestCase):
         self.assertEqual(_complete_reach_value(status, 1250), 1250)
         self.assertEqual(_complete_reach_value(status, 0.037), 0.037)
 
-    def test_partial_reach_data_is_never_used_for_ctr_ranking(self):
+    def test_partial_reach_data_with_at_least_90_percent_coverage_is_usable(self):
+        status = "Partial reach coverage: reports are available for 26 of 28 selected days."
+        self.assertEqual(_complete_reach_value(status, 1250), 1250)
+        self.assertEqual(_complete_reach_value(status, 0.037), 0.037)
+
+    def test_partial_reach_data_below_90_percent_coverage_is_not_used(self):
         status = "Partial reach coverage: reports are available for 22 of 28 selected days."
         self.assertIsNone(_complete_reach_value(status, 1250))
         self.assertIsNone(_complete_reach_value(status, 0.037))
+
+    def test_under_three_minute_uploads_can_be_ranked_in_their_own_duration_group(self):
+        period = "2026-10-16..2026-11-12"
+        rows = [
+            {"video_id": "short000001", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 1.2, "impressions": 250, "views": 300, "average_view_percentage": 40},
+            {"video_id": "short000002", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 5.0, "impressions": 250, "views": 300, "average_view_percentage": 60},
+            {"video_id": "short000003", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 5.5, "impressions": 250, "views": 300, "average_view_percentage": 55},
+            {"video_id": "short000004", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 4.8, "impressions": 250, "views": 300, "average_view_percentage": 58},
+        ]
+        ranked = rank_channel_video_opportunities(rows, limit=10)
+        self.assertEqual([item["video_id"] for item in ranked], ["short000001"])
+        self.assertTrue(ranked[0]["reasons"][0].startswith("Thumbnail CTR is "))
 
     def test_missing_reach_metric_stays_unavailable_even_with_complete_coverage(self):
         status = "Loaded daily reach reports for all 28 selected days."
