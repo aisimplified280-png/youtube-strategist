@@ -161,6 +161,11 @@ class TestCadenceAndDiagnosis(TestCase):
         self.assertEqual(snapshot["cadence"], "monthly")
         self.assertEqual(snapshot["metrics_period"]["current_start"], "2026-10-01")
         self.assertEqual(snapshot["metrics_period"]["current_end"], "2026-10-31")
+        self.assertIn("current_metadata", snapshot["top_videos_by_views"][0])
+        self.assertEqual(
+            snapshot["top_videos_by_views"][0]["current_metadata"]["title"],
+            "RAG Pipeline Fixes",
+        )
 
         # Video diagnosis checks
         rows = snapshot["video_rows"]
