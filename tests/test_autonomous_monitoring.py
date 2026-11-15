@@ -122,6 +122,7 @@ class TestCadenceAndDiagnosis(TestCase):
         mock_query.return_value = ([
             {
                 "video": "kLK0N14PT1Y",
+                "creatorContentType": "VIDEO_ON_DEMAND",
                 "views": 1500,
                 "estimatedMinutesWatched": 6000,
                 "averageViewDuration": 240,
@@ -134,6 +135,7 @@ class TestCadenceAndDiagnosis(TestCase):
             },
             {
                 "video": "jJbg1WtvxbM",
+                "creatorContentType": "SHORTS",
                 "views": 1200,
                 "estimatedMinutesWatched": 600,
                 "averageViewDuration": 30,
@@ -174,8 +176,9 @@ class TestCadenceAndDiagnosis(TestCase):
 
         # Standard video with low CTR (< median) and sufficient impressions -> packaging
         self.assertEqual(rag_video["diagnosis"], "packaging")
-        # Under 180s video -> format_unconfirmed
-        self.assertEqual(short_video["diagnosis"], "format_unconfirmed")
+        # Analytics identifies the under-180s upload as a Short directly.
+        self.assertEqual(short_video["creator_content_type"], "SHORTS")
+        self.assertEqual(short_video["format_group"], "Shorts")
 
 
 class TestAutonomousPolicy(TestCase):
