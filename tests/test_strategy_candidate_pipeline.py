@@ -71,6 +71,22 @@ class MetadataCandidatePipelineTests(unittest.TestCase):
         )
         self.assertEqual(result, [])
 
+    def test_metadata_quality_candidate_stays_review_only_even_with_ctr_evidence(self):
+        snapshot = {
+            "opportunities": [{
+                **self.snapshot["opportunities"][0],
+                "impressions": 500,
+                "reasons": ["Thumbnail CTR is 1.2% versus a 5.0% same-period peer median."],
+            }]
+        }
+        candidate = {**self.candidate, "decision": "auto_publish"}
+        result = _metadata_candidates(
+            snapshot,
+            {"metadata_candidates": [candidate]},
+            limit=3,
+        )
+        self.assertEqual(result, [])
+
 
 if __name__ == "__main__":
     unittest.main()
