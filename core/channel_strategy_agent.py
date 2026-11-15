@@ -116,7 +116,7 @@ def _reach_coverage_acceptable(reach_status: str) -> bool:
     if reach_status.startswith("Loaded daily reach reports for all "):
         return True
     match = re.search(
-        r"Partial reach coverage: reports are available for (\\d+) of (\\d+) selected days",
+        r"Partial reach coverage: reports are available for (\d+) of (\d+) selected days",
         reach_status,
     )
     if not match:
