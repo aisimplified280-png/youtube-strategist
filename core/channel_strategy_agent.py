@@ -677,7 +677,10 @@ METADATA SOURCE AND FACTUAL GROUNDING (MANDATORY):
 - Do not add factual claims, named entities, product features, model/version names, dates, prices, measurements, comparisons, quotes, URLs, or guarantees unless they are explicitly supported by that video's current_metadata.
 - Do not infer video contents from a topic, title, thumbnail, channel name, or general knowledge. Do not imply that you watched the video or checked a transcript.
 - You may improve clarity, structure, search phrasing, and the hook, but preserve the factual scope of the source. If the supplied metadata does not adequately support a safe edit, choose decision='no_change' and fields_to_modify=[] (or 'review' when creator judgement is genuinely needed).
-- factual_evidence must identify short exact wording from the same video's current title/description/tags that supports the proposal. Never invent a quote or claim that evidence was verified when it is not present in the supplied source.
+- factual_evidence MUST be a verbatim, contiguous copy-and-paste excerpt from the same video's current_metadata title, description, or tags. Copy the exact source characters, words, order, and punctuation; do not paraphrase, summarize, translate, add introductory wording, join separate fragments, or normalize punctuation/case.
+- Keep factual_evidence concise (roughly 6–24 words when possible). Choose the shortest complete source phrase that directly supports the proposed change. If no suitable exact excerpt exists, set decision='no_change' and factual_evidence=''.
+- Before returning JSON, internally verify that factual_evidence appears as an exact substring in one individual source field (title OR description OR one tag), not merely across concatenated fields. Do not claim verification unless this exact substring test succeeds.
+- Example: source description contains "burn 55% of your token budget by repeating broken JSON tool calls". Valid factual_evidence: "burn 55% of your token budget". Invalid factual_evidence: "Description mentions burning 55% of the token budget" (paraphrase).
 - fields_to_modify must be an explicit list containing only the fields you actually intend to change. An empty list means no changes. Never infer or add fields beyond that list.
 
 DIAGNOSIS CATEGORIES:
