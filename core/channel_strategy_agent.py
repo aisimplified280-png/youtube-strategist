@@ -130,6 +130,44 @@ def _complete_reach_value(reach_status: str, value):
     return value if _reach_coverage_acceptable(reach_status) and _number(value) else None
 
 
+def _aggregate_video_analytics_rows(rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], str]:
+    """Aggregate video metrics while retaining the Analytics API's creator content type."""
+    if not rows:
+        return {}, "UNSPECIFIED"
+    content_types = {
+        str(row.get("creatorContentType") or "UNSPECIFIED").upper()
+        for row in rows
+    }
+    content_type = next(iter(content_types)) if len(content_types) == 1 else "MIXED"
+    if len(rows) == 1:
+        return dict(rows[0]), content_type
+
+    result = dict(rows[0])
+    sum_metrics = (
+        "views", "estimatedMinutesWatched", "likes", "comments", "shares",
+        "subscribersGained", "subscribersLost",
+    )
+    for metric in sum_metrics:
+        values = [row.get(metric) for row in rows if _number(row.get(metric))]
+        result[metric] = sum(values) if values else None
+
+    total_views = sum(
+        row.get("views") for row in rows
+        if _number(row.get("views")) and row.get("views") > 0
+    )
+    for metric in ("averageViewDuration", "averageViewPercentage"):
+        weighted = [
+            (row.get(metric), row.get("views"))
+            for row in rows
+            if _number(row.get(metric)) and _number(row.get("views")) and row.get("views") > 0
+        ]
+        result[metric] = (
+            sum(value * views for value, views in weighted) / total_views
+            if total_views > 0 and weighted else None
+        )
+    return result, content_type
+
+
 def _growth(current, previous):
     if not _number(current) or not _number(previous) or previous == 0:
         return None
@@ -212,18 +250,18 @@ def collect_channel_snapshot(
                 continue
             details[item["id"]] = item
 
-    metrics_by_id: Dict[str, Dict[str, Any]] = {}
+    metrics_by_id: Dict[str, List[Dict[str, Any]]] = {}
     analytics_statuses = []
     for batch in _chunks([video_id for video_id in video_ids if video_id in details], 150):
         rows, status = _query_or_status(
             analytics, start_date, end_date, VIDEO_METRICS,
-            video_ids=batch, dimensions="video", max_results=200,
+            video_ids=batch, dimensions="video,creatorContentType", max_results=200,
         )
         analytics_statuses.append(status)
         for row in rows:
             video_id = row.get("video")
             if video_id in batch:
-                metrics_by_id[video_id] = row
+                metrics_by_id.setdefault(video_id, []).append(row)
 
     reach_metrics, reach_status = youtube_dashboard.fetch_reach_metrics(
         reporting, credentials, list(details), start_date, end_date
@@ -232,9 +270,10 @@ def collect_channel_snapshot(
     video_rows = []
     for video_id in video_ids:
         video = details.get(video_id)
-        metrics = metrics_by_id.get(video_id)
-        if not video or not metrics:
+        metric_rows = metrics_by_id.get(video_id) or []
+        if not video or not metric_rows:
             continue
+        metrics, creator_content_type = _aggregate_video_analytics_rows(metric_rows)
         snippet = video.get("snippet") or {}
         duration_seconds = None
         try:
@@ -243,11 +282,22 @@ def collect_channel_snapshot(
             )
         except (TypeError, ValueError):
             pass
-        format_group = (
-            "Standard videos (>180 sec)"
-            if duration_seconds is not None and duration_seconds > 180
-            else "Under-3-minute uploads (format unconfirmed)"
-        )
+        if creator_content_type == "SHORTS":
+            format_group = "Shorts"
+        elif creator_content_type == "VIDEO_ON_DEMAND":
+            format_group = (
+                "Standard videos (>180 sec)"
+                if duration_seconds is not None and duration_seconds > 180
+                else "Short-form videos on demand (<180 sec)"
+            )
+        elif creator_content_type == "LIVE_STREAM":
+            format_group = "Live streams"
+        elif creator_content_type == "STORY":
+            format_group = "Stories"
+        elif creator_content_type == "MIXED":
+            format_group = "Mixed creator content types (format unconfirmed)"
+        else:
+            format_group = "Format unconfirmed"
         views = metrics.get("views")
         average_view_percentage = (
             metrics.get("averageViewPercentage")
@@ -278,6 +328,7 @@ def collect_channel_snapshot(
             "url": f"https://www.youtube.com/watch?v={video_id}",
             "published_at": snippet.get("publishedAt", ""),
             "duration_seconds": duration_seconds,
+            "creator_content_type": creator_content_type,
             "format_group": format_group,
             "views": views,
             "lifetime_views": lifetime_views,
@@ -330,7 +381,11 @@ def collect_channel_snapshot(
     ranked_by_id = {str(item.get("video_id")): item for item in ranked}
     for row in video_rows:
         duration = row.get("duration_seconds")
-        is_unconfirmed_format = not _number(duration) or duration <= 180
+        content_type = str(row.get("creator_content_type") or "UNSPECIFIED").upper()
+        is_unconfirmed_format = (
+            content_type in {"UNSPECIFIED", "MIXED"}
+            or "unconfirmed" in str(row.get("format_group") or "").lower()
+        )
         ranked_row = ranked_by_id.get(str(row.get("video_id")), {})
         reasons = ranked_row.get("reasons") or []
         ctr = row.get("ctr_percent")
@@ -350,7 +405,7 @@ def collect_channel_snapshot(
             row["diagnosis_reason"] = "Measured low thumbnail CTR with sufficient impressions; peer-based opportunity ranking is preferred when enough same-period peers exist."
         elif is_unconfirmed_format:
             row["diagnosis"] = "format_unconfirmed"
-            row["diagnosis_reason"] = "Under-180s upload: Shorts orientation is unconfirmed; performance comparisons, where available, use only the under-3-minute duration group."
+            row["diagnosis_reason"] = "YouTube Analytics did not provide one unambiguous creatorContentType; this upload is not labelled Shorts or Video on demand."
         elif any(reason.startswith("Average percentage viewed is ") for reason in reasons):
             row["diagnosis"] = "retention"
             row["diagnosis_reason"] = "Average percentage viewed is below the standard-video cohort median; metadata changes cannot repair content retention."
@@ -410,7 +465,8 @@ def collect_channel_snapshot(
             "video_id", "title", "url", "format_group", "views", "lifetime_views",
             "watch_time_minutes", "average_view_percentage", "subscribers_gained",
             "subscribers_per_1000_views", "impressions", "ctr_percent", "ctr_status",
-            "duration_seconds", "current_metadata", "opportunity_score", "priority",
+            "duration_seconds", "creator_content_type", "current_metadata",
+            "opportunity_score", "priority",
             "reasons", "diagnosis", "diagnosis_reason",
         ) if key in row
     }
@@ -432,7 +488,7 @@ def collect_channel_snapshot(
             "videos_with_analytics": len(video_rows),
             "catalogue_limit": catalogue_limit,
             "truncated": catalogue_truncated,
-            "format_note": "The YouTube Data API does not expose Shorts orientation/designation. Uploads up to 180 seconds remain format-unconfirmed.",
+            "format_note": "Format classification uses YouTube Analytics creatorContentType (SHORTS, VIDEO_ON_DEMAND, LIVE_STREAM, STORY). Missing or mixed values remain unconfirmed; duration alone is never used to label Shorts.",
         },
         "learning_context": learning_context or [],
         "channel_metrics": current,
@@ -576,7 +632,7 @@ CADENCE SPECIFICS:
 
 COHORT RULES:
 - Standard videos (>180 sec duration) are benchmarked against cohort medians (Median CTR: {benchmarks.get('median_ctr_percent', 4.0)}%, Median AVP: {benchmarks.get('median_average_view_percentage', 40.0)}%).
-- Uploads up to 180 seconds remain format-unconfirmed unless explicit Studio evidence confirms Shorts format. Never call them Shorts or compare them against standard videos. If supplied, their peer comparisons are only against the separate under-3-minute duration group.
+- Use creator_content_type from YouTube Analytics as the format authority: SHORTS, VIDEO_ON_DEMAND, LIVE_STREAM, STORY. Compare Shorts only with Shorts, and standard videos only with standard videos. VIDEO_ON_DEMAND uploads under 180 seconds are not Shorts. If the value is UNSPECIFIED or MIXED, keep format unconfirmed and do not infer from duration.
 - Metadata quality review is separate from performance diagnosis. When CTR/reach evidence is unavailable, you MAY propose a REVIEW-ONLY metadata audit if the exact current_metadata clearly shows an objective packaging/SEO defect (for example, an empty or extremely thin description, no meaningful tags, or a title that is vague and omits the subject terms already present in its own description). Do not claim this defect caused low views, do not invent keywords or video facts, and do not use retention/distribution as proof that metadata is broken. Set diagnosis='metadata_quality', decision='review', confidence between 0.65 and 0.84, and include only fields that genuinely need improvement. If no clear defect is visible in the supplied metadata, choose no_change.
 
 METADATA SOURCE AND FACTUAL GROUNDING (MANDATORY):
