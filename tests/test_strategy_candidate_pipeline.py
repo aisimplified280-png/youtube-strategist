@@ -85,7 +85,11 @@ class MetadataCandidatePipelineTests(unittest.TestCase):
             {"metadata_candidates": [candidate]},
             limit=3,
         )
-        self.assertEqual(result, [])
+        # The invalid metadata-quality candidate is rejected; a separate deterministic
+        # CTR fallback may still create a review-only packaging item.
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["decision"], "review")
+        self.assertEqual(result[0]["diagnosis"], "packaging")
 
 
 if __name__ == "__main__":
