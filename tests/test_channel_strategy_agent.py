@@ -1,7 +1,7 @@
 """Safety tests for the scheduled channel strategist."""
 
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows, _aggregate_video_analytics_rows, _youtube_analytics_today
 from youtube_analytics_connector import rank_channel_video_opportunities
