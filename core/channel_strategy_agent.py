@@ -338,9 +338,16 @@ def collect_channel_snapshot(
         avp = row.get("average_view_percentage")
         subs_rate = row.get("subscribers_per_1000_views")
 
-        if any(reason.startswith("Thumbnail CTR is ") for reason in reasons):
+        if (
+            any(reason.startswith("Thumbnail CTR is ") for reason in reasons)
+            or (
+                not is_unconfirmed_format
+                and _number(ctr) and _number(imp) and imp >= 50
+                and (ctr < median_ctr or ctr < 3.5)
+            )
+        ):
             row["diagnosis"] = "packaging"
-            row["diagnosis_reason"] = "Measured low thumbnail CTR against same-duration-group peers with sufficient impressions."
+            row["diagnosis_reason"] = "Measured low thumbnail CTR with sufficient impressions; peer-based opportunity ranking is preferred when enough same-period peers exist."
         elif is_unconfirmed_format:
             row["diagnosis"] = "format_unconfirmed"
             row["diagnosis_reason"] = "Under-180s upload: Shorts orientation is unconfirmed; performance comparisons, where available, use only the under-3-minute duration group."
