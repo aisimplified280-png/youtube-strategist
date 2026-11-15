@@ -44,6 +44,28 @@ class MetadataCandidatePipelineTests(unittest.TestCase):
         self.assertEqual(result[0]["decision"], "review")
         self.assertEqual(result[0]["current_metadata"]["description"], "")
 
+    def test_unconfirmed_format_can_receive_review_only_metadata_audit(self):
+        snapshot = {
+            "opportunities": [],
+            "unscored_short_duration_uploads": [{
+                "video_id": "abcDEF12345",
+                "title": "AI tools",
+                "current_metadata": {
+                    "title": "AI tools",
+                    "description": "",
+                    "tags": [],
+                },
+            }],
+        }
+        result = _metadata_candidates(
+            snapshot,
+            {"metadata_candidates": [self.candidate]},
+            limit=3,
+        )
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0]["metadata_audit_only"])
+        self.assertEqual(result[0]["decision"], "review")
+
     def test_metadata_quality_candidate_requires_exact_source_quote(self):
         candidate = {**self.candidate, "factual_evidence": "This phrase is not in source metadata"}
         result = _metadata_candidates(
