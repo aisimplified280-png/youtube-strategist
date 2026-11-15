@@ -33,6 +33,54 @@ class MetadataCandidatePipelineTests(unittest.TestCase):
             "rationale": "The current description is empty.",
         }
 
+
+    def test_empty_field_list_recovers_only_nonempty_changed_review_fields(self):
+        candidate = {
+            **self.candidate,
+            "fields_to_modify": [],
+            "proposed_title": "AI Tools That Actually Save Time",
+            "proposed_description": "A proposed description grounded in the existing title.",
+        }
+        result = _metadata_candidates(
+            self.snapshot,
+            {"metadata_candidates": [candidate]},
+            limit=3,
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["fields_to_modify"], ["title", "description"])
+        self.assertTrue(result[0]["fields_to_modify_repaired"])
+        self.assertTrue(result[0]["metadata_audit_only"])
+
+    def test_empty_field_list_with_no_real_difference_is_rejected(self):
+        candidate = {
+            **self.candidate,
+            "fields_to_modify": [],
+            "proposed_title": "AI tools",
+            "proposed_description": "",
+            "proposed_tags": [],
+        }
+        result = _metadata_candidates(
+            self.snapshot,
+            {"metadata_candidates": [candidate]},
+            limit=3,
+        )
+        self.assertEqual(result, [])
+
+    def test_explicit_nonempty_field_list_is_not_silently_expanded(self):
+        candidate = {
+            **self.candidate,
+            "fields_to_modify": ["description"],
+            "proposed_title": "A different title",
+        }
+        result = _metadata_candidates(
+            self.snapshot,
+            {"metadata_candidates": [candidate]},
+            limit=3,
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["fields_to_modify"], ["description"])
+        self.assertFalse(result[0]["fields_to_modify_repaired"])
+
     def test_metadata_quality_candidate_can_enter_review_without_ctr(self):
         result = _metadata_candidates(
             self.snapshot,

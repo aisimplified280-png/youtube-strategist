@@ -75,6 +75,41 @@ def _compact_snapshot(snapshot: dict) -> dict:
     }
 
 
+def _infer_review_only_fields(candidate: dict, source: dict) -> list[str]:
+    """Recover an omitted field list only from explicit, non-empty changed proposals.
+
+    This repair is limited to review-only metadata-quality candidates. It never
+    infers deletions, never invents content, and still relies on exact source
+    evidence plus the downstream live-metadata equality check.
+    """
+    fields = []
+    proposed_title = candidate.get("proposed_title")
+    if (
+        isinstance(proposed_title, str)
+        and proposed_title.strip()
+        and proposed_title.strip() != str(source.get("title") or "")
+    ):
+        fields.append("title")
+
+    proposed_description = candidate.get("proposed_description")
+    if (
+        isinstance(proposed_description, str)
+        and proposed_description.strip()
+        and proposed_description.strip() != str(source.get("description") or "")
+    ):
+        fields.append("description")
+
+    proposed_tags = candidate.get("proposed_tags")
+    if isinstance(proposed_tags, list):
+        normalized_tags = [str(tag).strip() for tag in proposed_tags if str(tag).strip()]
+        source_tags = [str(tag).strip() for tag in (source.get("tags") or []) if str(tag).strip()]
+        # Empty tags are ambiguous (no suggestion vs. deletion), so never infer
+        # a tags change from an empty list.
+        if normalized_tags and normalized_tags != source_tags:
+            fields.append("tags")
+    return fields
+
+
 def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) -> list[dict]:
     """Accept measured packaging candidates or tightly constrained review-only metadata audits."""
     limit = max(0, min(int(limit), 10))
@@ -115,6 +150,16 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
             confidence = None
         fields = item.get("fields_to_modify")
         source = evidence.get("current_metadata") or {}
+        repaired_fields = False
+        if (
+            item.get("diagnosis") == "metadata_quality"
+            and isinstance(fields, list)
+            and not fields
+        ):
+            inferred = _infer_review_only_fields(item, source)
+            if inferred:
+                fields = inferred
+                repaired_fields = True
         source_text_parts = [
             str(source.get("title") or ""),
             str(source.get("description") or ""),
@@ -146,6 +191,8 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
         merged = {
             **evidence,
             **item,
+            "fields_to_modify": fields,
+            "fields_to_modify_repaired": repaired_fields,
             "evidence_reasons": reasons,
             "reasons": reasons,
             "title": evidence.get("title") or item.get("video_title") or "",
