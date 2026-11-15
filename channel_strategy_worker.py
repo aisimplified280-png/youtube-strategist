@@ -346,6 +346,63 @@ def _prepare_gemini_metadata_proposals(youtube, candidates: list[dict]) -> list[
         })
     return rows
 
+def _inject_targeted_video_evidence(snapshot: dict, youtube, channel_id: str, video_id: str) -> dict:
+    """Add one owner-channel video to Gemini's evidence without fabricating performance metrics."""
+    video_id = str(video_id or "").strip()
+    if not video_id:
+        return snapshot
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        raise ValueError("target_video_id must be an 11-character YouTube video ID.")
+
+    response = youtube.videos().list(
+        part="snippet,contentDetails,statistics",
+        id=video_id,
+    ).execute()
+    items = response.get("items") or []
+    video = next((item for item in items if str(item.get("id") or "") == video_id), None)
+    if not video:
+        raise RuntimeError(f"Target video {video_id} was not returned by YouTube.")
+    snippet = video.get("snippet") or {}
+    if str(snippet.get("channelId") or "") != str(channel_id):
+        raise RuntimeError("Target video does not belong to the configured owner channel.")
+    title = str(snippet.get("title") or "").strip()
+    if not title:
+        raise RuntimeError("YouTube returned the target video without a title.")
+
+    metadata = {
+        "title": title,
+        "description": str(snippet.get("description") or ""),
+        "tags": [str(tag).strip() for tag in (snippet.get("tags") or []) if str(tag).strip()],
+        "category_id": str(snippet.get("categoryId") or ""),
+    }
+    existing = next(
+        (item for item in (snapshot.get("opportunities") or []) + (snapshot.get("unscored_short_duration_uploads") or [])
+         if str(item.get("video_id") or "") == video_id),
+        None,
+    )
+    if existing is None:
+        existing = next(
+            (item for item in (snapshot.get("video_rows") or [])
+             if str(item.get("video_id") or "") == video_id),
+            None,
+        )
+    evidence = dict(existing or {})
+    evidence.update({
+        "video_id": video_id,
+        "title": title,
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "current_metadata": metadata,
+        "targeted_test": True,
+        "targeted_test_note": "Owner-selected test target. Use metadata-quality evidence only; do not infer performance defects from missing metrics.",
+    })
+    opportunities = list(snapshot.get("opportunities") or [])
+    opportunities = [item for item in opportunities if str(item.get("video_id") or "") != video_id]
+    opportunities.append(evidence)
+    snapshot["opportunities"] = opportunities
+    snapshot["targeted_video_id"] = video_id
+    return snapshot
+
+
 def _daily_auto_count(store, owner_key: str) -> int:
     # Match the configured owner timezone rather than UTC midnight.
     local_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
@@ -687,7 +744,7 @@ def _process_candidate(
         return "failed", daily_count, cadence_count
 
 
-def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", cadence: str = "daily") -> dict:
+def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", cadence: str = "daily", target_video_id: str = "") -> dict:
     """Execute one end-to-end cadence-aware analytics, strategy, proposal, and guarded-publish cycle."""
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not gemini_key:
@@ -792,6 +849,11 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
             catalogue_limit=catalogue_limit,
             cadence=cadence,
         )
+        target_video_id = str(target_video_id or os.getenv("STRATEGY_TARGET_VIDEO_ID", "")).strip()
+        if target_video_id:
+            snapshot = _inject_targeted_video_evidence(
+                snapshot, youtube, OWNER_CHANNEL_ID, target_video_id
+            )
         model = os.getenv("GEMINI_MODEL", DEFAULT_STRATEGY_MODEL).strip()
         fallback_models = [
             value.strip() for value in os.getenv(
@@ -844,7 +906,6 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
                     "status": "failed",
                     "errors": ["No generated proposal row was returned."],
                 }
-                counters["proposals"] += 1
                 metadata_model = f"gemini:{model_used}" if model_used else "gemini"
                 result, daily_count, cadence_count = _process_candidate(
                     store, youtube, owner_key, run_id, candidate, row, settings,
@@ -855,6 +916,8 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
                 )
                 if result in counters:
                     counters[result] += 1
+                if result in {"pending_review", "shadow_published", "auto_published"}:
+                    counters["proposals"] += 1
 
         status = "partial" if analysis_error or counters["failed"] or counters["verification_unavailable"] else "completed"
         stored_snapshot = _compact_snapshot(snapshot)
@@ -898,6 +961,11 @@ def main():
         default=os.getenv("STRATEGY_TRIGGER_SOURCE", "schedule"),
         help="Trigger source provenance (schedule, manual, workflow_dispatch)",
     )
+    parser.add_argument(
+        "--video-id",
+        default=os.getenv("STRATEGY_TARGET_VIDEO_ID", ""),
+        help="Optional owner-channel video ID for a focused, review-only strategy test.",
+    )
     args = parser.parse_args()
 
     store = SupabasePersistentStore.worker_client(
@@ -905,7 +973,7 @@ def main():
         os.environ["SUPABASE_SERVICE_ROLE_KEY"],
     )
     cipher = _cipher(os.environ["YOUTUBE_STRATEGIST_STATE_SECRET"])
-    result = run_strategy_agent(store, cipher, trigger_source=args.trigger_source, cadence=args.cadence)
+    result = run_strategy_agent(store, cipher, trigger_source=args.trigger_source, cadence=args.cadence, target_video_id=args.video_id)
     print(json.dumps(result, ensure_ascii=False))
 
 
