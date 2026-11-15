@@ -110,6 +110,23 @@ def _infer_review_only_fields(candidate: dict, source: dict) -> list[str]:
     return fields
 
 
+def _metadata_evidence_is_verbatim(factual_evidence: str, source_metadata: dict) -> bool:
+    """Require one exact contiguous quote from a single source metadata field."""
+    if not isinstance(factual_evidence, str) or not factual_evidence.strip():
+        return False
+    if not isinstance(source_metadata, dict):
+        return False
+    source_fields = [
+        source_metadata.get("title") or "",
+        source_metadata.get("description") or "",
+        *(source_metadata.get("tags") or []),
+    ]
+    return any(
+        isinstance(value, str) and factual_evidence in value
+        for value in source_fields
+    )
+
+
 def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) -> list[dict]:
     """Accept measured packaging candidates or tightly constrained review-only metadata audits."""
     limit = max(0, min(int(limit), 10))
@@ -160,13 +177,10 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
             if inferred:
                 fields = inferred
                 repaired_fields = True
-        source_text_parts = [
-            str(source.get("title") or ""),
-            str(source.get("description") or ""),
-            *[str(tag) for tag in (source.get("tags") or [])],
-        ]
-        source_text = "\n".join(source_text_parts)
         factual_evidence = str(item.get("factual_evidence") or "").strip()
+        factual_evidence_is_verbatim = _metadata_evidence_is_verbatim(
+            factual_evidence, source
+        )
         valid_fields = (
             isinstance(fields, list)
             and bool(fields)
@@ -178,8 +192,7 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
             and confidence is not None
             and 0.65 <= confidence <= 0.84
             and valid_fields
-            and bool(factual_evidence)
-            and factual_evidence in source_text
+            and factual_evidence_is_verbatim
             and bool(source.get("title"))
         )
         if item.get("diagnosis") == "metadata_quality":
