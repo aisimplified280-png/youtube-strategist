@@ -75,7 +75,7 @@ def _compact_snapshot(snapshot: dict) -> dict:
 
 
 def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) -> list[dict]:
-    """Preserve every Gemini candidate field and only accept evidence-backed packaging opportunities."""
+    """Accept measured packaging candidates or tightly constrained review-only metadata audits."""
     limit = max(0, min(int(limit), 10))
     if limit == 0:
         return []
@@ -93,25 +93,70 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
             for reason in reasons
         )
         impressions = evidence.get("impressions")
-        if not has_ctr_evidence or not isinstance(impressions, (int, float)) or impressions < 50:
+        ctr_eligible = (
+            has_ctr_evidence
+            and isinstance(impressions, (int, float))
+            and not isinstance(impressions, bool)
+            and impressions >= 50
+        )
+
+        # Metadata-quality candidates are never autonomous. They must be grounded
+        # in an exact quote from the source metadata and request explicit review.
+        confidence = item.get("confidence")
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = None
+        fields = item.get("fields_to_modify")
+        source = evidence.get("current_metadata") or {}
+        source_text_parts = [
+            str(source.get("title") or ""),
+            str(source.get("description") or ""),
+            *[str(tag) for tag in (source.get("tags") or [])],
+        ]
+        source_text = "\n".join(source_text_parts)
+        factual_evidence = str(item.get("factual_evidence") or "").strip()
+        valid_fields = (
+            isinstance(fields, list)
+            and bool(fields)
+            and set(fields).issubset({"title", "description", "tags"})
+        )
+        metadata_review_eligible = (
+            item.get("diagnosis") == "metadata_quality"
+            and item.get("decision") == "review"
+            and confidence is not None
+            and 0.65 <= confidence <= 0.84
+            and valid_fields
+            and bool(factual_evidence)
+            and factual_evidence in source_text
+            and bool(source.get("title"))
+        )
+        if not ctr_eligible and not metadata_review_eligible:
             continue
-        # Preserve EVERY field from Gemini's structured candidate without discarding
+
         merged = {
             **evidence,
             **item,
             "evidence_reasons": reasons,
             "reasons": reasons,
             "title": evidence.get("title") or item.get("video_title") or "",
-            # The snapshot, not model output, is authoritative for the source metadata Gemini saw.
-            "current_metadata": evidence.get("current_metadata") or {},
+            "current_metadata": source,
         }
+        if metadata_review_eligible:
+            merged["decision"] = "review"
+            merged["confidence"] = confidence
+            merged["metadata_audit_only"] = True
+            merged["rationale"] = (
+                str(item.get("rationale") or "")
+                + " Metadata-quality audit: explicitly held for owner review; "
+                "no performance causation or autonomous publishing is permitted."
+            ).strip()
         selected.append(merged)
         if len(selected) >= limit:
             break
 
-    # If Gemini omitted a candidate despite an objective packaging bottleneck,
-    # keep the deterministic evidence-ranked shortlist for manual review ONLY.
-    # Fail-closed: decision must be 'review', confidence must be None, never auto_publish.
+    # Deterministic fallback is reserved for directly measured CTR packaging issues.
+    # It can only create a review item and never auto-publish.
     if not selected:
         for evidence in opportunities:
             reasons = evidence.get("reasons") or []
@@ -119,7 +164,10 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
             if (
                 any(isinstance(reason, str) and reason.startswith("Thumbnail CTR is ") for reason in reasons)
                 and isinstance(impressions, (int, float))
+                and not isinstance(impressions, bool)
                 and impressions >= 50
+                and isinstance(evidence.get("current_metadata"), dict)
+                and evidence["current_metadata"].get("title")
             ):
                 selected.append({
                     **evidence,
@@ -132,12 +180,11 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
                     "proposed_tags": [],
                     "proposed_hashtags": [],
                     "factual_evidence": "",
-                    "rationale": "Deterministic fallback: packaging bottleneck identified but Gemini proposal was absent. Fail-closed: held for review.",
+                    "rationale": "Deterministic fallback: measured packaging bottleneck identified but Gemini proposal was absent. Held for owner review.",
                 })
             if len(selected) >= limit:
                 break
     return selected
-
 
 def _prepare_gemini_metadata_proposals(youtube, candidates: list[dict]) -> list[dict]:
     """Validate Gemini's proposal against the exact source metadata included in its prompt."""
