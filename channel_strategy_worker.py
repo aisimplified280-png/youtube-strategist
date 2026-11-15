@@ -80,7 +80,12 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
     if limit == 0:
         return []
     opportunities = snapshot.get("opportunities") or []
-    by_id = {str(item.get("video_id")): item for item in opportunities if item.get("video_id")}
+    unscored = snapshot.get("unscored_short_duration_uploads") or []
+    evidence_pool = [*opportunities, *unscored]
+    by_id = {
+        str(item.get("video_id")): item
+        for item in evidence_pool if item.get("video_id")
+    }
     selected = []
     for item in strategy_report.get("metadata_candidates") or []:
         video_id = str(item.get("video_id") or "")
