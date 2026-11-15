@@ -175,10 +175,10 @@ def _growth(current, previous):
 
 
 def _benchmarkable_video_rows(video_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Only uploads over 180 seconds are confirmed standard videos for peer benchmarking.
+    """Only Analytics-confirmed VIDEO_ON_DEMAND uploads over 180s form the standard cohort.
 
-    Shorter uploads may be vertical Shorts or horizontal videos; YouTube Data API
-    does not expose orientation, so they must not be blended into a peer cohort.
+    Shorts and other creator content types are benchmarked separately by their
+    explicit creatorContentType; missing or mixed classifications are excluded.
     """
     return [
         row for row in video_rows
