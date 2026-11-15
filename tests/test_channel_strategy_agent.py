@@ -1,8 +1,10 @@
 """Safety tests for the scheduled channel strategist."""
 
 import unittest
+from datetime import date, datetime, timezone
 
-from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows
+from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows, _aggregate_video_analytics_rows, _youtube_analytics_today
+from youtube_analytics_connector import rank_channel_video_opportunities
 
 
 class ChannelStrategyClassificationTests(unittest.TestCase):
@@ -77,21 +79,63 @@ class ChannelStrategyClassificationTests(unittest.TestCase):
 
     def test_only_confirmed_standard_videos_enter_peer_benchmarks(self):
         rows = [
-            {"video_id": "long0000001", "duration_seconds": 240, "format_group": "Standard videos"},
-            {"video_id": "short000001", "duration_seconds": 45, "format_group": "Under-3-minute uploads (format unconfirmed)"},
-            {"video_id": "unknown00001", "duration_seconds": 160, "format_group": "Under-3-minute uploads (format unconfirmed)"},
+            {"video_id": "long0000001", "duration_seconds": 240, "creator_content_type": "VIDEO_ON_DEMAND", "format_group": "Standard videos"},
+            {"video_id": "short000001", "duration_seconds": 45, "creator_content_type": "SHORTS", "format_group": "Shorts"},
+            {"video_id": "unknown00001", "duration_seconds": 160, "creator_content_type": "UNSPECIFIED", "format_group": "Format unconfirmed"},
         ]
         benchmarkable = _benchmarkable_video_rows(rows)
         self.assertEqual([row["video_id"] for row in benchmarkable], ["long0000001"])
+    def test_analytics_reporting_date_uses_pacific_time_not_runner_utc(self):
+        # 04:55 UTC on Nov 15 is still Nov 14 in Pacific Time.
+        now = datetime(2026, 11, 15, 4, 55, tzinfo=timezone.utc)
+        self.assertEqual(_youtube_analytics_today(now), date(2026, 11, 14))
+
     def test_complete_reach_data_is_available_to_ranking(self):
         status = "Loaded daily reach reports for all 28 selected days. CTR is impression-weighted across those reports."
         self.assertEqual(_complete_reach_value(status, 1250), 1250)
         self.assertEqual(_complete_reach_value(status, 0.037), 0.037)
 
-    def test_partial_reach_data_is_never_used_for_ctr_ranking(self):
+    def test_partial_reach_data_with_at_least_90_percent_coverage_is_usable(self):
+        status = "Partial reach coverage: reports are available for 26 of 28 selected days."
+        self.assertEqual(_complete_reach_value(status, 1250), 1250)
+        self.assertEqual(_complete_reach_value(status, 0.037), 0.037)
+
+    def test_partial_reach_data_below_90_percent_coverage_is_not_used(self):
         status = "Partial reach coverage: reports are available for 22 of 28 selected days."
         self.assertIsNone(_complete_reach_value(status, 1250))
         self.assertIsNone(_complete_reach_value(status, 0.037))
+
+    def test_creator_content_type_metrics_are_aggregated_without_losing_format(self):
+        rows = [
+            {"creatorContentType": "SHORTS", "views": 60, "estimatedMinutesWatched": 30, "averageViewDuration": 30, "averageViewPercentage": 50, "likes": 4},
+            {"creatorContentType": "SHORTS", "views": 40, "estimatedMinutesWatched": 20, "averageViewDuration": 30, "averageViewPercentage": 75, "likes": 2},
+        ]
+        metrics, content_type = _aggregate_video_analytics_rows(rows)
+        self.assertEqual(content_type, "SHORTS")
+        self.assertEqual(metrics["views"], 100)
+        self.assertEqual(metrics["likes"], 6)
+        self.assertAlmostEqual(metrics["averageViewPercentage"], 60.0)
+
+    def test_mixed_creator_content_types_remain_unconfirmed(self):
+        rows = [
+            {"creatorContentType": "SHORTS", "views": 60},
+            {"creatorContentType": "VIDEO_ON_DEMAND", "views": 40},
+        ]
+        metrics, content_type = _aggregate_video_analytics_rows(rows)
+        self.assertEqual(content_type, "MIXED")
+        self.assertEqual(metrics["views"], 100)
+
+    def test_under_three_minute_uploads_can_be_ranked_in_their_own_duration_group(self):
+        period = "2026-10-16..2026-11-12"
+        rows = [
+            {"video_id": "short000001", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 1.2, "impressions": 250, "views": 300, "average_view_percentage": 40},
+            {"video_id": "short000002", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 5.0, "impressions": 250, "views": 300, "average_view_percentage": 60},
+            {"video_id": "short000003", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 5.5, "impressions": 250, "views": 300, "average_view_percentage": 55},
+            {"video_id": "short000004", "format_group": "Under-3-minute uploads (format unconfirmed)", "ctr_period": period, "ctr_percent": 4.8, "impressions": 250, "views": 300, "average_view_percentage": 58},
+        ]
+        ranked = rank_channel_video_opportunities(rows, limit=10)
+        self.assertEqual([item["video_id"] for item in ranked], ["short000001"])
+        self.assertTrue(ranked[0]["reasons"][0].startswith("Thumbnail CTR is "))
 
     def test_missing_reach_metric_stays_unavailable_even_with_complete_coverage(self):
         status = "Loaded daily reach reports for all 28 selected days."
