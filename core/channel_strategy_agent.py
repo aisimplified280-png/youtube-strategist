@@ -393,7 +393,15 @@ def collect_channel_snapshot(
     # Rank every upload inside its own duration group. Under-3-minute uploads remain
     # format-unconfirmed (not assumed to be Shorts), but can still be compared with
     # other under-3-minute uploads and can surface direct, measured CTR weaknesses.
-    ranked = connector.rank_channel_video_opportunities(video_rows, limit=15)
+    # Only Analytics-confirmed creator content types enter performance cohorts.
+    # Unspecified/mixed uploads remain visible for metadata-quality review, but are
+    # never compared against one another or used for CTR packaging decisions.
+    rankable_rows = [
+        row for row in video_rows
+        if str(row.get("creator_content_type") or "UNSPECIFIED").upper()
+        not in {"UNSPECIFIED", "MIXED"}
+    ]
+    ranked = connector.rank_channel_video_opportunities(rankable_rows, limit=15)
     ranked_by_id = {str(item.get("video_id")): item for item in ranked}
     for row in video_rows:
         duration = row.get("duration_seconds")
@@ -698,7 +706,8 @@ metadata_candidates (array of objects:
 ).
 
 Limit patterns to 8, growth_actions to 8, content_ideas to 5, metadata_candidates to 5.
-Use exact video_id values from the supplied opportunities only.
+Use exact video_id values from the supplied opportunities or unscored_short_duration_uploads only.
+Do not make performance comparisons for UNSPECIFIED or MIXED creator content types. You may still propose a review-only metadata-quality audit if the exact metadata itself has a clear defect.
 
 Evidence:
 {json.dumps({
