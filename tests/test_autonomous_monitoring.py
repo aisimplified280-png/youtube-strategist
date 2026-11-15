@@ -179,6 +179,8 @@ class TestCadenceAndDiagnosis(TestCase):
         # Analytics identifies the under-180s upload as a Short directly.
         self.assertEqual(short_video["creator_content_type"], "SHORTS")
         self.assertEqual(short_video["format_group"], "Shorts")
+        # A Short is not compared against the standard-video CTR benchmark.
+        self.assertEqual(short_video["diagnosis"], "performing")
 
 
 class TestAutonomousPolicy(TestCase):
