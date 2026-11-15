@@ -131,7 +131,10 @@ def _metadata_candidates(snapshot: dict, strategy_report: dict, limit: int = 3) 
             and factual_evidence in source_text
             and bool(source.get("title"))
         )
-        if not ctr_eligible and not metadata_review_eligible:
+        if item.get("diagnosis") == "metadata_quality":
+            if not metadata_review_eligible:
+                continue
+        elif not ctr_eligible:
             continue
 
         merged = {
