@@ -721,6 +721,8 @@ Evidence:
     "period_deltas_percent": snapshot.get("period_deltas_percent"),
     "traffic_sources_status": snapshot.get("traffic_sources_status"),
     "traffic_sources": snapshot.get("traffic_sources"),
+    "reach_status": snapshot.get("reach_status"),
+    "video_analytics_statuses": snapshot.get("video_analytics_statuses"),
     "daily_trend_status": snapshot.get("daily_trend_status"),
     "daily_trend_90_days": daily_trend,
     "top_videos_by_views": top_views,
