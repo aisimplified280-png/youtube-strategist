@@ -81,7 +81,7 @@ class TargetedVideoEvidenceTests(unittest.TestCase):
     def test_rejects_invalid_video_id_before_youtube_lookup(self):
         with self.assertRaisesRegex(ValueError, "11-character"):
             _inject_targeted_video_evidence(
-                {"opportunities": []}, self.youtube, self.channel_id, "not-a-video"
+                {"opportunities": []}, self.youtube, self.channel_id, "short-id"
             )
         self.youtube.videos.return_value.list.assert_not_called()
 
