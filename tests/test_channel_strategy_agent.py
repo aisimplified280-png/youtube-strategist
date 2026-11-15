@@ -1,8 +1,9 @@
 """Safety tests for the scheduled channel strategist."""
 
 import unittest
+from datetime import datetime, timezone
 
-from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows, _aggregate_video_analytics_rows
+from core.channel_strategy_agent import classify_metadata_change, _complete_reach_value, _benchmarkable_video_rows, _aggregate_video_analytics_rows, _youtube_analytics_today
 from youtube_analytics_connector import rank_channel_video_opportunities
 
 
@@ -84,6 +85,11 @@ class ChannelStrategyClassificationTests(unittest.TestCase):
         ]
         benchmarkable = _benchmarkable_video_rows(rows)
         self.assertEqual([row["video_id"] for row in benchmarkable], ["long0000001"])
+    def test_analytics_reporting_date_uses_pacific_time_not_runner_utc(self):
+        # 04:55 UTC on Nov 15 is still Nov 14 in Pacific Time.
+        now = datetime(2026, 11, 15, 4, 55, tzinfo=timezone.utc)
+        self.assertEqual(_youtube_analytics_today(now), date(2026, 11, 14))
+
     def test_complete_reach_data_is_available_to_ranking(self):
         status = "Loaded daily reach reports for all 28 selected days. CTR is impression-weighted across those reports."
         self.assertEqual(_complete_reach_value(status, 1250), 1250)
