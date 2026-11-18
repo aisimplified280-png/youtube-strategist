@@ -60,7 +60,9 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIn('elif active_workspace == "Channel Strategist":', app_code)
         self.assertIn("st.selectbox(", app_code, "Conversation history should use one compact recent-chat selector.")
         self.assertIn("_copilot_history_selector_{selected_id}", app_code)
-        self.assertIn("list_conversations(limit=30)", app_code, "Recent chat history should be bounded for fast rendering.")
+        self.assertIn("list_conversations(limit=15)", app_code, "Only the first recent-chat page should load.")
+        self.assertIn('st.button(\n                        "Load more chats"', app_code)
+        self.assertIn("load_messages(selected_id, limit=50)", app_code, "Only the newest message page should load.")
 
     def test_gemini_defaults_match_owner_api_key_benchmark(self):
         from strategist_chat import (
