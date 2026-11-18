@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from core.persistent_store import SupabasePersistentStore
+from core.persistent_store import PersistentStoreError, SupabasePersistentStore
 
 
 class PersistentStoreBatchQueryTests(unittest.TestCase):
@@ -182,7 +182,7 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
             "core.persistent_store.requests.request",
             return_value=self._response([active]),
         ) as request:
-            with self.assertRaisesRegex(Exception, "Verify it in YouTube Studio"):
+            with self.assertRaisesRegex(PersistentStoreError, "Verify it in YouTube Studio"):
                 self.store.create_comment_reply_draft({
                     "parent_comment_id": "comment-1",
                     "draft_text": "A second reply.",
