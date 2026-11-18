@@ -24,8 +24,10 @@ STATUS_FIELDS = {
     "selfDeclaredMadeForKids", "containsSyntheticMedia", "publishAt",
 }
 RECORDING_DETAILS_FIELDS = {"recordingDate"}
+BRAND_PARTNER_FIELDS = {"channelId"}
+PAID_PLACEMENT_FIELDS = {"hasPaidProductPlacement"}
 LOCALIZATION_FIELDS = {"title", "description"}
-SUPPORTED_PARTS = ("snippet", "status", "recordingDetails", "localizations")
+SUPPORTED_PARTS = ("snippet", "status", "recordingDetails", "localizations", "brandPartner", "paidProductPlacementDetails")
 LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 
 
@@ -42,6 +44,8 @@ def normalize_video_resource(resource: dict) -> dict:
         ("snippet", SNIPPET_FIELDS),
         ("status", STATUS_FIELDS),
         ("recordingDetails", RECORDING_DETAILS_FIELDS),
+        ("brandPartner", BRAND_PARTNER_FIELDS),
+        ("paidProductPlacementDetails", PAID_PLACEMENT_FIELDS),
     ):
         value = resource.get(part)
         if isinstance(value, dict):
@@ -53,6 +57,13 @@ def normalize_video_resource(resource: dict) -> dict:
             for language, value in localizations.items()
             if isinstance(value, dict)
         }
+    for part, fields in (
+        ("brandPartner", BRAND_PARTNER_FIELDS),
+        ("paidProductPlacementDetails", PAID_PLACEMENT_FIELDS),
+    ):
+        value = resource.get(part)
+        if isinstance(value, dict):
+            snapshot[part] = _pick(value, fields)
     return snapshot
 
 
@@ -61,7 +72,7 @@ def fetch_video_resource(youtube, video_id: str) -> dict:
     if youtube is None:
         raise RuntimeError("YouTube API client is not connected.")
     response = youtube.videos().list(
-        part="snippet,status,recordingDetails,localizations",
+        part="snippet,status,recordingDetails,localizations,brandPartner,paidProductPlacementDetails",
         id=video_id,
     ).execute()
     items = response.get("items") or []
@@ -131,6 +142,20 @@ def _validate_resource(snapshot: dict) -> None:
                 raise connector.MetadataValidationError("publishAt must be an ISO-8601 timestamp.") from error
             if status.get("privacyStatus") != "private":
                 raise connector.MetadataValidationError("A scheduled publish time requires private privacyStatus.")
+    brand_partner = snapshot.get("brandPartner")
+    if brand_partner is not None:
+        if not isinstance(brand_partner, dict) or set(brand_partner) - BRAND_PARTNER_FIELDS:
+            raise connector.MetadataValidationError("Only brandPartner.channelId is supported.")
+        if brand_partner.get("channelId") and not str(brand_partner["channelId"]).startswith("UC"):
+            raise connector.MetadataValidationError("brandPartner.channelId must be a YouTube channel ID.")
+
+    paid_placement = snapshot.get("paidProductPlacementDetails")
+    if paid_placement is not None:
+        if not isinstance(paid_placement, dict) or set(paid_placement) - PAID_PLACEMENT_FIELDS:
+            raise connector.MetadataValidationError("Only paidProductPlacementDetails.hasPaidProductPlacement is supported.")
+        if "hasPaidProductPlacement" in paid_placement and not isinstance(paid_placement["hasPaidProductPlacement"], bool):
+            raise connector.MetadataValidationError("hasPaidProductPlacement must be a boolean.")
+
     recording = snapshot.get("recordingDetails")
     if recording is not None:
         if not isinstance(recording, dict) or set(recording) - RECORDING_DETAILS_FIELDS:
@@ -178,12 +203,49 @@ def _write_part(part: str, before: dict, proposed: dict) -> dict:
         "status": STATUS_FIELDS,
         "recordingDetails": RECORDING_DETAILS_FIELDS,
         "localizations": set(),
+        "brandPartner": BRAND_PARTNER_FIELDS,
+        "paidProductPlacementDetails": PAID_PLACEMENT_FIELDS,
     }[part]
     if part == "localizations":
         return copy.deepcopy(value)
     # The proposal is a complete writable snapshot for this part. Omitted keys
     # are intentionally omitted, allowing supported optional values to be cleared.
     return _pick(value, allowed)
+
+
+def _reject_unsupported_proposed_fields(resource: dict) -> None:
+    if not isinstance(resource, dict):
+        raise connector.MetadataValidationError("Metadata proposal must be an object.")
+    allowed_parts = set(SUPPORTED_PARTS)
+    unexpected_parts = set(resource) - allowed_parts
+    if unexpected_parts:
+        raise connector.MetadataValidationError(
+            "Unsupported metadata parts: " + ", ".join(sorted(unexpected_parts))
+        )
+    field_sets = {
+        "snippet": SNIPPET_FIELDS,
+        "status": STATUS_FIELDS,
+        "recordingDetails": RECORDING_DETAILS_FIELDS,
+        "brandPartner": BRAND_PARTNER_FIELDS,
+        "paidProductPlacementDetails": PAID_PLACEMENT_FIELDS,
+    }
+    for part, allowed in field_sets.items():
+        value = resource.get(part)
+        if value is not None and isinstance(value, dict):
+            unexpected = set(value) - allowed
+            if unexpected:
+                raise connector.MetadataValidationError(
+                    f"Unsupported {part} fields: " + ", ".join(sorted(unexpected))
+                )
+    localizations = resource.get("localizations")
+    if localizations is not None:
+        if not isinstance(localizations, dict):
+            raise connector.MetadataValidationError("localizations must be an object.")
+        for language, values in localizations.items():
+            if not isinstance(values, dict) or set(values) - LOCALIZATION_FIELDS:
+                raise connector.MetadataValidationError(
+                    f"Unsupported localization fields for {language}."
+                )
 
 
 def apply_approved_resource_proposal(
@@ -198,6 +260,7 @@ def apply_approved_resource_proposal(
     """Apply an exact approved multi-part proposal with live stale-check and read-back."""
     if youtube is None:
         raise RuntimeError("YouTube API client is not connected.")
+    _reject_unsupported_proposed_fields(proposed_resource)
     before = normalize_video_resource(before_resource)
     proposed = normalize_video_resource(proposed_resource)
     expected_digest = connector.metadata_proposal_digest(video_id, before, proposed)
