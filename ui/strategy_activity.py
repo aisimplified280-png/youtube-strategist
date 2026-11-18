@@ -437,48 +437,73 @@ def render_strategy_activity(store, youtube=None):
             "Review the exact original and proposed metadata. Bulk publishing requires a separate "
             "confirmation that you have reviewed every proposal. Each update is still checked against live YouTube metadata."
         )
-        if pending:
+        total_pending = len(pending) + len(metadata_pending)
+        if total_pending:
+            queue_ids = (
+                [f"strategy:{item.get('id')}" for item in pending]
+                + [f"editor:{item.get('id')}" for item in metadata_pending]
+            )
             bulk_queue_fingerprint = hashlib.sha256(
-                "|".join(sorted(str(item.get("id") or "") for item in pending)).encode("utf-8")
+                "|".join(sorted(queue_ids)).encode("utf-8")
             ).hexdigest()[:12]
             bulk_confirmed = st.checkbox(
-                f"I reviewed all {len(pending)} proposals and approve publishing every item in this queue.",
+                f"I reviewed all {total_pending} proposals and approve publishing every item in this queue.",
                 key=f"strategy_bulk_publish_confirm_{bulk_queue_fingerprint}",
             )
             if st.button(
-                f"Publish all {len(pending)} pending proposals",
+                f"Publish all {total_pending} pending proposals",
                 key="strategy_publish_all",
                 type="primary",
                 disabled=not bulk_confirmed or youtube is None,
                 use_container_width=True,
             ):
-                # Re-read the queue immediately before bulk execution so a stale UI
-                # snapshot cannot publish an item already handled in another session.
+                # Re-read both queues immediately before publishing so a stale UI
+                # snapshot cannot publish a proposal already handled elsewhere.
                 try:
                     fresh_pending = store.list_strategy_actions(status="pending_review", limit=100)
-                    fresh_by_id = {str(item.get("id")): item for item in fresh_pending}
-                    eligible = [
-                        fresh_by_id[str(item.get("id"))]
+                    fresh_metadata = store.list_metadata_editor_audits(
+                        status="pending_review", limit=100, include_metadata=True
+                    )
+                    fresh_strategy_by_id = {str(item.get("id")): item for item in fresh_pending}
+                    fresh_metadata_by_id = {str(item.get("id")): item for item in fresh_metadata}
+                    eligible_strategy = [
+                        fresh_strategy_by_id[str(item.get("id"))]
                         for item in pending
-                        if str(item.get("id")) in fresh_by_id
+                        if str(item.get("id")) in fresh_strategy_by_id
                     ]
-                    if not eligible:
+                    eligible_metadata = [
+                        fresh_metadata_by_id[str(item.get("id"))]
+                        for item in metadata_pending
+                        if str(item.get("id")) in fresh_metadata_by_id
+                    ]
+                    eligible_count = len(eligible_strategy) + len(eligible_metadata)
+                    if not eligible_count:
                         st.info("No proposals remain pending. The queue has been refreshed.")
                     else:
-                        progress = st.progress(0, text="Publishing approved proposals…")
+                        progress = st.progress(0, text="Publishing approved metadata proposals…")
                         successes = 0
                         failures = []
-                        for position, item in enumerate(eligible, 1):
+                        position = 0
+                        for item in eligible_strategy:
+                            position += 1
                             ok, message = _publish_review_action(store, youtube, item)
                             if ok:
                                 successes += 1
                             else:
                                 failures.append(f"{item.get('video_title') or item.get('video_id')}: {message}")
-                            progress.progress(position / len(eligible), text=f"Processed {position} of {len(eligible)}")
+                            progress.progress(position / eligible_count, text=f"Processed {position} of {eligible_count}")
+                        for item in eligible_metadata:
+                            position += 1
+                            ok, message = _publish_metadata_editor_audit(store, youtube, item)
+                            if ok:
+                                successes += 1
+                            else:
+                                failures.append(f"{item.get('video_title') or item.get('video_id')}: {message}")
+                            progress.progress(position / eligible_count, text=f"Processed {position} of {eligible_count}")
                         _invalidate_activity_cache(store)
-                        st.success(f"Published and verified {successes} of {len(eligible)} proposals.")
+                        st.success(f"Published and verified {successes} of {eligible_count} proposals.")
                         if failures:
-                            st.warning("Some proposals were not published:\n" + "\n".join(failures))
+                            st.warning("Some proposals were not published:\\n" + "\\n".join(failures))
                         st.rerun()
                 except Exception as error:
                     _invalidate_activity_cache(store)
