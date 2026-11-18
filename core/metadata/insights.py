@@ -77,7 +77,7 @@ def metadata_standard_checks(resource: dict) -> list[dict]:
         "detail": (
             f"Tags use {tag_chars} characters including spaces/commas; YouTube allows up to 500."
             if tag_chars > 500
-            else "Duplicate tags: " + ", ".join(duplicate_tags)
+            else "Duplicate tags: " + ", ".join(duplicate_tags) + ". YouTube says tags have a minimal role in discovery and mainly help with common misspellings."
             if duplicate_tags
             else f"Tags use {tag_chars}/500 characters. YouTube says tags play a minimal role except for common misspellings."
         ),
