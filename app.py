@@ -263,25 +263,40 @@ def render_app():
                         item["id"]: item for item in conversations if item.get("id")
                     }
                     conversation_ids = list(conversation_by_id)
+                    draft_option = "__current_draft__"
+                    active_is_saved = selected_id in conversation_by_id
+                    selector_options = (
+                        conversation_ids
+                        if active_is_saved
+                        else [draft_option, *conversation_ids]
+                    )
                     selected_from_sidebar = st.selectbox(
                         "Open conversation",
-                        options=conversation_ids,
+                        options=selector_options,
                         index=(
                             conversation_ids.index(selected_id)
-                            if selected_id in conversation_ids else 0
+                            if active_is_saved else 0
                         ),
                         format_func=lambda conversation_id: (
-                            str(conversation_by_id[conversation_id].get("title") or "Untitled chat")[:48]
-                            + "  ·  "
-                            + str(
-                                conversation_by_id[conversation_id].get("last_message_at")
-                                or conversation_by_id[conversation_id].get("updated_at") or ""
-                            )[:10]
+                            "Current new chat"
+                            if conversation_id == draft_option
+                            else (
+                                str(conversation_by_id[conversation_id].get("title") or "Untitled chat")[:48]
+                                + "  ·  "
+                                + str(
+                                    conversation_by_id[conversation_id].get("last_message_at")
+                                    or conversation_by_id[conversation_id].get("updated_at") or ""
+                                )[:10]
+                            )
                         ),
                         label_visibility="collapsed",
                         key=f"_copilot_history_selector_{selected_id}",
                     )
-                    if selected_from_sidebar and selected_from_sidebar != selected_id:
+                    if (
+                        selected_from_sidebar != draft_option
+                        and selected_from_sidebar
+                        and selected_from_sidebar != selected_id
+                    ):
                         st.session_state["_copilot_conversation_id"] = selected_from_sidebar
                         st.session_state["_copilot_history_loaded"] = False
                         st.session_state["strategist_chat_history"] = []
