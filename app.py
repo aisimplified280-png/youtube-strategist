@@ -258,7 +258,7 @@ def render_app():
                             + str(conversation_by_id[conversation_id].get("updated_at") or "")[:10]
                         ),
                         label_visibility="collapsed",
-                        key="_copilot_history_selector",
+                        key=f"_copilot_history_selector_{selected_id}",
                     )
                     if selected_from_sidebar and selected_from_sidebar != selected_id:
                         st.session_state["_copilot_conversation_id"] = selected_from_sidebar
@@ -360,7 +360,6 @@ def render_app():
                     st.session_state["_copilot_conversation_id"] = created["id"]
                     st.session_state["_copilot_history_loaded"] = True
                     st.session_state["strategist_chat_history"] = []
-                    st.session_state["_copilot_history_selector"] = created["id"]
                     st.session_state.pop("_copilot_conversations_cache", None)
                 except Exception as error:
                     st.warning(f"Could not create a saved conversation: {error}")
