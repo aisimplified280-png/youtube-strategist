@@ -617,6 +617,13 @@ def _render_metadata_automation_controls(store):
             step=0.01,
             key="metadata_automation_confidence",
         )
+        autonomous_confirmed = True
+        if mode == "autonomous":
+            autonomous_confirmed = st.checkbox(
+                "I explicitly authorize automatic publishing of eligible text-only metadata changes.",
+                value=False,
+                key="metadata_automation_autonomous_confirm",
+            )
         paused = st.checkbox(
             "Emergency pause all workspace automation",
             value=bool(settings.get("emergency_pause", False)),
@@ -628,7 +635,11 @@ def _render_metadata_automation_controls(store):
             "a seven-day per-video cooldown and the daily cap. Visibility, audience, synthetic-media, license, localization "
             "and scheduling fields always remain manual-review only."
         )
-        if st.button("Save metadata automation settings", key="metadata_automation_save"):
+        if st.button(
+            "Save metadata automation settings",
+            key="metadata_automation_save",
+            disabled=mode == "autonomous" and not autonomous_confirmed,
+        ):
             saved = store.set_workspace_automation_settings({
                 "metadata_mode": mode,
                 "metadata_daily_cap": cap,
