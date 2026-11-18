@@ -378,9 +378,17 @@ def render_app():
                 if yt_err:
                     st.caption(yt_err)
 
-    # Keep the conversational copilot and scheduled channel strategist as separate workspaces.
-    copilot_tab, strategist_tab = st.tabs(["Metadata Copilot", "Channel Strategist"])
-    with copilot_tab:
+    # Render only the active workspace. st.tabs executes every tab body on each
+    # rerun, which previously made chat interactions redraw the full strategist UI.
+    active_workspace = st.segmented_control(
+        "Workspace",
+        options=["Metadata Copilot", "Channel Strategist"],
+        default="Metadata Copilot",
+        key="active_workspace",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    if active_workspace == "Metadata Copilot":
         render_copilot_chat(
             youtube=youtube,
             secrets=secrets,
@@ -390,8 +398,7 @@ def render_app():
             reporting=reporting,
             subject=subject,
         )
-
-    with strategist_tab:
+    elif active_workspace == "Channel Strategist":
         render_strategy_activity(persistent_store, youtube=youtube)
 
 
