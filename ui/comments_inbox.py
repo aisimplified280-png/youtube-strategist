@@ -240,6 +240,55 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
             st.warning("YouTube does not allow replies to this thread.")
 
 
+def _render_uncertain_replies(store):
+    st.subheader("Replies needing manual verification")
+    drafts = store.list_comment_reply_drafts(status="verification_unavailable", limit=20)
+    if not drafts:
+        st.caption("No replies are awaiting manual verification.")
+        return
+    st.warning(
+        "These replies had an uncertain API outcome. Check the exact thread in YouTube Studio before resolving one. "
+        "The application will not retry them automatically."
+    )
+    for draft in drafts:
+        draft_id = draft["id"]
+        with st.container(border=True):
+            st.caption(draft.get("video_title") or draft.get("video_id") or "Channel comment")
+            st.markdown("**Original comment**")
+            st.write(draft.get("comment_text_snapshot") or "")
+            st.markdown("**Reply that may have been published**")
+            st.write(draft.get("draft_text") or "")
+            if st.button(
+                "I found this reply in YouTube Studio",
+                key=f"comment_uncertain_found_{draft_id}",
+            ):
+                store.update_comment_reply_draft(draft_id, {
+                    "status": "published",
+                    "result": {
+                        "manual_verification": True,
+                        "verification_note": "Owner confirmed the reply is visible in YouTube Studio.",
+                    },
+                    "published_at": datetime.now(timezone.utc).isoformat(),
+                    "error": None,
+                })
+                st.success("Marked as manually verified.")
+                st.rerun()
+            if st.button(
+                "I confirmed this reply was not published",
+                key=f"comment_uncertain_not_found_{draft_id}",
+            ):
+                store.update_comment_reply_draft(draft_id, {
+                    "status": "failed",
+                    "result": {
+                        "manual_verification": True,
+                        "verification_note": "Owner confirmed the reply is not present in YouTube Studio.",
+                    },
+                    "error": "Owner confirmed no reply was published.",
+                })
+                st.success("Resolved. You can create a new draft for this comment.")
+                st.rerun()
+
+
 def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets: dict):
     st.header("Comments Inbox")
     st.caption(
@@ -355,3 +404,7 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
         st.session_state["_comments_show_pending_replies"] = True
     if st.session_state.get("_comments_show_pending_replies"):
         _render_pending_replies(youtube, persistent_store)
+    if st.button("Show replies needing verification", key="comments_show_uncertain_replies"):
+        st.session_state["_comments_show_uncertain_replies"] = True
+    if st.session_state.get("_comments_show_uncertain_replies"):
+        _render_uncertain_replies(persistent_store)
