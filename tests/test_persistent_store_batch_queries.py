@@ -238,6 +238,34 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
                 })
         self.assertEqual(request.call_count, 1)
 
+    def test_comment_reply_automation_query_can_filter_recent_attempts_and_include_result(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_comment_reply_drafts(
+                limit=100,
+                updated_since="2026-11-18T00:00:00Z",
+                include_result=True,
+            )
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["updated_at"], "gte.2026-11-18T00:00:00Z")
+        self.assertIn("result", params["select"])
+
+    def test_metadata_audit_query_can_filter_recent_attempts_and_include_result(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_metadata_editor_audits(
+                limit=20,
+                updated_since="2026-11-18T00:00:00Z",
+                include_result=True,
+            )
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["updated_at"], "gte.2026-11-18T00:00:00Z")
+        self.assertIn("result", params["select"])
+
     def test_comment_reply_claim_is_atomic_and_owner_scoped(self):
         with patch(
             "core.persistent_store.requests.request",
