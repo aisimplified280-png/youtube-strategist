@@ -503,7 +503,7 @@ def render_strategy_activity(store, youtube=None):
                         _invalidate_activity_cache(store)
                         st.success(f"Published and verified {successes} of {eligible_count} proposals.")
                         if failures:
-                            st.warning("Some proposals were not published:\\n" + "\\n".join(failures))
+                            st.warning("Some proposals were not published:\n" + "\n".join(failures))
                         st.rerun()
                 except Exception as error:
                     _invalidate_activity_cache(store)
