@@ -45,7 +45,8 @@ class CommentAnalyzerTests(unittest.TestCase):
             suggested_reply="It is free forever.",
         )))
         self.assertEqual(result["reply_recommendation"], "verify_first")
-        self.assertEqual(result["suggested_reply"], "")
+        self.assertTrue(result["suggested_reply"])
+        self.assertIn("don't want to guess", result["suggested_reply"].lower())
 
     def test_low_confidence_analysis_never_proposes_a_publishable_reply(self):
         result = _parse_analysis(json.dumps(valid_analysis(
@@ -54,6 +55,25 @@ class CommentAnalyzerTests(unittest.TestCase):
         )))
         self.assertEqual(result["reply_recommendation"], "verify_first")
         self.assertEqual(result["suggested_reply"], "")
+
+    def test_empty_ai_reply_gets_safe_category_suggestion(self):
+        result = _parse_analysis(json.dumps(valid_analysis(suggested_reply="")))
+        self.assertEqual(result["reply_recommendation"], "reply")
+        self.assertTrue(result["suggested_reply"])
+
+    def test_provider_failure_returns_safe_fallback_suggestion(self):
+        with patch(
+            "core.comments.analyzer._generate_groq_first",
+            side_effect=CommentAnalysisError("providers unavailable"),
+        ):
+            result = analyze_comment_thread(
+                {},
+                {"text": "Is this tool free?"},
+            )
+        self.assertEqual(result["provider"], "rule-based fallback")
+        self.assertEqual(result["reply_recommendation"], "verify_first")
+        self.assertTrue(result["suggested_reply"])
+        self.assertTrue(result["safe_fallback"])
 
     def test_invalid_category_confidence_and_long_reply_are_rejected(self):
         self.assertIsNone(_parse_analysis(json.dumps(valid_analysis(category="insult"))))
