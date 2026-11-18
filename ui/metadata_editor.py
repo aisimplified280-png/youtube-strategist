@@ -20,6 +20,7 @@ from core.metadata.resource import (
 from core.metadata.insights import (
     fetch_video_performance,
     generate_metadata_insights,
+    metadata_standard_checks,
     resource_fingerprint,
 )
 
@@ -471,7 +472,6 @@ def _run_metadata_automation(
         if item.get("field") in {"title", "description", "tags"}
         and float(item.get("confidence") or 0) >= minimum
     ]
-    current_snippet = before.get("snippet") or {}
     updated = copy.deepcopy(draft)
     proposed_snippet = copy.deepcopy(updated.get("snippet") or {})
     for item in recommendations:
