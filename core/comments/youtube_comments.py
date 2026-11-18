@@ -6,6 +6,8 @@ import hmac
 import json
 from typing import Any
 
+from googleapiclient.errors import HttpError
+
 
 MODERATION_STATUSES = {"published", "heldForReview", "likelySpam"}
 MAX_COMMENT_PAGE_SIZE = 100
@@ -185,10 +187,22 @@ def publish_comment_reply(
     if not parent_comment_id:
         raise ValueError("A top-level parent comment ID is required.")
 
-    created = youtube.comments().insert(
-        part="snippet",
-        body={"snippet": {"parentId": parent_comment_id, "textOriginal": text}},
-    ).execute()
+    try:
+        created = youtube.comments().insert(
+            part="snippet",
+            body={"snippet": {"parentId": parent_comment_id, "textOriginal": text}},
+        ).execute()
+    except HttpError as error:
+        status = getattr(getattr(error, "resp", None), "status", 0) or 0
+        if status >= 500:
+            raise CommentVerificationUnavailable(
+                "The reply request returned a server error; its final state is uncertain. Do not retry blindly."
+            ) from error
+        raise
+    except Exception as error:
+        raise CommentVerificationUnavailable(
+            f"The reply request outcome is uncertain due to a transport error. Do not retry blindly: {error}"
+        ) from error
     created_id = created.get("id")
     if not created_id:
         raise CommentVerificationUnavailable(
