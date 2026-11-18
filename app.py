@@ -22,6 +22,7 @@ import dashboard_security
 from core.persistent_store import SupabasePersistentStore
 from strategist_chat import render_copilot_chat
 from ui.strategy_activity import render_strategy_activity
+from ui.metadata_editor import render_metadata_editor
 
 
 def _read_secrets_safe():
@@ -375,7 +376,7 @@ def render_app():
                 <div>
                     <span style="font-weight: 800; font-size: 1.1rem; letter-spacing: -0.02em; color: #FFFFFF;">AI Simplified Lab</span>
                     <span style="color: #64748B; margin: 0 6px;">/</span>
-                    <span style="color: #94A3B8; font-size: 0.95rem; font-weight: 500;">Metadata Copilot</span>
+                    <span style="color: #94A3B8; font-size: 0.95rem; font-weight: 500;">Metadata &amp; Engagement Copilot</span>
                 </div>
             </div>
             """,
@@ -422,7 +423,7 @@ def render_app():
     # rerun, which previously made chat interactions redraw the full strategist UI.
     active_workspace = st.segmented_control(
         "Workspace",
-        options=["Metadata Copilot", "Channel Strategist"],
+        options=["Metadata Copilot", "Metadata Editor", "Channel Strategist"],
         default="Metadata Copilot",
         key="active_workspace",
         label_visibility="collapsed",
@@ -438,6 +439,8 @@ def render_app():
             reporting=reporting,
             subject=subject,
         )
+    elif active_workspace == "Metadata Editor":
+        render_metadata_editor(youtube, persistent_store, subject)
     elif active_workspace == "Channel Strategist":
         render_strategy_activity(persistent_store, youtube=youtube)
 

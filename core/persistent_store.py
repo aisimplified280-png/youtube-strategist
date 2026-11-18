@@ -527,6 +527,64 @@ class SupabasePersistentStore:
         return rows[0]
 
 
+    def create_metadata_editor_audit(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist an owner-scoped full-metadata draft for explicit review."""
+        allowed = {
+            "video_id", "video_title", "before_metadata", "proposed_metadata",
+            "updated_parts", "approval_digest", "status",
+        }
+        payload = {key: value for key, value in (values or {}).items() if key in allowed}
+        payload["owner_key"] = self.owner_key
+        rows = self._request(
+            "POST", "metadata_editor_audits", payload=payload,
+            prefer="return=representation",
+        )
+        if not rows:
+            raise PersistentStoreError("Supabase did not return the metadata audit record.")
+        return rows[0]
+
+    def get_metadata_editor_audit(self, audit_id: str) -> Optional[Dict[str, Any]]:
+        rows = self._request("GET", "metadata_editor_audits", params={
+            "id": f"eq.{audit_id}", "owner_key": f"eq.{self.owner_key}",
+            "select": "*", "limit": "1",
+        })
+        return rows[0] if rows else None
+
+    def list_metadata_editor_audits(
+        self, *, status: Optional[str] = None, video_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[Dict[str, Any]]:
+        params = {
+            "owner_key": f"eq.{self.owner_key}",
+            "select": "id,video_id,video_title,updated_parts,approval_digest,status,approved_by,created_at,updated_at,published_at,error",
+            "order": "updated_at.desc",
+            "limit": str(max(1, min(int(limit), 100))),
+        }
+        if status:
+            params["status"] = f"eq.{status}"
+        if video_id:
+            params["video_id"] = f"eq.{video_id}"
+        return self._request("GET", "metadata_editor_audits", params=params)
+
+    def update_metadata_editor_audit(
+        self, audit_id: str, values: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Update only allowlisted audit fields for the authenticated owner."""
+        allowed = {
+            "video_title", "proposed_metadata", "updated_parts", "approval_digest",
+            "status", "approved_by", "approved_at", "after_metadata", "result",
+            "error", "published_at",
+        }
+        payload = {key: value for key, value in (values or {}).items() if key in allowed}
+        if not payload:
+            return self.get_metadata_editor_audit(audit_id)
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        rows = self._request("PATCH", "metadata_editor_audits", params={
+            "id": f"eq.{audit_id}", "owner_key": f"eq.{self.owner_key}",
+            "select": "*",
+        }, payload=payload, prefer="return=representation")
+        return rows[0] if rows else None
+
     def get_publish_request(self, request_id: str) -> Optional[Dict[str, Any]]:
         """Read one publishing request, scoped to the authenticated owner."""
         if not self.owner_key:
