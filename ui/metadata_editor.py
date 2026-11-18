@@ -472,9 +472,13 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
 
     audit_id = st.session_state.get("_metadata_editor_audit_id")
     if audit_id:
-        _render_pending_review(
-            youtube, persistent_store, owner_subject, video_id, before, draft, audit_id
-        )
+        audit = persistent_store.get_metadata_editor_audit(audit_id)
+        if audit and audit.get("status") == "pending_review":
+            st.info("Your draft is saved in the central Review & Publishing queue. Publishing is handled there so all proposals can be reviewed together.")
+            if st.button("Open Review & Publishing", type="primary", key=f"metadata_open_review_{audit_id}"):
+                st.session_state["active_workspace"] = "Channel Strategist"
+                st.session_state["strategy_active_section"] = "Review queue"
+                st.rerun()
 
     if st.button("Discard current draft", key=f"metadata_editor_discard_{video_id}"):
         if audit_id:
