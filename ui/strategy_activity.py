@@ -260,6 +260,12 @@ def render_strategy_activity(store, youtube=None):
             store.list_strategy_actions(status="pending_review", limit=100)
             if active_section == "Review queue" else []
         )
+        metadata_pending = (
+            store.list_metadata_editor_audits(
+                status="pending_review", limit=100, include_metadata=True
+            )
+            if active_section == "Review queue" else []
+        )
         recent_actions = snapshot.get("recent_actions") or []
         evaluations = snapshot.get("evaluations") or []
     except Exception as error:
