@@ -74,34 +74,32 @@ class CoreLLMRouterTests(unittest.TestCase):
         parsed_fenced = parse_proposal_json(fenced)
         self.assertEqual(parsed_fenced["title"], "New Title")
 
-    def test_router_uses_gemini_before_groq(self):
-        secrets = {
-            "groq": {"api_key": "g-key", "model": "g-model"},
-            "gemini": {"api_key": "gem-key", "model": "gemini-3.1-pro-preview"},
-        }
-        router = LLMRouter(secrets)
-
-        with patch("core.llm.call_gemini_api", return_value='{"title": "Gemini Title", "description": "Desc", "tags": []}') as mock_gemini, \
-             patch("core.llm.call_groq_api") as mock_groq:
-            proposal, provider, model = router.generate_structured_proposal("Optimize title")
-            self.assertEqual(provider, "Gemini")
-            self.assertEqual(model, "gemini-3.1-pro-preview")
-            self.assertEqual(proposal["title"], "Gemini Title")
-            mock_gemini.assert_called_once()
-            mock_groq.assert_not_called()
-
-    def test_router_falls_back_to_groq_when_gemini_unavailable(self):
+    def test_router_uses_groq_before_gemini(self):
         router = LLMRouter({
             "groq": {"api_key": "g-key", "model": "g-model"},
             "gemini": {"api_key": "gem-key", "model": "gemini-3.1-pro-preview"},
         })
-        with patch("core.llm.call_gemini_api", side_effect=LLMError("Gemini 429", recoverable=True)), \
-             patch("core.llm.call_groq_api", return_value='{"title": "Groq Fallback", "description": "Desc", "tags": []}') as mock_groq:
+        with patch("core.llm.call_groq_api", return_value='{"title": "Groq Title", "description": "Desc", "tags": []}') as mock_groq, \
+             patch("core.llm.call_gemini_api") as mock_gemini:
             proposal, provider, model = router.generate_structured_proposal("Optimize title")
             self.assertEqual(provider, "Groq")
             self.assertEqual(model, "g-model")
-            self.assertEqual(proposal["title"], "Groq Fallback")
+            self.assertEqual(proposal["title"], "Groq Title")
             mock_groq.assert_called_once()
+            mock_gemini.assert_not_called()
+
+    def test_router_falls_back_to_gemini_when_groq_unavailable(self):
+        router = LLMRouter({
+            "groq": {"api_key": "g-key", "model": "g-model"},
+            "gemini": {"api_key": "gem-key", "model": "gemini-3.1-pro-preview"},
+        })
+        with patch("core.llm.call_groq_api", side_effect=LLMError("Groq 429", recoverable=True)), \
+             patch("core.llm.call_gemini_api", return_value='{"title": "Gemini Fallback", "description": "Desc", "tags": []}') as mock_gemini:
+            proposal, provider, model = router.generate_structured_proposal("Optimize title")
+            self.assertEqual(provider, "Gemini")
+            self.assertEqual(model, "gemini-3.1-pro-preview")
+            self.assertEqual(proposal["title"], "Gemini Fallback")
+            mock_gemini.assert_called_once()
 
 
 

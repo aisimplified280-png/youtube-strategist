@@ -166,7 +166,7 @@ def call_gemini_api(
 
 
 class LLMRouter:
-    """Router that attempts Gemini reasoning first, then falls back to Groq models."""
+    """Router that prioritizes Groq and falls back to Gemini models."""
 
     def __init__(self, secrets: Dict[str, Any]):
         groq_cfg = secrets.get("groq", {})
@@ -185,24 +185,11 @@ class LLMRouter:
             self.gemini_fallbacks = [m.strip() for m in self.gemini_fallbacks.split(",") if m.strip()]
 
     def generate(self, prompt: str) -> Tuple[str, str, str]:
-        """Generate using Gemini model/fallbacks first, then Groq as the provider fallback.
+        """Generate with Groq first to conserve Gemini quota, then fall back to Gemini.
 
         Returns (generated_text, provider_name, model_used).
         """
         errors = []
-
-        if self.gemini_key:
-            gemini_models = [self.gemini_model] + [m for m in self.gemini_fallbacks if m != self.gemini_model]
-            for model in gemini_models:
-                try:
-                    text = call_gemini_api(self.gemini_key, model, prompt)
-                    return text, "Gemini", model
-                except LLMError as err:
-                    errors.append(f"Gemini ({model}): {str(err)}")
-                    if not err.recoverable:
-                        break
-        else:
-            errors.append("Gemini: No API key configured.")
 
         if self.groq_key:
             groq_models = [self.groq_model] + [m for m in self.groq_fallbacks if m != self.groq_model]
@@ -216,6 +203,19 @@ class LLMRouter:
                         break
         else:
             errors.append("Groq: No API key configured.")
+
+        if self.gemini_key:
+            gemini_models = [self.gemini_model] + [m for m in self.gemini_fallbacks if m != self.gemini_model]
+            for model in gemini_models:
+                try:
+                    text = call_gemini_api(self.gemini_key, model, prompt)
+                    return text, "Gemini", model
+                except LLMError as err:
+                    errors.append(f"Gemini ({model}): {str(err)}")
+                    if not err.recoverable:
+                        break
+        else:
+            errors.append("Gemini: No API key configured.")
 
         raise LLMError("All AI providers failed:\\n" + "\\n".join(errors))
 
