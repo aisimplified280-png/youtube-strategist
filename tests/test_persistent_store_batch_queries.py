@@ -270,6 +270,54 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         self.assertEqual(params["owner_key"], f"eq.{self.store.owner_key}")
         self.assertEqual(request.call_args.kwargs["json"]["status"], "publishing")
 
+    def test_workspace_automation_defaults_to_shadow_mode(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ):
+            settings = self.store.get_workspace_automation_settings()
+        self.assertEqual(settings["metadata_mode"], "shadow")
+        self.assertEqual(settings["comments_mode"], "shadow")
+        self.assertFalse(settings["emergency_pause"])
+
+    def test_workspace_automation_settings_are_owner_scoped_and_clamped(self):
+        saved = {
+            "owner_key": self.store.owner_key,
+            "metadata_mode": "autonomous",
+            "comments_mode": "review",
+            "metadata_daily_cap": 5,
+            "comments_daily_cap": 10,
+            "minimum_confidence": 0.95,
+            "emergency_pause": False,
+        }
+        with patch(
+            "core.persistent_store.requests.request",
+            side_effect=[self._response(), self._response([saved])],
+        ) as request:
+            result = self.store.set_workspace_automation_settings({
+                "metadata_mode": "autonomous",
+                "comments_mode": "review",
+                "metadata_daily_cap": 99,
+                "comments_daily_cap": 99,
+                "minimum_confidence": 0.95,
+                "emergency_pause": False,
+            })
+        self.assertEqual(result["metadata_mode"], "autonomous")
+        payload = request.call_args.kwargs["json"]
+        self.assertEqual(payload["owner_key"], self.store.owner_key)
+        self.assertEqual(payload["metadata_daily_cap"], 5)
+        self.assertEqual(payload["comments_daily_cap"], 10)
+
+    def test_workspace_automation_rejects_unknown_mode(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ):
+            with self.assertRaises(ValueError):
+                self.store.set_workspace_automation_settings({
+                    "metadata_mode": "publish-everything",
+                })
+
     def test_get_job_rows_uses_only_review_fields(self):
         with patch(
             "core.persistent_store.requests.request",
