@@ -164,6 +164,18 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         self.assertIsNone(payload["approved_by"])
         self.assertIsNone(payload["approved_at"])
 
+    def test_pending_comment_reply_projection_includes_can_reply_without_large_payloads(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_comment_reply_drafts(status="pending_review", limit=20)
+        selected = request.call_args.kwargs["params"]["select"]
+        self.assertIn("can_reply", selected)
+        self.assertIn("comment_text_snapshot", selected)
+        self.assertNotIn("result", selected)
+        self.assertNotIn("owner_key", selected)
+
     def test_comment_reply_claim_is_atomic_and_owner_scoped(self):
         with patch(
             "core.persistent_store.requests.request",
