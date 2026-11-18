@@ -33,7 +33,12 @@ class FakeVideos:
 
         def apply():
             for resource_part in part.split(","):
-                self.resource[resource_part] = copy.deepcopy(body[resource_part])
+                updated = copy.deepcopy(body[resource_part])
+                if resource_part == "snippet":
+                    for read_only in ("channelId", "publishedAt", "localized"):
+                        if read_only in self.resource.get("snippet", {}):
+                            updated[read_only] = copy.deepcopy(self.resource["snippet"][read_only])
+                self.resource[resource_part] = updated
             return {"id": body["id"]}
 
         return FakeRequest(apply)
