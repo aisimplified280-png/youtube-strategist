@@ -39,7 +39,11 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
             return_value=self._response(),
         ) as request:
             self.store.list_jobs(limit=3, before="2026-11-18T10:00:00Z")
-        self.assertEqual(request.call_args.kwargs["params"]["created_at"], "lt.2026-11-18T10:00:00Z")
+        self.assertEqual(
+            request.call_args.kwargs["params"]["created_at"],
+            "lt.2026-11-18T10:00:00Z",
+        )
+        self.assertEqual(request.call_args.kwargs["params"]["limit"], "3")
 
     def test_conversation_list_uses_recent_page_and_cursor(self):
         with patch(
@@ -234,6 +238,34 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
                 })
         self.assertEqual(request.call_count, 1)
 
+    def test_comment_reply_automation_query_can_filter_recent_attempts_and_include_result(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_comment_reply_drafts(
+                limit=100,
+                updated_since="2026-11-18T00:00:00Z",
+                include_result=True,
+            )
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["updated_at"], "gte.2026-11-18T00:00:00Z")
+        self.assertIn("result", params["select"])
+
+    def test_metadata_audit_query_can_filter_recent_attempts_and_include_result(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_metadata_editor_audits(
+                limit=20,
+                updated_since="2026-11-18T00:00:00Z",
+                include_result=True,
+            )
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["updated_at"], "gte.2026-11-18T00:00:00Z")
+        self.assertIn("result", params["select"])
+
     def test_comment_reply_claim_is_atomic_and_owner_scoped(self):
         with patch(
             "core.persistent_store.requests.request",
@@ -245,6 +277,54 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         self.assertEqual(params["status"], "eq.approved")
         self.assertEqual(params["owner_key"], f"eq.{self.store.owner_key}")
         self.assertEqual(request.call_args.kwargs["json"]["status"], "publishing")
+
+    def test_workspace_automation_defaults_to_shadow_mode(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ):
+            settings = self.store.get_workspace_automation_settings()
+        self.assertEqual(settings["metadata_mode"], "shadow")
+        self.assertEqual(settings["comments_mode"], "shadow")
+        self.assertFalse(settings["emergency_pause"])
+
+    def test_workspace_automation_settings_are_owner_scoped_and_clamped(self):
+        saved = {
+            "owner_key": self.store.owner_key,
+            "metadata_mode": "autonomous",
+            "comments_mode": "review",
+            "metadata_daily_cap": 5,
+            "comments_daily_cap": 10,
+            "minimum_confidence": 0.95,
+            "emergency_pause": False,
+        }
+        with patch(
+            "core.persistent_store.requests.request",
+            side_effect=[self._response(), self._response([saved])],
+        ) as request:
+            result = self.store.set_workspace_automation_settings({
+                "metadata_mode": "autonomous",
+                "comments_mode": "review",
+                "metadata_daily_cap": 99,
+                "comments_daily_cap": 99,
+                "minimum_confidence": 0.95,
+                "emergency_pause": False,
+            })
+        self.assertEqual(result["metadata_mode"], "autonomous")
+        payload = request.call_args.kwargs["json"]
+        self.assertEqual(payload["owner_key"], self.store.owner_key)
+        self.assertEqual(payload["metadata_daily_cap"], 5)
+        self.assertEqual(payload["comments_daily_cap"], 10)
+
+    def test_workspace_automation_rejects_unknown_mode(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ):
+            with self.assertRaises(ValueError):
+                self.store.set_workspace_automation_settings({
+                    "metadata_mode": "publish-everything",
+                })
 
     def test_get_job_rows_uses_only_review_fields(self):
         with patch(
