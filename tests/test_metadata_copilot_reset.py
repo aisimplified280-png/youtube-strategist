@@ -67,6 +67,11 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertIn("list_conversations(limit=15)", app_code, "Only the first recent-chat page should load.")
         self.assertIn('st.button(\n                        "Load more chats"', app_code)
         self.assertIn("load_messages(selected_id, limit=50)", app_code, "Only the newest message page should load.")
+        self.assertIn("last_message_at", app_code)
+        self.assertIn('draft_option = "__current_draft__"', app_code)
+        self.assertIn("selected_from_sidebar != draft_option", app_code)
+        self.assertIn('and selected_conversation.get("last_message_at")', app_code)
+        self.assertIn("No saved conversations yet. New chats appear here after the first message.", app_code)
 
     def test_gemini_defaults_match_owner_api_key_benchmark(self):
         from strategist_chat import (
