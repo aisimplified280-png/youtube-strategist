@@ -39,6 +39,17 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
             return_value=self._response(),
         ) as request:
             self.store.list_jobs(limit=3, before="2026-11-18T10:00:00Z")
+        self.assertEqual(
+            request.call_args.kwargs["params"]["created_at"],
+            "lt.2026-11-18T10:00:00Z",
+        )
+        self.assertEqual(request.call_args.kwargs["params"]["limit"], "3")
+
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_jobs(limit=3, before="2026-11-18T10:00:00Z")
         self.assertEqual(request.call_args.kwargs["params"]["created_at"], "lt.2026-11-18T10:00:00Z")
 
     def test_conversation_list_uses_recent_page_and_cursor(self):
@@ -52,6 +63,8 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         self.assertEqual(params["order"], "updated_at.desc")
         self.assertEqual(params["last_message_at"], "not.is.null")
         self.assertIn("last_message_at", params["select"])
+        self.assertEqual(params["last_message_at"], "not.is.null")
+        self.assertIn("last_message_at", params["select"])
 
         with patch(
             "core.persistent_store.requests.request",
@@ -62,6 +75,17 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
             request.call_args.kwargs["params"]["updated_at"],
             "lt.2026-11-18T10:00:00Z",
         )
+
+    def test_append_message_updates_last_message_timestamp(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            side_effect=[self._response([{"id": "message-1"}]), self._response()],
+        ) as request:
+            self.store.append_message("conversation-1", "user", "Hello")
+        self.assertEqual(request.call_count, 2)
+        update = request.call_args.kwargs["json"]
+        self.assertIn("last_message_at", update)
+        self.assertEqual(update["last_message_at"], update["updated_at"])
 
     def test_append_message_updates_last_message_timestamp(self):
         with patch(
