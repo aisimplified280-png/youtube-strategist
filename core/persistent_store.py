@@ -569,6 +569,7 @@ class SupabasePersistentStore:
     def list_metadata_editor_audits(
         self, *, status: Optional[str] = None, video_id: Optional[str] = None,
         limit: int = 20, include_metadata: bool = False,
+        published_since: Optional[str] = None,
     ) -> list[Dict[str, Any]]:
         projection = "id,video_id,video_title,updated_parts,approval_digest,status,approved_by,created_at,updated_at,published_at,error"
         if include_metadata:
@@ -583,6 +584,8 @@ class SupabasePersistentStore:
             params["status"] = f"eq.{status}"
         if video_id:
             params["video_id"] = f"eq.{video_id}"
+        if published_since:
+            params["published_at"] = f"gte.{published_since}"
         return self._request("GET", "metadata_editor_audits", params=params)
 
     def update_metadata_editor_audit(
@@ -658,7 +661,8 @@ class SupabasePersistentStore:
         return rows[0] if rows else None
 
     def list_comment_reply_drafts(
-        self, *, status: Optional[str] = None, limit: int = 20
+        self, *, status: Optional[str] = None, limit: int = 20,
+        published_since: Optional[str] = None,
     ) -> list[Dict[str, Any]]:
         params = {
             "owner_key": f"eq.{self.owner_key}",
@@ -668,6 +672,8 @@ class SupabasePersistentStore:
         }
         if status:
             params["status"] = f"eq.{status}"
+        if published_since:
+            params["published_at"] = f"gte.{published_since}"
         return self._request("GET", "comment_reply_drafts", params=params)
 
     def update_comment_reply_draft(
@@ -714,6 +720,60 @@ class SupabasePersistentStore:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, prefer="return=representation")
         return rows[0] if rows else None
+
+    # --- Workspace-specific automation -------------------------------------------------
+
+    def get_workspace_automation_settings(self) -> Dict[str, Any]:
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner is required for workspace automation settings.")
+        rows = self._request("GET", "owner_workspace_automation_settings", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "select": "owner_key,metadata_mode,comments_mode,metadata_daily_cap,comments_daily_cap,minimum_confidence,emergency_pause,updated_at",
+            "limit": "1",
+        })
+        if rows:
+            return rows[0]
+        return {
+            "owner_key": self.owner_key,
+            "metadata_mode": "shadow",
+            "comments_mode": "shadow",
+            "metadata_daily_cap": 1,
+            "comments_daily_cap": 3,
+            "minimum_confidence": 0.92,
+            "emergency_pause": False,
+        }
+
+    def set_workspace_automation_settings(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.owner_key:
+            raise PersistentStoreError("A verified owner is required for workspace automation settings.")
+        settings = self.get_workspace_automation_settings()
+        merged = {**settings, **(values or {})}
+        metadata_mode = str(merged.get("metadata_mode") or "shadow").strip().lower()
+        comments_mode = str(merged.get("comments_mode") or "shadow").strip().lower()
+        allowed_modes = {"paused", "shadow", "review", "autonomous"}
+        if metadata_mode not in allowed_modes or comments_mode not in allowed_modes:
+            raise ValueError("Workspace automation modes must be paused, shadow, review or autonomous.")
+        minimum_confidence = max(0.85, min(float(merged.get("minimum_confidence", 0.92)), 1.0))
+        metadata_cap = max(0, min(int(merged.get("metadata_daily_cap", 1)), 5))
+        comments_cap = max(0, min(int(merged.get("comments_daily_cap", 3)), 10))
+        emergency_pause = merged.get("emergency_pause", False)
+        if not isinstance(emergency_pause, bool):
+            raise ValueError("emergency_pause must be a boolean.")
+        rows = self._request("POST", "owner_workspace_automation_settings", params={
+            "on_conflict": "owner_key",
+        }, payload={
+            "owner_key": self.owner_key,
+            "metadata_mode": metadata_mode,
+            "comments_mode": comments_mode,
+            "metadata_daily_cap": metadata_cap,
+            "comments_daily_cap": comments_cap,
+            "minimum_confidence": minimum_confidence,
+            "emergency_pause": emergency_pause,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, prefer="resolution=merge-duplicates,return=representation")
+        if not rows:
+            raise PersistentStoreError("Supabase did not return workspace automation settings.")
+        return rows[0]
 
     def get_publish_request(self, request_id: str) -> Optional[Dict[str, Any]]:
         """Read one publishing request, scoped to the authenticated owner."""
