@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
+from core.llm import LLMError
 from core.comments.analyzer import (
     CommentAnalysisError,
     _parse_analysis,
@@ -51,6 +52,27 @@ class CommentAnalyzerTests(unittest.TestCase):
         self.assertIsNone(_parse_analysis(json.dumps(valid_analysis(confidence=1.5))))
         self.assertIsNone(_parse_analysis(json.dumps(valid_analysis(suggested_reply="word " * 36))))
         self.assertIsNone(_parse_analysis("not json"))
+
+    def test_groq_is_primary_and_gemini_is_fallback(self):
+        router = Mock()
+        router.groq_key = "groq-key"
+        router.groq_model = "groq-model"
+        router.groq_fallbacks = []
+        router.gemini_key = "gemini-key"
+        router.gemini_model = "gemini-model"
+        router.gemini_fallbacks = []
+        with patch("core.comments.analyzer.LLMRouter", return_value=router), patch(
+            "core.comments.analyzer.call_groq_api",
+            side_effect=LLMError("rate limited", provider="groq", recoverable=True),
+        ) as groq, patch(
+            "core.comments.analyzer.call_gemini_api",
+            return_value="{}",
+        ) as gemini:
+            from core.comments.analyzer import _generate_groq_first
+            result = _generate_groq_first({}, "prompt")
+        self.assertEqual(result, ("{}", "Gemini", "gemini-model"))
+        groq.assert_called_once_with("groq-key", "groq-model", "prompt")
+        gemini.assert_called_once_with("gemini-key", "gemini-model", "prompt")
 
     def test_analyze_selected_thread_uses_router_and_returns_provider_metadata(self):
         raw = json.dumps(valid_analysis())
