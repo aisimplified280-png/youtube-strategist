@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 import streamlit as st
 
@@ -340,9 +341,12 @@ def render_strategy_activity(store, youtube=None):
             "confirmation that you have reviewed every proposal. Each update is still checked against live YouTube metadata."
         )
         if pending:
+            bulk_queue_fingerprint = hashlib.sha256(
+                "|".join(sorted(str(item.get("id") or "") for item in pending)).encode("utf-8")
+            ).hexdigest()[:12]
             bulk_confirmed = st.checkbox(
                 f"I reviewed all {len(pending)} proposals and approve publishing every item in this queue.",
-                key="strategy_bulk_publish_confirm",
+                key=f"strategy_bulk_publish_confirm_{bulk_queue_fingerprint}",
             )
             if st.button(
                 f"Publish all {len(pending)} pending proposals",
@@ -374,7 +378,6 @@ def render_strategy_activity(store, youtube=None):
                             else:
                                 failures.append(f"{item.get('video_title') or item.get('video_id')}: {message}")
                             progress.progress(position / len(eligible), text=f"Processed {position} of {len(eligible)}")
-                        st.session_state.pop("strategy_bulk_publish_confirm", None)
                         _invalidate_activity_cache(store)
                         st.success(f"Published and verified {successes} of {len(eligible)} proposals.")
                         if failures:
