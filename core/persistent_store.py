@@ -74,6 +74,19 @@ class SupabasePersistentStore:
         })
         return rows[0] if rows else None
 
+    def update_conversation_title(self, conversation_id: str, title: str):
+        """Set a useful first-message title without overwriting a user-edited title."""
+        cleaned = " ".join(str(title or "").split()).strip()[:72]
+        if not cleaned:
+            return []
+        return self._request("PATCH", "copilot_conversations", params={
+            "id": f"eq.{conversation_id}", "owner_key": f"eq.{self.owner_key}",
+            "title": "eq.New chat",
+        }, payload={
+            "title": cleaned,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, prefer="return=minimal")
+
     def load_messages(self, conversation_id: str, limit: int = 100) -> list[Dict[str, Any]]:
         return self._request("GET", "copilot_messages", params={
             "conversation_id": f"eq.{conversation_id}", "owner_key": f"eq.{self.owner_key}",
