@@ -183,10 +183,25 @@ def _render_status_form(video_id: str, before: dict, draft: dict, store, audit_i
             ["youtube", "creativeCommon"],
             index=1 if status.get("license") == "creativeCommon" else 0,
         )
+        bool_options = ["Not set", "Yes", "No"]
+        embeddable_current = (
+            "Yes" if status.get("embeddable") is True
+            else "No" if status.get("embeddable") is False
+            else "Not set"
+        )
+        public_stats_current = (
+            "Yes" if status.get("publicStatsViewable") is True
+            else "No" if status.get("publicStatsViewable") is False
+            else "Not set"
+        )
         col1, col2 = st.columns(2)
         with col1:
-            embeddable = st.checkbox("Allow embedding", value=bool(status.get("embeddable", False)))
-            public_stats = st.checkbox("Show public statistics", value=bool(status.get("publicStatsViewable", False)))
+            embeddable_choice = st.selectbox(
+                "Allow embedding", bool_options, index=bool_options.index(embeddable_current)
+            )
+            public_stats_choice = st.selectbox(
+                "Show public statistics", bool_options, index=bool_options.index(public_stats_current)
+            )
         with col2:
             audience_options = ["Not set", "Made for kids", "Not made for kids"]
             audience_current = (
@@ -218,9 +233,17 @@ def _render_status_form(video_id: str, before: dict, draft: dict, store, audit_i
         updated_status.update({
             "privacyStatus": privacy,
             "license": license_value,
-            "embeddable": embeddable,
-            "publicStatsViewable": public_stats,
         })
+        for key, choice in (
+            ("embeddable", embeddable_choice),
+            ("publicStatsViewable", public_stats_choice),
+        ):
+            if choice == "Yes":
+                updated_status[key] = True
+            elif choice == "No":
+                updated_status[key] = False
+            else:
+                updated_status.pop(key, None)
         if audience_choice == "Made for kids":
             updated_status["selfDeclaredMadeForKids"] = True
         elif audience_choice == "Not made for kids":
