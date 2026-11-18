@@ -29,7 +29,6 @@ def _load_activity_snapshot(store) -> dict:
         "settings": store.get_strategy_settings(),
         "runs": store.list_strategy_runs(limit=30),
         "watchdog_events": store.list_strategy_watchdog_events(limit=12),
-        "pending": store.list_strategy_actions(status="pending_review", limit=100),
         "recent_actions": store.list_strategy_actions(limit=40),
         "evaluations": store.list_action_evaluations(limit=50),
     }
@@ -164,7 +163,8 @@ def render_strategy_activity(store, youtube=None):
         settings = snapshot["settings"]
         runs = snapshot["runs"]
         watchdog_events = snapshot["watchdog_events"]
-        pending = snapshot["pending"]
+        # Approval queues are mutable state: always read them live, not from the dashboard cache.
+        pending = store.list_strategy_actions(status="pending_review", limit=100)
         recent_actions = snapshot["recent_actions"]
         evaluations = snapshot["evaluations"]
     except Exception as error:
