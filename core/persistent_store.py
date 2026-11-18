@@ -60,12 +60,16 @@ class SupabasePersistentStore:
             raise PersistentStoreError("Supabase did not return the created conversation.")
         return rows[0]
 
-    def list_conversations(self, limit: int = 30) -> list[Dict[str, Any]]:
-        return self._request("GET", "copilot_conversations", params={
+    def list_conversations(self, limit: int = 15, before: Optional[str] = None) -> list[Dict[str, Any]]:
+        """Return one recent-chat page; use the last row's updated_at as the next-page cursor."""
+        params = {
             "owner_key": f"eq.{self.owner_key}", "archived_at": "is.null",
             "select": "id,title,created_at,updated_at", "order": "updated_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
-        })
+        }
+        if before:
+            params["updated_at"] = f"lt.{before}"
+        return self._request("GET", "copilot_conversations", params=params)
 
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         rows = self._request("GET", "copilot_conversations", params={
@@ -87,12 +91,21 @@ class SupabasePersistentStore:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, prefer="return=minimal")
 
-    def load_messages(self, conversation_id: str, limit: int = 100) -> list[Dict[str, Any]]:
-        return self._request("GET", "copilot_messages", params={
+    def load_messages(self, conversation_id: str, limit: int = 50,
+                      before: Optional[str] = None) -> list[Dict[str, Any]]:
+        """Load the newest message page in chronological display order.
+
+        A before cursor retrieves an older page without downloading the full thread.
+        """
+        params = {
             "conversation_id": f"eq.{conversation_id}", "owner_key": f"eq.{self.owner_key}",
-            "select": "id,role,content,metadata,created_at", "order": "created_at.asc",
+            "select": "id,role,content,metadata,created_at", "order": "created_at.desc",
             "limit": str(max(1, min(int(limit), 500))),
-        })
+        }
+        if before:
+            params["created_at"] = f"lt.{before}"
+        rows = self._request("GET", "copilot_messages", params=params)
+        return list(reversed(rows or []))
 
     def append_message(self, conversation_id: str, role: str, content: str, metadata=None):
         if role not in {"user", "assistant", "system"}:
