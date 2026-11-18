@@ -198,6 +198,34 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         result = publish_approved_comment_reply(youtube, draft, owner_key)
         self.assertEqual(result["status"], "published")
 
+    def test_reply_publish_allows_only_explicit_comments_automation_actor(self):
+        owner_key = "hashed-owner"
+        youtube = FakeYoutube(comments=FakeComments([{
+            "items": [{
+                "id": "reply-1",
+                "snippet": {"parentId": "comment-1", "textDisplay": "Thanks!"},
+            }],
+        }], {"id": "reply-1"}))
+        draft = {
+            "status": "publishing",
+            "approved_by": "automation:comments",
+            "approved_at": "2026-11-18T12:00:00Z",
+            "thread_id": "thread-1",
+            "parent_comment_id": "comment-1",
+            "comment_text_snapshot": "Great video!",
+            "draft_text": "Thanks for watching!",
+            "can_reply": True,
+        }
+        draft["approval_digest"] = compute_comment_reply_digest(
+            owner_key, "thread-1", "comment-1", "Great video!", "Thanks for watching!"
+        )
+        with self.assertRaises(PermissionError):
+            publish_approved_comment_reply(youtube, draft, owner_key)
+        result = publish_approved_comment_reply(
+            youtube, draft, owner_key, allow_automation=True
+        )
+        self.assertEqual(result["status"], "published")
+
     def test_reply_publish_rejects_unapproved_or_modified_draft(self):
         owner_key = "hashed-owner"
         draft = {
