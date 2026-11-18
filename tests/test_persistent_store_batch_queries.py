@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from core.persistent_store import SupabasePersistentStore
+from core.persistent_store import PersistentStoreError, SupabasePersistentStore
 
 
 class PersistentStoreBatchQueryTests(unittest.TestCase):
@@ -123,6 +123,84 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         self.assertEqual(params["limit"], "10")
         self.assertNotIn("before_metadata", params["select"])
         self.assertNotIn("proposed_metadata", params["select"])
+
+    def test_comment_reply_draft_create_is_owner_scoped(self):
+        created = {"id": "reply-draft-1", "status": "pending_review"}
+        with patch(
+            "core.persistent_store.requests.request",
+            side_effect=[self._response(), self._response([created])],
+        ) as request:
+            result = self.store.create_comment_reply_draft({
+                "channel_id": "UC123",
+                "video_id": "abcdefghijk",
+                "thread_id": "thread-1",
+                "parent_comment_id": "comment-1",
+                "comment_text_snapshot": "Question?",
+                "draft_text": "Short answer.",
+                "approval_digest": "digest",
+                "status": "pending_review",
+            })
+        self.assertEqual(result["id"], "reply-draft-1")
+        self.assertEqual(request.call_count, 2)
+        payload = request.call_args.kwargs["json"]
+        self.assertEqual(payload["owner_key"], self.store.owner_key)
+
+    def test_comment_reply_draft_revision_invalidates_old_approval(self):
+        active = {"id": "reply-draft-1", "status": "approved"}
+        updated = {"id": "reply-draft-1", "status": "pending_review"}
+        with patch(
+            "core.persistent_store.requests.request",
+            side_effect=[self._response([active]), self._response([updated])],
+        ) as request:
+            result = self.store.create_comment_reply_draft({
+                "parent_comment_id": "comment-1",
+                "draft_text": "Revised reply.",
+                "approval_digest": "new-digest",
+                "status": "pending_review",
+            })
+        self.assertEqual(result["status"], "pending_review")
+        payload = request.call_args.kwargs["json"]
+        self.assertEqual(payload["status"], "pending_review")
+        self.assertIsNone(payload["approved_by"])
+        self.assertIsNone(payload["approved_at"])
+
+    def test_pending_comment_reply_projection_includes_can_reply_without_large_payloads(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_comment_reply_drafts(status="pending_review", limit=20)
+        selected = request.call_args.kwargs["params"]["select"]
+        self.assertIn("can_reply", selected)
+        self.assertIn("comment_text_snapshot", selected)
+        self.assertNotIn("result", selected)
+        self.assertNotIn("owner_key", selected)
+
+    def test_uncertain_reply_outcome_blocks_duplicate_draft(self):
+        active = {"id": "reply-draft-1", "status": "verification_unavailable"}
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response([active]),
+        ) as request:
+            with self.assertRaisesRegex(PersistentStoreError, "Verify it in YouTube Studio"):
+                self.store.create_comment_reply_draft({
+                    "parent_comment_id": "comment-1",
+                    "draft_text": "A second reply.",
+                    "approval_digest": "digest-2",
+                })
+        self.assertEqual(request.call_count, 1)
+
+    def test_comment_reply_claim_is_atomic_and_owner_scoped(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response([{"id": "reply-draft-1", "status": "publishing"}]),
+        ) as request:
+            result = self.store.claim_comment_reply_draft("reply-draft-1")
+        self.assertEqual(result["status"], "publishing")
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["status"], "eq.approved")
+        self.assertEqual(params["owner_key"], f"eq.{self.store.owner_key}")
+        self.assertEqual(request.call_args.kwargs["json"]["status"], "publishing")
 
     def test_get_job_rows_uses_only_review_fields(self):
         with patch(

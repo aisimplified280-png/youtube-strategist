@@ -585,6 +585,104 @@ class SupabasePersistentStore:
         }, payload=payload, prefer="return=representation")
         return rows[0] if rows else None
 
+    def create_comment_reply_draft(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or revise one active manual reply draft per top-level comment."""
+        parent_id = str((values or {}).get("parent_comment_id") or "").strip()
+        if not parent_id:
+            raise ValueError("A top-level comment ID is required.")
+        active = self._request("GET", "comment_reply_drafts", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "parent_comment_id": f"eq.{parent_id}",
+            "status": "in.(pending_review,approved,publishing,verification_unavailable)",
+            "select": "id,status",
+            "order": "updated_at.desc",
+            "limit": "1",
+        })
+        if active:
+            existing = active[0]
+            if existing.get("status") in {"publishing", "verification_unavailable"}:
+                raise PersistentStoreError(
+                    "A previous reply may already have reached YouTube. Verify it in YouTube Studio before creating another reply."
+                )
+            return self.update_comment_reply_draft(existing["id"], {
+                **(values or {}),
+                "status": "pending_review",
+                "approved_by": None,
+                "approved_at": None,
+                "published_comment_id": None,
+                "published_at": None,
+                "result": {},
+                "error": None,
+            })
+
+        allowed = {
+            "channel_id", "video_id", "video_title", "thread_id",
+            "parent_comment_id", "comment_text_snapshot",
+            "comment_author_display_name", "can_reply", "draft_text",
+            "approval_digest", "status",
+        }
+        payload = {key: value for key, value in (values or {}).items() if key in allowed}
+        payload["owner_key"] = self.owner_key
+        rows = self._request(
+            "POST", "comment_reply_drafts", payload=payload,
+            prefer="return=representation",
+        )
+        if not rows:
+            raise PersistentStoreError("Supabase did not return the comment reply draft.")
+        return rows[0]
+
+    def get_comment_reply_draft(self, draft_id: str) -> Optional[Dict[str, Any]]:
+        rows = self._request("GET", "comment_reply_drafts", params={
+            "id": f"eq.{draft_id}", "owner_key": f"eq.{self.owner_key}",
+            "select": "*", "limit": "1",
+        })
+        return rows[0] if rows else None
+
+    def list_comment_reply_drafts(
+        self, *, status: Optional[str] = None, limit: int = 20
+    ) -> list[Dict[str, Any]]:
+        params = {
+            "owner_key": f"eq.{self.owner_key}",
+            "select": "id,video_id,video_title,thread_id,parent_comment_id,comment_text_snapshot,comment_author_display_name,can_reply,draft_text,approval_digest,status,approved_at,published_at,error,updated_at",
+            "order": "updated_at.desc",
+            "limit": str(max(1, min(int(limit), 100))),
+        }
+        if status:
+            params["status"] = f"eq.{status}"
+        return self._request("GET", "comment_reply_drafts", params=params)
+
+    def update_comment_reply_draft(
+        self, draft_id: str, values: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "video_title", "comment_text_snapshot", "comment_author_display_name",
+            "can_reply", "draft_text", "approval_digest", "status",
+            "approved_by", "approved_at", "published_comment_id",
+            "result", "error", "published_at",
+        }
+        payload = {key: value for key, value in (values or {}).items() if key in allowed}
+        if not payload:
+            return self.get_comment_reply_draft(draft_id)
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        rows = self._request("PATCH", "comment_reply_drafts", params={
+            "id": f"eq.{draft_id}", "owner_key": f"eq.{self.owner_key}",
+            "select": "*",
+        }, payload=payload, prefer="return=representation")
+        return rows[0] if rows else None
+
+    def claim_comment_reply_draft(self, draft_id: str) -> Optional[Dict[str, Any]]:
+        """Atomically transition an owner-approved reply into publishing exactly once."""
+        rows = self._request("PATCH", "comment_reply_drafts", params={
+            "id": f"eq.{draft_id}",
+            "owner_key": f"eq.{self.owner_key}",
+            "status": "eq.approved",
+            "select": "*",
+        }, payload={
+            "status": "publishing",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, prefer="return=representation")
+        return rows[0] if rows else None
+
     def get_publish_request(self, request_id: str) -> Optional[Dict[str, Any]]:
         """Read one publishing request, scoped to the authenticated owner."""
         if not self.owner_key:

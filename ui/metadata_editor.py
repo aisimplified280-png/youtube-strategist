@@ -183,18 +183,47 @@ def _render_status_form(video_id: str, before: dict, draft: dict, store, audit_i
             ["youtube", "creativeCommon"],
             index=1 if status.get("license") == "creativeCommon" else 0,
         )
+        bool_options = ["Not set", "Yes", "No"]
+        embeddable_current = (
+            "Yes" if status.get("embeddable") is True
+            else "No" if status.get("embeddable") is False
+            else "Not set"
+        )
+        public_stats_current = (
+            "Yes" if status.get("publicStatsViewable") is True
+            else "No" if status.get("publicStatsViewable") is False
+            else "Not set"
+        )
         col1, col2 = st.columns(2)
         with col1:
-            embeddable = st.checkbox("Allow embedding", value=bool(status.get("embeddable", False)))
-            public_stats = st.checkbox("Show public statistics", value=bool(status.get("publicStatsViewable", False)))
-        with col2:
-            made_for_kids = st.checkbox(
-                "Made for kids declaration",
-                value=bool(status.get("selfDeclaredMadeForKids", False)),
+            embeddable_choice = st.selectbox(
+                "Allow embedding", bool_options, index=bool_options.index(embeddable_current)
             )
-            synthetic = st.checkbox(
-                "Contains realistic altered or synthetic media",
-                value=bool(status.get("containsSyntheticMedia", False)),
+            public_stats_choice = st.selectbox(
+                "Show public statistics", bool_options, index=bool_options.index(public_stats_current)
+            )
+        with col2:
+            audience_options = ["Not set", "Made for kids", "Not made for kids"]
+            audience_current = (
+                "Made for kids" if status.get("selfDeclaredMadeForKids") is True
+                else "Not made for kids" if status.get("selfDeclaredMadeForKids") is False
+                else "Not set"
+            )
+            audience_choice = st.selectbox(
+                "Audience declaration",
+                audience_options,
+                index=audience_options.index(audience_current),
+            )
+            synthetic_options = ["Not set", "Contains realistic altered or synthetic media", "Does not contain realistic altered or synthetic media"]
+            synthetic_current = (
+                synthetic_options[1] if status.get("containsSyntheticMedia") is True
+                else synthetic_options[2] if status.get("containsSyntheticMedia") is False
+                else synthetic_options[0]
+            )
+            synthetic_choice = st.selectbox(
+                "Altered or synthetic media declaration",
+                synthetic_options,
+                index=synthetic_options.index(synthetic_current),
             )
         publish_at = st.text_input("Scheduled publish time (ISO-8601, optional)", value=status.get("publishAt", ""))
         submitted = st.form_submit_button("Stage status changes")
@@ -204,15 +233,29 @@ def _render_status_form(video_id: str, before: dict, draft: dict, store, audit_i
         updated_status.update({
             "privacyStatus": privacy,
             "license": license_value,
-            "embeddable": embeddable,
-            "publicStatsViewable": public_stats,
         })
-        for key, value in (
-            ("selfDeclaredMadeForKids", made_for_kids),
-            ("containsSyntheticMedia", synthetic),
+        for key, choice in (
+            ("embeddable", embeddable_choice),
+            ("publicStatsViewable", public_stats_choice),
         ):
-            if key in original_status or value:
-                updated_status[key] = value
+            if choice == "Yes":
+                updated_status[key] = True
+            elif choice == "No":
+                updated_status[key] = False
+            else:
+                updated_status.pop(key, None)
+        if audience_choice == "Made for kids":
+            updated_status["selfDeclaredMadeForKids"] = True
+        elif audience_choice == "Not made for kids":
+            updated_status["selfDeclaredMadeForKids"] = False
+        else:
+            updated_status.pop("selfDeclaredMadeForKids", None)
+        if synthetic_choice == synthetic_options[1]:
+            updated_status["containsSyntheticMedia"] = True
+        elif synthetic_choice == synthetic_options[2]:
+            updated_status["containsSyntheticMedia"] = False
+        else:
+            updated_status.pop("containsSyntheticMedia", None)
         if publish_at.strip():
             updated_status["publishAt"] = publish_at.strip()
         else:
@@ -253,20 +296,27 @@ def _render_recording_form(video_id: str, before: dict, draft: dict, store, audi
 def _render_advanced_form(video_id: str, before: dict, draft: dict, store, audit_id):
     partner = draft.get("brandPartner") or {}
     placement = draft.get("paidProductPlacementDetails") or {}
+    paid_options = ["Not set", "Yes", "No"]
+    paid_current = (
+        "Yes" if placement.get("hasPaidProductPlacement") is True
+        else "No" if placement.get("hasPaidProductPlacement") is False
+        else "Not set"
+    )
     with st.form(f"metadata_advanced_form_{video_id}"):
         partner_channel = st.text_input("Brand partner channel ID", value=partner.get("channelId", ""))
-        paid_placement = st.checkbox(
-            "Video contains paid product placement",
-            value=bool(placement.get("hasPaidProductPlacement", False)),
+        paid_choice = st.selectbox(
+            "Paid product placement declaration",
+            paid_options,
+            index=paid_options.index(paid_current),
         )
         submitted = st.form_submit_button("Stage advanced metadata")
     if submitted:
         updated = copy.deepcopy(draft)
         updated["brandPartner"] = {"channelId": partner_channel.strip()} if partner_channel.strip() else {}
-        if "hasPaidProductPlacement" in placement or paid_placement:
-            updated["paidProductPlacementDetails"] = {
-                "hasPaidProductPlacement": paid_placement
-            }
+        if paid_choice == "Yes":
+            updated["paidProductPlacementDetails"] = {"hasPaidProductPlacement": True}
+        elif paid_choice == "No":
+            updated["paidProductPlacementDetails"] = {"hasPaidProductPlacement": False}
         else:
             updated["paidProductPlacementDetails"] = {}
         try:

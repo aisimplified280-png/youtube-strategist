@@ -23,6 +23,7 @@ from core.persistent_store import SupabasePersistentStore
 from strategist_chat import render_copilot_chat
 from ui.strategy_activity import render_strategy_activity
 from ui.metadata_editor import render_metadata_editor
+from ui.comments_inbox import render_comments_inbox
 
 
 def _read_secrets_safe():
@@ -423,7 +424,7 @@ def render_app():
     # rerun, which previously made chat interactions redraw the full strategist UI.
     active_workspace = st.segmented_control(
         "Workspace",
-        options=["Metadata Copilot", "Metadata Editor", "Channel Strategist"],
+        options=["Metadata Copilot", "Metadata Editor", "Comments Inbox", "Channel Strategist"],
         default="Metadata Copilot",
         key="active_workspace",
         label_visibility="collapsed",
@@ -441,6 +442,8 @@ def render_app():
         )
     elif active_workspace == "Metadata Editor":
         render_metadata_editor(youtube, persistent_store, subject)
+    elif active_workspace == "Comments Inbox":
+        render_comments_inbox(youtube, persistent_store, subject, secrets)
     elif active_workspace == "Channel Strategist":
         render_strategy_activity(persistent_store, youtube=youtube)
 
