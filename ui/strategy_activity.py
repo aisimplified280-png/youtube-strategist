@@ -634,6 +634,78 @@ def render_strategy_activity(store, youtube=None):
                         except Exception as error:
                             st.error(f"Could not update the action log: {error}")
 
+        if metadata_pending:
+            st.divider()
+            st.markdown("### Full metadata editor proposals")
+            st.caption("These drafts were created in Metadata Editor. They are now reviewed and published from this central queue.")
+            for audit in metadata_pending:
+                audit_id = str(audit.get("id") or "")
+                video_id = str(audit.get("video_id") or "")
+                parts = audit.get("updated_parts") or []
+                before_resource = audit.get("before_metadata") or {}
+                proposed_resource = audit.get("proposed_metadata") or {}
+                title = audit.get("video_title") or video_id or "Untitled video"
+                with st.expander(f"{title} · {', '.join(parts) or 'Metadata'}", expanded=False):
+                    st.caption(f"Video ID: {video_id}")
+                    for part in parts:
+                        st.markdown(f"**Changed resource: {part}**")
+                        old_value = before_resource.get(part, {})
+                        new_value = proposed_resource.get(part, {})
+                        old_col, new_col = st.columns(2)
+                        with old_col:
+                            st.caption("Currently published")
+                            st.json(old_value)
+                        with new_col:
+                            st.caption("Proposed")
+                            st.json(new_value)
+                    open_col, status_col = st.columns([1, 2])
+                    with open_col:
+                        if st.button("Edit in Metadata Editor", key=f"metadata_review_edit_{audit_id}"):
+                            st.session_state["_metadata_editor_reference"] = (
+                                f"https://www.youtube.com/watch?v={video_id}"
+                            )
+                            st.session_state["active_workspace"] = "Metadata Editor"
+                            st.rerun()
+                    with status_col:
+                        st.caption("No metadata is changed until you approve publishing.")
+                    reviewed = st.checkbox(
+                        "I reviewed this exact before/after metadata and approve publishing.",
+                        key=f"metadata_review_approve_{audit_id}_{str(audit.get('approval_digest') or '')[:10]}",
+                    )
+                    publish_col, reject_col = st.columns(2)
+                    with publish_col:
+                        if st.button(
+                            "Approve & publish metadata",
+                            type="primary",
+                            disabled=not reviewed or youtube is None,
+                            key=f"metadata_review_publish_{audit_id}",
+                            use_container_width=True,
+                        ):
+                            success, message = _publish_metadata_editor_audit(
+                                store, youtube, audit
+                            )
+                            if success:
+                                st.success(message)
+                            else:
+                                st.error(message)
+                            _invalidate_activity_cache(store)
+                            st.rerun()
+                    with reject_col:
+                        if st.button(
+                            "Reject draft",
+                            key=f"metadata_review_reject_{audit_id}",
+                            use_container_width=True,
+                        ):
+                            store.update_metadata_editor_audit(audit_id, {
+                                "status": "rejected",
+                                "error": "Rejected by channel owner in Review & Publishing.",
+                            })
+                            _invalidate_activity_cache(store)
+                            st.toast("Metadata draft rejected. YouTube was not changed.")
+                            st.rerun()
+        elif not pending:
+            st.caption("No full metadata editor drafts are waiting for review.")
+
     elif active_section == "Run & action history":
         st.markdown("### Monitoring run history")
         if not runs:
