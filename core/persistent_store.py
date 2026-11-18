@@ -593,15 +593,17 @@ class SupabasePersistentStore:
         active = self._request("GET", "comment_reply_drafts", params={
             "owner_key": f"eq.{self.owner_key}",
             "parent_comment_id": f"eq.{parent_id}",
-            "status": "in.(pending_review,approved,publishing)",
+            "status": "in.(pending_review,approved,publishing,verification_unavailable)",
             "select": "id,status",
             "order": "updated_at.desc",
             "limit": "1",
         })
         if active:
             existing = active[0]
-            if existing.get("status") == "publishing":
-                raise PersistentStoreError("A reply for this comment is already being published.")
+            if existing.get("status") in {"publishing", "verification_unavailable"}:
+                raise PersistentStoreError(
+                    "A previous reply may already have reached YouTube. Verify it in YouTube Studio before creating another reply."
+                )
             return self.update_comment_reply_draft(existing["id"], {
                 **(values or {}),
                 "status": "pending_review",
