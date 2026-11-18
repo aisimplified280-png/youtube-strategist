@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import time
+from datetime import datetime, timezone
 import streamlit as st
 
 import youtube_analytics_connector as connector
 from core.strategy_learning import rollback_strategy_action
+from core.metadata.resource import apply_approved_resource_proposal, normalize_video_resource
 
 
 def _pretty_status(value: str) -> str:
@@ -116,6 +119,78 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
         return False, f"Publishing failed safely: {type(error).__name__}: {str(error)[:500]}"
 
 
+def _publish_metadata_editor_audit(store, youtube, audit: dict) -> tuple[bool, str]:
+    """Publish one full-metadata draft from the central review queue."""
+    audit_id = str(audit.get("id") or "")
+    video_id = str(audit.get("video_id") or "")
+    if youtube is None:
+        return False, "Reconnect YouTube before publishing this metadata proposal."
+    if not audit_id or not video_id or audit.get("status") != "pending_review":
+        return False, "This metadata proposal is incomplete or no longer pending review."
+    try:
+        before = normalize_video_resource(audit.get("before_metadata") or {})
+        proposed = normalize_video_resource(audit.get("proposed_metadata") or {})
+        digest = str(audit.get("approval_digest") or "")
+        expected = connector.metadata_proposal_digest(video_id, before, proposed)
+        if not digest or not hmac.compare_digest(expected, digest):
+            store.update_metadata_editor_audit(audit_id, {
+                "status": "stale",
+                "error": "The saved proposal digest no longer matches its exact before/after metadata.",
+            })
+            return False, "The saved proposal changed after review. Reopen the video and stage a fresh draft."
+
+        approved = store.update_metadata_editor_audit(audit_id, {
+            "status": "approved",
+            "approved_by": store.owner_key,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+        if not approved:
+            return False, "Could not persist the owner approval."
+        claimed = store.claim_metadata_editor_audit(audit_id)
+        if not claimed:
+            return False, "This proposal was already claimed or is no longer approved."
+
+        result = apply_approved_resource_proposal(
+            youtube, video_id, before, proposed, digest
+        )
+        if result.get("result") != "success":
+            store.update_metadata_editor_audit(audit_id, {
+                "status": "rejected",
+                "result": result,
+                "error": "The proposal contained no metadata changes.",
+            })
+            return False, "There are no metadata changes to publish."
+
+        store.update_metadata_editor_audit(audit_id, {
+            "status": "approved_published",
+            "after_metadata": result.get("resource") or proposed,
+            "result": result,
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+        return True, "Metadata update was published and verified."
+    except connector.MetadataVerificationUnavailableError as error:
+        store.update_metadata_editor_audit(audit_id, {
+            "status": "verification_unavailable",
+            "error": str(error)[:1500],
+        })
+        return False, "The update may have reached YouTube, but verification is unavailable. Reload the video before retrying."
+    except RuntimeError as error:
+        status = "stale" if "changed after review" in str(error).casefold() else "failed"
+        store.update_metadata_editor_audit(audit_id, {
+            "status": status,
+            "error": str(error)[:1500],
+        })
+        return False, str(error)
+    except Exception as error:
+        store.update_metadata_editor_audit(audit_id, {
+            "status": "failed",
+            "error": f"{type(error).__name__}: {str(error)[:1500]}",
+        })
+        return False, f"Publishing failed safely: {type(error).__name__}: {str(error)[:500]}"
+
+
 def _friendly_gemini_error(error: str) -> str:
     """Translate noisy provider failures into clear, actionable UI messages."""
     message = str(error or "")
@@ -183,6 +258,12 @@ def render_strategy_activity(store, youtube=None):
         # The mutable approval queue is fetched only when its section is open.
         pending = (
             store.list_strategy_actions(status="pending_review", limit=100)
+            if active_section == "Review queue" else []
+        )
+        metadata_pending = (
+            store.list_metadata_editor_audits(
+                status="pending_review", limit=100, include_metadata=True
+            )
             if active_section == "Review queue" else []
         )
         recent_actions = snapshot.get("recent_actions") or []
@@ -356,46 +437,71 @@ def render_strategy_activity(store, youtube=None):
             "Review the exact original and proposed metadata. Bulk publishing requires a separate "
             "confirmation that you have reviewed every proposal. Each update is still checked against live YouTube metadata."
         )
-        if pending:
+        total_pending = len(pending) + len(metadata_pending)
+        if total_pending:
+            queue_ids = (
+                [f"strategy:{item.get('id')}" for item in pending]
+                + [f"editor:{item.get('id')}" for item in metadata_pending]
+            )
             bulk_queue_fingerprint = hashlib.sha256(
-                "|".join(sorted(str(item.get("id") or "") for item in pending)).encode("utf-8")
+                "|".join(sorted(queue_ids)).encode("utf-8")
             ).hexdigest()[:12]
             bulk_confirmed = st.checkbox(
-                f"I reviewed all {len(pending)} proposals and approve publishing every item in this queue.",
+                f"I reviewed all {total_pending} proposals and approve publishing every item in this queue.",
                 key=f"strategy_bulk_publish_confirm_{bulk_queue_fingerprint}",
             )
             if st.button(
-                f"Publish all {len(pending)} pending proposals",
+                f"Publish all {total_pending} pending proposals",
                 key="strategy_publish_all",
                 type="primary",
                 disabled=not bulk_confirmed or youtube is None,
                 use_container_width=True,
             ):
-                # Re-read the queue immediately before bulk execution so a stale UI
-                # snapshot cannot publish an item already handled in another session.
+                # Re-read both queues immediately before publishing so a stale UI
+                # snapshot cannot publish a proposal already handled elsewhere.
                 try:
                     fresh_pending = store.list_strategy_actions(status="pending_review", limit=100)
-                    fresh_by_id = {str(item.get("id")): item for item in fresh_pending}
-                    eligible = [
-                        fresh_by_id[str(item.get("id"))]
+                    fresh_metadata = store.list_metadata_editor_audits(
+                        status="pending_review", limit=100, include_metadata=True
+                    )
+                    fresh_strategy_by_id = {str(item.get("id")): item for item in fresh_pending}
+                    fresh_metadata_by_id = {str(item.get("id")): item for item in fresh_metadata}
+                    eligible_strategy = [
+                        fresh_strategy_by_id[str(item.get("id"))]
                         for item in pending
-                        if str(item.get("id")) in fresh_by_id
+                        if str(item.get("id")) in fresh_strategy_by_id
                     ]
-                    if not eligible:
+                    eligible_metadata = [
+                        fresh_metadata_by_id[str(item.get("id"))]
+                        for item in metadata_pending
+                        if str(item.get("id")) in fresh_metadata_by_id
+                    ]
+                    eligible_count = len(eligible_strategy) + len(eligible_metadata)
+                    if not eligible_count:
                         st.info("No proposals remain pending. The queue has been refreshed.")
                     else:
-                        progress = st.progress(0, text="Publishing approved proposals…")
+                        progress = st.progress(0, text="Publishing approved metadata proposals…")
                         successes = 0
                         failures = []
-                        for position, item in enumerate(eligible, 1):
+                        position = 0
+                        for item in eligible_strategy:
+                            position += 1
                             ok, message = _publish_review_action(store, youtube, item)
                             if ok:
                                 successes += 1
                             else:
                                 failures.append(f"{item.get('video_title') or item.get('video_id')}: {message}")
-                            progress.progress(position / len(eligible), text=f"Processed {position} of {len(eligible)}")
+                            progress.progress(position / eligible_count, text=f"Processed {position} of {eligible_count}")
+                        for item in eligible_metadata:
+                            position += 1
+                            ok, message = _publish_metadata_editor_audit(store, youtube, item)
+                            if ok:
+                                successes += 1
+                            else:
+                                failures.append(f"{item.get('video_title') or item.get('video_id')}: {message}")
+                            progress.progress(position / eligible_count, text=f"Processed {position} of {eligible_count}")
                         _invalidate_activity_cache(store)
-                        st.success(f"Published and verified {successes} of {len(eligible)} proposals.")
+                        st.success(f"Published and verified {successes} of {eligible_count} proposals.")
                         if failures:
                             st.warning("Some proposals were not published:\n" + "\n".join(failures))
                         st.rerun()
@@ -527,6 +633,79 @@ def render_strategy_activity(store, youtube=None):
                             st.rerun()
                         except Exception as error:
                             st.error(f"Could not update the action log: {error}")
+
+        if metadata_pending:
+            st.divider()
+            st.markdown("### Full metadata editor proposals")
+            st.caption("These drafts were created in Metadata Editor. They are now reviewed and published from this central queue.")
+            for audit in metadata_pending:
+                audit_id = str(audit.get("id") or "")
+                video_id = str(audit.get("video_id") or "")
+                parts = audit.get("updated_parts") or []
+                before_resource = audit.get("before_metadata") or {}
+                proposed_resource = audit.get("proposed_metadata") or {}
+                title = audit.get("video_title") or video_id or "Untitled video"
+                with st.expander(f"{title} · {', '.join(parts) or 'Metadata'}", expanded=False):
+                    st.caption(f"Video ID: {video_id}")
+                    for part in parts:
+                        st.markdown(f"**Changed resource: {part}**")
+                        old_value = before_resource.get(part, {})
+                        new_value = proposed_resource.get(part, {})
+                        old_col, new_col = st.columns(2)
+                        with old_col:
+                            st.caption("Currently published")
+                            st.json(old_value)
+                        with new_col:
+                            st.caption("Proposed")
+                            st.json(new_value)
+                    open_col, status_col = st.columns([1, 2])
+                    with open_col:
+                        if st.button("Edit in Metadata Editor", key=f"metadata_review_edit_{audit_id}"):
+                            st.session_state["_metadata_editor_reference"] = (
+                                f"https://www.youtube.com/watch?v={video_id}"
+                            )
+                            st.session_state["_metadata_editor_autoload"] = True
+                            st.session_state["active_workspace"] = "Metadata Editor"
+                            st.rerun()
+                    with status_col:
+                        st.caption("No metadata is changed until you approve publishing.")
+                    reviewed = st.checkbox(
+                        "I reviewed this exact before/after metadata and approve publishing.",
+                        key=f"metadata_review_approve_{audit_id}_{str(audit.get('approval_digest') or '')[:10]}",
+                    )
+                    publish_col, reject_col = st.columns(2)
+                    with publish_col:
+                        if st.button(
+                            "Approve & publish metadata",
+                            type="primary",
+                            disabled=not reviewed or youtube is None,
+                            key=f"metadata_review_publish_{audit_id}",
+                            use_container_width=True,
+                        ):
+                            success, message = _publish_metadata_editor_audit(
+                                store, youtube, audit
+                            )
+                            if success:
+                                st.success(message)
+                            else:
+                                st.error(message)
+                            _invalidate_activity_cache(store)
+                            st.rerun()
+                    with reject_col:
+                        if st.button(
+                            "Reject draft",
+                            key=f"metadata_review_reject_{audit_id}",
+                            use_container_width=True,
+                        ):
+                            store.update_metadata_editor_audit(audit_id, {
+                                "status": "rejected",
+                                "error": "Rejected by channel owner in Review & Publishing.",
+                            })
+                            _invalidate_activity_cache(store)
+                            st.toast("Metadata draft rejected. YouTube was not changed.")
+                            st.rerun()
+        elif not pending:
+            st.caption("No full metadata editor drafts are waiting for review.")
 
     elif active_section == "Run & action history":
         st.markdown("### Monitoring run history")

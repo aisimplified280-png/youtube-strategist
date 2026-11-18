@@ -328,80 +328,6 @@ def _render_advanced_form(video_id: str, before: dict, draft: dict, store, audit
             st.error(f"Could not stage advanced metadata: {error}")
 
 
-def _render_pending_review(youtube, store, owner_subject: str, video_id: str, before: dict, draft: dict, audit_id: str):
-    if not audit_id:
-        return
-    audit = store.get_metadata_editor_audit(audit_id)
-    if not audit or audit.get("status") != "pending_review":
-        return
-    digest = audit.get("approval_digest") or ""
-    changed = audit.get("updated_parts") or []
-    st.divider()
-    st.subheader("Review and publish")
-    st.caption("Only the fields shown below will be sent to YouTube. Other metadata parts remain untouched.")
-    st.write("Changed resource parts:", ", ".join(changed))
-    with st.expander("Compare current and proposed metadata", expanded=True):
-        for part in changed:
-            st.markdown(f"**{part}**")
-            left, right = st.columns(2)
-            with left:
-                st.caption("Current")
-                st.json(before.get(part, {}))
-            with right:
-                st.caption("Proposed")
-                st.json(draft.get(part, {}))
-    confirmed = st.checkbox(
-        "I reviewed these exact changes and authorize publishing them to YouTube.",
-        key=f"metadata_editor_approve_{audit_id}_{digest[:10]}",
-    )
-    if st.button(
-        "Approve & Publish metadata",
-        type="primary",
-        disabled=not confirmed,
-        key=f"metadata_editor_publish_{audit_id}_{digest[:10]}",
-    ):
-        now = datetime.now(timezone.utc).isoformat()
-        try:
-            saved = store.update_metadata_editor_audit(audit_id, {
-                "status": "approved",
-                "approved_by": persistent_store.owner_key,
-                "approved_at": now,
-                "error": None,
-            })
-            if not saved or saved.get("approval_digest") != digest:
-                raise RuntimeError("The saved approval changed. Reload and review the proposal again.")
-            store.update_metadata_editor_audit(audit_id, {"status": "publishing"})
-            result = apply_approved_resource_proposal(
-                youtube, video_id, before, draft, digest,
-            )
-            after = result.get("resource") or draft
-            store.update_metadata_editor_audit(audit_id, {
-                "status": "approved_published",
-                "after_metadata": after,
-                "result": result,
-                "published_at": datetime.now(timezone.utc).isoformat(),
-                "error": None,
-            })
-            st.session_state["_metadata_editor_before"] = after
-            st.session_state["_metadata_editor_draft"] = after
-            st.session_state["_metadata_editor_audit_id"] = None
-            st.success("Metadata updated and verified with YouTube.")
-            st.rerun()
-        except connector.MetadataVerificationUnavailableError as error:
-            store.update_metadata_editor_audit(audit_id, {
-                "status": "verification_unavailable",
-                "error": str(error)[:1000],
-            })
-            st.error(f"Update may have reached YouTube, but verification was unavailable. Do not retry blindly. {error}")
-        except RuntimeError as error:
-            status = "stale" if "changed after review" in str(error).lower() else "failed"
-            store.update_metadata_editor_audit(audit_id, {"status": status, "error": str(error)[:1000]})
-            st.error(str(error))
-        except Exception as error:
-            store.update_metadata_editor_audit(audit_id, {"status": "failed", "error": str(error)[:1000]})
-            st.error(f"Metadata publishing failed: {error}")
-
-
 def render_metadata_editor(youtube, persistent_store, owner_subject: str):
     st.header("Full Metadata Editor")
     st.caption("Edit supported YouTube metadata fields independently. Only explicitly approved changes are published.")
@@ -411,6 +337,25 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
     if persistent_store is None:
         st.error("Persistent storage is unavailable. Editing is disabled so drafts and approvals cannot be lost.")
         return
+
+    if st.session_state.pop("_metadata_editor_autoload", False):
+        reference = st.session_state.get("_metadata_editor_reference", "")
+        video_id = _parse_video_id(reference)
+        if video_id:
+            try:
+                current = fetch_video_resource(youtube, video_id)
+                st.session_state["_metadata_editor_video_id"] = video_id
+                st.session_state["_metadata_editor_before"] = current
+                st.session_state["_metadata_editor_draft"] = copy.deepcopy(current)
+                st.session_state["_metadata_editor_audit_id"] = None
+                pending = _resume_pending_draft(persistent_store, video_id, current)
+                if pending:
+                    st.session_state["_metadata_editor_draft"] = pending["proposed_metadata"]
+                    st.session_state["_metadata_editor_audit_id"] = pending["id"]
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not open the selected metadata draft: {error}")
+                return
 
     with st.form("metadata_editor_load_form"):
         reference = st.text_input(
@@ -472,9 +417,13 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
 
     audit_id = st.session_state.get("_metadata_editor_audit_id")
     if audit_id:
-        _render_pending_review(
-            youtube, persistent_store, owner_subject, video_id, before, draft, audit_id
-        )
+        audit = persistent_store.get_metadata_editor_audit(audit_id)
+        if audit and audit.get("status") == "pending_review":
+            st.info("Your draft is saved in the central Review & Publishing queue. Publishing is handled there so all proposals can be reviewed together.")
+            if st.button("Open Review & Publishing", type="primary", key=f"metadata_open_review_{audit_id}"):
+                st.session_state["active_workspace"] = "Channel Strategist"
+                st.session_state["strategy_active_section"] = "Review queue"
+                st.rerun()
 
     if st.button("Discard current draft", key=f"metadata_editor_discard_{video_id}"):
         if audit_id:

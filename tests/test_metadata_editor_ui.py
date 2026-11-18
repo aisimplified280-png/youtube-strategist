@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from ui.metadata_editor import _changed_parts, _parse_video_id
@@ -34,6 +35,13 @@ class MetadataEditorUITests(unittest.TestCase):
             "localizations": {"te": {"title": "పాత"}},
         }
         self.assertEqual(_changed_parts(before, draft), ["snippet"])
+
+    def test_metadata_editor_routes_approval_to_central_review_queue(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "ui", "metadata_editor.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("central Review & Publishing queue", source)
+        self.assertNotIn("_render_pending_review(", source)
 
     def test_empty_advanced_parts_do_not_create_unrelated_updates(self):
         before = {"snippet": {"title": "Title"}, "status": {"privacyStatus": "public"}}

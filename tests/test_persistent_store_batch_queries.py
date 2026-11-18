@@ -89,6 +89,29 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         self.assertEqual(payload["owner_key"], self.store.owner_key)
         self.assertNotIn("ignored_secret", payload)
 
+    def test_metadata_editor_review_projection_can_include_full_before_after_payload(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_metadata_editor_audits(status="pending_review", include_metadata=True, limit=25)
+        selected = request.call_args.kwargs["params"]["select"]
+        self.assertIn("before_metadata", selected)
+        self.assertIn("proposed_metadata", selected)
+        self.assertEqual(request.call_args.kwargs["params"]["limit"], "25")
+
+    def test_metadata_editor_claim_is_atomic_and_owner_scoped(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response([{"id": "audit-1", "status": "publishing"}]),
+        ) as request:
+            result = self.store.claim_metadata_editor_audit("audit-1")
+        self.assertEqual(result["status"], "publishing")
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["status"], "eq.approved")
+        self.assertEqual(params["owner_key"], f"eq.{self.store.owner_key}")
+        self.assertEqual(request.call_args.kwargs["json"]["status"], "publishing")
+
     def test_metadata_editor_audit_reads_and_updates_are_owner_scoped(self):
         with patch(
             "core.persistent_store.requests.request",
