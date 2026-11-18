@@ -664,6 +664,7 @@ def render_strategy_activity(store, youtube=None):
                             st.session_state["_metadata_editor_reference"] = (
                                 f"https://www.youtube.com/watch?v={video_id}"
                             )
+                            st.session_state["_metadata_editor_autoload"] = True
                             st.session_state["active_workspace"] = "Metadata Editor"
                             st.rerun()
                     with status_col:
