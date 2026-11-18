@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from core.comments.analyzer import analyze_comment_thread
-from youtube_analytics_connector import CHANNEL_ID
+from youtube_analytics_connector import CHANNEL_ID, fetch_video_snippet
 
 from core.comments.youtube_comments import (
     CommentVerificationUnavailable,
@@ -183,7 +183,20 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
     if st.button("Analyze comment & draft a reply", type="primary", key=f"comment_analyze_{thread_id}"):
         try:
             with st.spinner("Analyzing this comment thread..."):
-                analysis = analyze_comment_thread(secrets, thread, replies)
+                analysis_thread = dict(thread)
+                video_id = thread.get("video_id")
+                if video_id:
+                    title_key = f"_comment_video_title_{video_id}"
+                    video_title = st.session_state.get(title_key)
+                    if not video_title:
+                        try:
+                            snippet = fetch_video_snippet(youtube, video_id)
+                            video_title = snippet.get("title") or ""
+                            st.session_state[title_key] = video_title
+                        except Exception:
+                            video_title = ""
+                    analysis_thread["video_title"] = video_title
+                analysis = analyze_comment_thread(secrets, analysis_thread, replies)
             st.session_state[f"_comment_analysis_{thread_id}"] = analysis
         except Exception as error:
             st.error(f"Comment analysis failed: {error}")
