@@ -180,6 +180,46 @@ class CommentsInboxUITests(unittest.TestCase):
         self.assertEqual(publish.call_count, 1)
         self.assertTrue(publish.call_args.kwargs["allow_automation"])
 
+    def test_autonomous_comment_automation_stops_when_any_reply_outcome_is_uncertain(self):
+        store = Mock()
+        store.list_comment_reply_drafts.return_value = [{
+            "id": "uncertain-1",
+            "parent_comment_id": "comment-old",
+            "status": "verification_unavailable",
+        }]
+        item = {
+            "thread_id": "thread-new",
+            "top_level_comment_id": "comment-new",
+            "text": "Great video!",
+            "author_display_name": "Viewer",
+            "can_reply": True,
+            "total_reply_count": 0,
+            "moderation_status": "published",
+        }
+        with patch("ui.comments_inbox.analyze_comment_thread") as analyze, patch(
+            "ui.comments_inbox.publish_approved_comment_reply"
+        ) as publish:
+            result = _run_comment_automation(
+                object(), store, {}, [item],
+                {
+                    "comments_mode": "autonomous",
+                    "comments_daily_cap": 3,
+                    "minimum_confidence": 0.92,
+                    "emergency_pause": False,
+                },
+            )
+        self.assertEqual(result["published"], 0)
+        self.assertIn("previous reply outcome is uncertain", " ".join(result["notes"]).lower())
+        analyze.assert_not_called()
+        publish.assert_not_called()
+
+    def test_comment_automation_summary_notes_remain_visible_after_rerun(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "ui", "comments_inbox.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("for note in previous_automation.get(\"notes\") or []", source)
+        self.assertIn('st.session_state["_comments_show_pending_replies"] = True', source)
+
     def test_comment_reply_publish_gate_is_in_backend_not_only_the_ui(self):
         root = os.path.join(os.path.dirname(__file__), "..")
         with open(os.path.join(root, "core", "comments", "youtube_comments.py"), encoding="utf-8") as handle:
