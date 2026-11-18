@@ -3,6 +3,8 @@ import unittest
 from datetime import date
 from unittest.mock import Mock, patch
 
+from core.llm import LLMError
+
 import youtube_analytics_connector as connector
 from core.metadata.insights import (
     fetch_video_performance,
@@ -64,7 +66,7 @@ class MetadataInsightsTests(unittest.TestCase):
         self.assertEqual(performance["previous_period"], ["2026-09-21", "2026-10-18"])
         self.assertEqual(performance["metrics"]["views"]["delta_percent"], 20.0)
         self.assertEqual(query.call_count, 2)
-        self.assertIn("video==abcdefghijk", query.call_args_list[0].kwargs.get("video_id", "video==abcdefghijk"))
+        self.assertEqual(query.call_args_list[0].kwargs["video_id"], "abcdefghijk")
 
     def test_missing_analytics_returns_explicit_unavailable_status(self):
         result = fetch_video_performance(None, "abcdefghijk", today=date(2026, 11, 18))
@@ -107,7 +109,7 @@ class MetadataInsightsTests(unittest.TestCase):
 
     def test_provider_failure_preserves_deterministic_checks(self):
         router = Mock()
-        router.generate.side_effect = connector.MetadataValidationError("not used")
+        router.generate.side_effect = LLMError("providers unavailable")
         with patch("core.metadata.insights.LLMRouter", return_value=router):
             result = generate_metadata_insights({}, resource(), {"status": "unavailable"})
         self.assertEqual(result["analysis_status"], "rules_only")
