@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import time
 import streamlit as st
 
 import youtube_analytics_connector as connector
@@ -12,6 +14,28 @@ def _pretty_status(value: str) -> str:
     return str(value or "unknown").replace("_", " ").title()
 
 
+def _invalidate_activity_cache(store) -> None:
+    st.session_state.pop(f"_strategy_activity_cache_{store.owner_key}", None)
+
+
+def _load_activity_snapshot(store) -> dict:
+    """Cache read-only dashboard queries briefly; never cache mutable approval state long-term."""
+    key = f"_strategy_activity_cache_{store.owner_key}"
+    now = time.monotonic()
+    cached = st.session_state.get(key) or {}
+    if now - float(cached.get("loaded_at", 0)) < 15:
+        return cached.get("data") or {}
+    data = {
+        "settings": store.get_strategy_settings(),
+        "runs": store.list_strategy_runs(limit=30),
+        "watchdog_events": store.list_strategy_watchdog_events(limit=12),
+        "recent_actions": store.list_strategy_actions(limit=40),
+        "evaluations": store.list_action_evaluations(limit=50),
+    }
+    st.session_state[key] = {"loaded_at": now, "data": data}
+    return data
+
+
 def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
     action_id = action.get("id")
     video_id = action.get("video_id")
@@ -20,6 +44,8 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
     digest = action.get("approval_digest") or ""
     if youtube is None:
         return False, "Reconnect YouTube before publishing an approved proposal."
+    if action.get("status") != "pending_review":
+        return False, "This proposal is no longer pending review. Refresh the queue before publishing."
     if not action_id or not video_id or not before or not proposed or not digest:
         return False, "This saved action is incomplete. It was not published; run a fresh strategy scan."
 
@@ -133,12 +159,14 @@ def render_strategy_activity(store, youtube=None):
     )
 
     try:
-        settings = store.get_strategy_settings()
-        runs = store.list_strategy_runs(limit=30)
-        watchdog_events = store.list_strategy_watchdog_events(limit=12)
+        snapshot = _load_activity_snapshot(store)
+        settings = snapshot["settings"]
+        runs = snapshot["runs"]
+        watchdog_events = snapshot["watchdog_events"]
+        # Approval queues are mutable state: always read them live, not from the dashboard cache.
         pending = store.list_strategy_actions(status="pending_review", limit=100)
-        recent_actions = store.list_strategy_actions(limit=40)
-        evaluations = store.list_action_evaluations(limit=50)
+        recent_actions = snapshot["recent_actions"]
+        evaluations = snapshot["evaluations"]
     except Exception as error:
         st.warning(f"Could not load strategist activity: {error}")
         return
@@ -309,10 +337,56 @@ def render_strategy_activity(store, youtube=None):
     with review_tab:
         st.markdown("### Metadata proposals")
         st.caption(
-            "Review the exact original and proposed metadata. Nothing in this queue is published "
-            "until you approve the individual proposal."
+            "Review the exact original and proposed metadata. Bulk publishing requires a separate "
+            "confirmation that you have reviewed every proposal. Each update is still checked against live YouTube metadata."
         )
-        if not pending:
+        if pending:
+            bulk_queue_fingerprint = hashlib.sha256(
+                "|".join(sorted(str(item.get("id") or "") for item in pending)).encode("utf-8")
+            ).hexdigest()[:12]
+            bulk_confirmed = st.checkbox(
+                f"I reviewed all {len(pending)} proposals and approve publishing every item in this queue.",
+                key=f"strategy_bulk_publish_confirm_{bulk_queue_fingerprint}",
+            )
+            if st.button(
+                f"Publish all {len(pending)} pending proposals",
+                key="strategy_publish_all",
+                type="primary",
+                disabled=not bulk_confirmed or youtube is None,
+                use_container_width=True,
+            ):
+                # Re-read the queue immediately before bulk execution so a stale UI
+                # snapshot cannot publish an item already handled in another session.
+                try:
+                    fresh_pending = store.list_strategy_actions(status="pending_review", limit=100)
+                    fresh_by_id = {str(item.get("id")): item for item in fresh_pending}
+                    eligible = [
+                        fresh_by_id[str(item.get("id"))]
+                        for item in pending
+                        if str(item.get("id")) in fresh_by_id
+                    ]
+                    if not eligible:
+                        st.info("No proposals remain pending. The queue has been refreshed.")
+                    else:
+                        progress = st.progress(0, text="Publishing approved proposals…")
+                        successes = 0
+                        failures = []
+                        for position, item in enumerate(eligible, 1):
+                            ok, message = _publish_review_action(store, youtube, item)
+                            if ok:
+                                successes += 1
+                            else:
+                                failures.append(f"{item.get('video_title') or item.get('video_id')}: {message}")
+                            progress.progress(position / len(eligible), text=f"Processed {position} of {len(eligible)}")
+                        _invalidate_activity_cache(store)
+                        st.success(f"Published and verified {successes} of {len(eligible)} proposals.")
+                        if failures:
+                            st.warning("Some proposals were not published:\n" + "\n".join(failures))
+                        st.rerun()
+                except Exception as error:
+                    _invalidate_activity_cache(store)
+                    st.error(f"Bulk publish stopped safely: {error}")
+        else:
             st.success("The review queue is clear.")
         for index, action in enumerate(pending, 1):
             action_id = str(action.get("id") or f"pending-{index}")
@@ -334,7 +408,29 @@ def render_strategy_activity(store, youtube=None):
                 st.write(action.get("reason") or "No rationale was recorded.")
                 st.caption(f"Diagnosis: {action.get('diagnosis') or 'Not recorded'}")
 
+                # Make the reason for a review hold visible instead of making
+                # Autonomous mode look as though it failed to activate.
+                confidence_value = action.get("confidence")
+                try:
+                    confidence_numeric = float(confidence_value)
+                except (TypeError, ValueError):
+                    confidence_numeric = None
+                threshold = float(settings.get("min_confidence_auto_publish", 0.85))
+                if action.get("diagnosis") == "metadata_quality":
+                    st.info("Review-only metadata audit: this proposal is intentionally excluded from autonomous publishing.")
+                elif confidence_numeric is not None and confidence_numeric < threshold:
+                    st.info(
+                        f"Review required: confidence {confidence_numeric:.2f} is below your "
+                        f"autonomous publishing threshold of {threshold:.2f}."
+                    )
+                elif "model requested review" in str(action.get("reason") or "").casefold():
+                    st.info("Review required: the strategy model explicitly requested owner review.")
                 evidence = action.get("evidence") or {}
+                if evidence.get("cooldown_blocked"):
+                    st.caption(
+                        evidence.get("cooldown_reason")
+                        or "The seven-day metadata baseline/cooldown is not satisfied."
+                    )
                 for reason in evidence.get("reasons") or []:
                     st.caption(str(reason))
 
@@ -396,6 +492,7 @@ def render_strategy_activity(store, youtube=None):
                             st.success(message)
                         else:
                             st.error(message)
+                        _invalidate_activity_cache(store)
                         st.rerun()
                 with reject_col:
                     if st.button(
@@ -409,6 +506,7 @@ def render_strategy_activity(store, youtube=None):
                                 "status": "rejected",
                                 "updated_at": _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
                             })
+                            _invalidate_activity_cache(store)
                             st.toast("Proposal skipped. YouTube metadata was not changed.")
                             st.rerun()
                         except Exception as error:
@@ -523,7 +621,9 @@ def render_strategy_activity(store, youtube=None):
             key="strategy_automation_mode_radio",
             help=(
                 "Paused: analysis only. Shadow: proposals are logged without YouTube writes. "
-                "Autonomous: only eligible high-confidence changes can publish after all safety gates."
+                "Autonomous: only measured packaging candidates that the model explicitly marks autonomous, "
+            "meet the confidence threshold, pass cooldown and quota checks, and satisfy every safety gate can publish. "
+            "Metadata-quality audits and model-requested reviews always stay in this queue."
             ),
         )
         selected_mode = {
@@ -591,6 +691,7 @@ def render_strategy_activity(store, youtube=None):
                     "max_monthly_publishes": max_monthly,
                     "max_metadata_reviews_per_run": max_review,
                 })
+                _invalidate_activity_cache(store)
                 st.success("Strategist settings saved.")
                 st.rerun()
             except Exception as error:

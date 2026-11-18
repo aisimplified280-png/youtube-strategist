@@ -8,6 +8,7 @@ Single chat assistant for optimizing existing YouTube videos and Shorts:
 """
 
 import json
+import time
 import streamlit as st
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -120,11 +121,14 @@ def render_app():
                 st.caption("Streamlit auth provider not configured in local environment.")
         return
 
-    # Claim legacy owner records for the verified channel owner.
-    if authorized and subject:
+    # One-time owner-record migration; do not repeat database work on every Streamlit rerun.
+    migration_key = f"_legacy_owner_claimed_{subject}"
+    if authorized and subject and not st.session_state.get(migration_key):
         try:
             claim_legacy_owner_records(subject)
+            st.session_state[migration_key] = True
         except Exception:
+            # Retry on a later run if the migration call failed.
             pass
 
     # Vault & Token Management
@@ -141,13 +145,20 @@ def render_app():
     persistent_store = None
     if supabase_url and supabase_service_key and subject:
         try:
-            persistent_store = SupabasePersistentStore(supabase_url, supabase_service_key, subject)
-            st.session_state["_copilot_persistent_store"] = persistent_store
+            cached_store = st.session_state.get("_copilot_persistent_store")
+            cached_owner = st.session_state.get("_copilot_persistent_store_owner")
+            if cached_store is None or cached_owner != subject:
+                cached_store = SupabasePersistentStore(supabase_url, supabase_service_key, subject)
+                st.session_state["_copilot_persistent_store"] = cached_store
+                st.session_state["_copilot_persistent_store_owner"] = subject
+            persistent_store = cached_store
         except Exception as error:
             st.session_state.pop("_copilot_persistent_store", None)
+            st.session_state.pop("_copilot_persistent_store_owner", None)
             st.warning(f"Persistent history is temporarily unavailable: {error}")
     else:
         st.session_state.pop("_copilot_persistent_store", None)
+        st.session_state.pop("_copilot_persistent_store_owner", None)
 
     if len(state_secret) >= 32:
         try:
@@ -162,33 +173,49 @@ def render_app():
             token_store = local_token_store
 
     # Migrate the existing encrypted local OAuth grant into the shared vault once.
-    if subject and token_store and local_token_store and token_store is not local_token_store:
-        for purpose in ("youtube", "memory"):
-            try:
+    migration_key = f"_oauth_vault_migrated_{subject}"
+    if (
+        subject and token_store and local_token_store
+        and token_store is not local_token_store
+        and not st.session_state.get(migration_key)
+    ):
+        try:
+            for purpose in ("youtube", "memory"):
                 if token_store.get_credentials_record(subject, purpose).get("status") == "missing":
                     local_record = local_token_store.get_credentials_record(subject, purpose)
                     if local_record.get("status") == "active":
                         token_store.save_credentials_json(subject, purpose, local_record["credentials_json"])
-            except Exception:
-                pass
+            st.session_state[migration_key] = True
+        except Exception:
+            # Retry a failed one-time migration on a later run.
+            pass
 
     # Handle incoming OAuth callback
     if subject and token_store:
         _handle_oauth_callback(secrets, subject, token_store)
 
-    # Restore the selected persistent conversation.
+    # Restore chat state with a short session cache. Streamlit reruns on every widget
+    # interaction; avoid repeating Supabase list queries on every rerun.
     if persistent_store:
         try:
-            conversations = persistent_store.list_conversations(limit=100)
+            now = time.monotonic()
+            cache = st.session_state.get("_copilot_conversations_cache") or {}
+            if now - float(cache.get("loaded_at", 0)) >= 45:
+                conversations = persistent_store.list_conversations(limit=30)
+                st.session_state["_copilot_conversations_cache"] = {
+                    "loaded_at": now, "items": conversations,
+                }
+            else:
+                conversations = cache.get("items") or []
+
             known_ids = {item["id"] for item in conversations}
             selected_id = st.session_state.get("_copilot_conversation_id")
             if selected_id not in known_ids:
-                # On a fresh login, resume the conversation holding the newest
-                # queued/running/review batch instead of creating an empty chat.
+                # Only inspect batch jobs when no saved conversation is selected.
                 latest_batch = None
                 try:
                     latest_batch = next((
-                        job for job in persistent_store.list_jobs(limit=50)
+                        job for job in persistent_store.list_jobs(limit=20)
                         if job.get("status") in {"queued", "running", "review"}
                         and job.get("conversation_id") in known_ids
                     ), None)
@@ -199,48 +226,52 @@ def render_app():
                 else:
                     created = persistent_store.create_conversation()
                     selected_id = created["id"]
+                    conversations = [created, *conversations][:30]
+                    st.session_state["_copilot_conversations_cache"] = {
+                        "loaded_at": now, "items": conversations,
+                    }
                 st.session_state["_copilot_conversation_id"] = selected_id
                 st.session_state["_copilot_history_loaded"] = False
                 st.session_state["strategist_chat_history"] = []
+
             if selected_id and not st.session_state.get("_copilot_history_loaded"):
                 messages = persistent_store.load_messages(selected_id)
                 st.session_state["strategist_chat_history"] = [
                     {"role": row["role"], "content": row["content"]} for row in messages
                 ]
                 st.session_state["_copilot_history_loaded"] = True
+
             if conversations:
                 with st.sidebar:
-                    st.markdown("### Chat history")
-                    st.caption("Select a previous conversation")
-                    # A compact clickable list is easier to scan than a single selectbox.
-                    for item in conversations[:12]:
-                        conversation_id = item.get("id")
-                        if not conversation_id:
-                            continue
-                        is_selected = conversation_id == selected_id
-                        title = str(item.get("title") or "Untitled conversation").strip()
-                        if len(title) > 42:
-                            title = title[:39].rstrip() + "…"
-                        updated = str(item.get("updated_at") or "")[:10]
-                        label = f"{'● ' if is_selected else ''}{title}\n{updated}"
-                        if st.button(
-                            label,
-                            key=f"copilot_history_{conversation_id}",
-                            type="primary" if is_selected else "secondary",
-                            use_container_width=True,
-                        ) and not is_selected:
-                            st.session_state["_copilot_conversation_id"] = conversation_id
-                            st.session_state["_copilot_history_loaded"] = False
-                            st.session_state["strategist_chat_history"] = []
-                            for key in (
-                                "strategist_target_reference", "strategist_chat_proposal",
-                                "strategist_chat_digest", "batch_metadata_review",
-                                "batch_metadata_payload", "batch_flow_step",
-                            ):
-                                st.session_state.pop(key, None)
-                            st.rerun()
-                    if len(conversations) > 12:
-                        st.caption(f"Showing the 12 most recent of {len(conversations)} saved conversations.")
+                    st.markdown("### Conversations")
+                    st.caption("Recent chats")
+                    conversation_by_id = {item["id"]: item for item in conversations if item.get("id")}
+                    conversation_ids = list(conversation_by_id)
+                    selected_from_sidebar = st.selectbox(
+                        "Open conversation",
+                        options=conversation_ids,
+                        index=(conversation_ids.index(selected_id)
+                               if selected_id in conversation_ids else 0),
+                        format_func=lambda conversation_id: (
+                            str(conversation_by_id[conversation_id].get("title") or "Untitled chat")[:48]
+                            + "  ·  "
+                            + str(conversation_by_id[conversation_id].get("updated_at") or "")[:10]
+                        ),
+                        label_visibility="collapsed",
+                        key=f"_copilot_history_selector_{selected_id}",
+                    )
+                    if selected_from_sidebar and selected_from_sidebar != selected_id:
+                        st.session_state["_copilot_conversation_id"] = selected_from_sidebar
+                        st.session_state["_copilot_history_loaded"] = False
+                        st.session_state["strategist_chat_history"] = []
+                        for key in (
+                            "strategist_target_reference", "strategist_chat_proposal",
+                            "strategist_chat_digest", "batch_metadata_review",
+                            "batch_metadata_payload", "batch_flow_step",
+                        ):
+                            st.session_state.pop(key, None)
+                        st.rerun()
+                    st.caption(f"{len(conversations)} recent conversations")
         except Exception as error:
             st.session_state["_copilot_persistence_warning"] = (
                 "Could not load saved chat history. Your current session remains available."
@@ -328,6 +359,8 @@ def render_app():
                     created = persistent_store.create_conversation()
                     st.session_state["_copilot_conversation_id"] = created["id"]
                     st.session_state["_copilot_history_loaded"] = True
+                    st.session_state["strategist_chat_history"] = []
+                    st.session_state.pop("_copilot_conversations_cache", None)
                 except Exception as error:
                     st.warning(f"Could not create a saved conversation: {error}")
             st.rerun()
@@ -368,7 +401,7 @@ def main():
         page_title="AI Simplified Lab — YouTube Metadata Copilot",
         page_icon="▶",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
     page = st.navigation(
         [st.Page(render_app, title="Metadata Copilot", icon="▶", default=True)],
