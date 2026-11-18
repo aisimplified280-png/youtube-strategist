@@ -96,6 +96,137 @@ class MetadataEditorUITests(unittest.TestCase):
         self.assertEqual(audit_id, "audit-1")
         self.assertEqual(store.values["proposed_metadata"]["snippet"]["title"], "After title")
 
+    def test_autonomous_metadata_publishes_only_after_confidence_and_caps_pass(self):
+        from unittest.mock import patch
+
+        import youtube_analytics_connector as connector
+
+        class FakeStore:
+            owner_key = "owner-hash"
+
+            def __init__(self):
+                self.audit = None
+                self.updates = []
+
+            def list_metadata_editor_audits(self, **kwargs):
+                return []
+
+            def create_metadata_editor_audit(self, values):
+                self.audit = {"id": "audit-1", **values}
+                return self.audit
+
+            def get_metadata_editor_audit(self, audit_id):
+                return self.audit
+
+            def update_metadata_editor_audit(self, audit_id, values):
+                self.audit.update(values)
+                self.updates.append(dict(values))
+                return dict(self.audit)
+
+            def claim_metadata_editor_audit(self, audit_id):
+                self.audit["status"] = "publishing"
+                return dict(self.audit)
+
+        store = FakeStore()
+        before = {
+            "snippet": {
+                "title": "Before title",
+                "description": "Description",
+                "tags": ["ai"],
+                "categoryId": "28",
+            }
+        }
+        draft = {"snippet": dict(before["snippet"])}
+        insight = {"recommendations": [{
+            "field": "title",
+            "confidence": 0.99,
+            "suggested_value": "After title",
+        }]}
+        with patch(
+            "ui.metadata_editor.apply_approved_resource_proposal",
+            return_value={"result": "success", "resource": {
+                "snippet": {**before["snippet"], "title": "After title"}
+            }},
+        ) as publish:
+            message, audit_id = _run_metadata_automation(
+                object(), store, "abcdefghijk", before, draft, None, insight,
+                {
+                    "metadata_mode": "autonomous",
+                    "metadata_daily_cap": 1,
+                    "minimum_confidence": 0.92,
+                    "emergency_pause": False,
+                },
+            )
+        self.assertEqual(audit_id, "audit-1")
+        self.assertIn("published and verified", message)
+        self.assertEqual(store.audit["status"], "approved_published")
+        self.assertEqual(store.audit["approved_by"], "automation:metadata")
+        publish.assert_called_once()
+
+    def test_autonomous_metadata_daily_attempt_cap_blocks_before_staging(self):
+        store = Mock()
+        store.list_metadata_editor_audits.side_effect = [
+            [{
+                "status": "verification_unavailable",
+                "result": {"automation_mode": "autonomous"},
+            }]
+        ]
+        before = {
+            "snippet": {
+                "title": "Before title",
+                "description": "Description",
+                "tags": ["ai"],
+                "categoryId": "28",
+            }
+        }
+        message, audit_id = _run_metadata_automation(
+            object(), store, "abcdefghijk", before, {"snippet": dict(before["snippet"])},
+            None,
+            {"recommendations": [{
+                "field": "title", "confidence": 0.99, "suggested_value": "After title"
+            }]},
+            {
+                "metadata_mode": "autonomous",
+                "metadata_daily_cap": 1,
+                "minimum_confidence": 0.92,
+                "emergency_pause": False,
+            },
+        )
+        self.assertIn("attempt cap reached", message)
+        self.assertIsNone(audit_id)
+        store.create_metadata_editor_audit.assert_not_called()
+
+    def test_uncertain_previous_metadata_outcome_blocks_another_auto_attempt(self):
+        store = Mock()
+        store.list_metadata_editor_audits.side_effect = [
+            [],
+            [{"status": "verification_unavailable", "video_id": "abcdefghijk"}],
+        ]
+        before = {
+            "snippet": {
+                "title": "Before title",
+                "description": "Description",
+                "tags": ["ai"],
+                "categoryId": "28",
+            }
+        }
+        message, audit_id = _run_metadata_automation(
+            object(), store, "abcdefghijk", before, {"snippet": dict(before["snippet"])},
+            None,
+            {"recommendations": [{
+                "field": "title", "confidence": 0.99, "suggested_value": "After title"
+            }]},
+            {
+                "metadata_mode": "autonomous",
+                "metadata_daily_cap": 2,
+                "minimum_confidence": 0.92,
+                "emergency_pause": False,
+            },
+        )
+        self.assertIn("uncertain outcome", message)
+        self.assertIsNone(audit_id)
+        store.create_metadata_editor_audit.assert_not_called()
+
     def test_empty_advanced_parts_do_not_create_unrelated_updates(self):
         before = {"snippet": {"title": "Title"}, "status": {"privacyStatus": "public"}}
         draft = {
