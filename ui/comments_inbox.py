@@ -357,6 +357,45 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
         st.error("Persistent storage is unavailable. Reply drafts cannot be saved safely.")
         return
 
+    # A compact pattern sample is deliberately limited to the latest 25 published
+    # threads; the UI states the sample size so it is not mistaken for a full-channel export.
+    summary_cache_key = "_comments_pattern_summary_sample"
+    summary_page_key = "_comments_page_published_"
+    if st.button("Refresh comment pattern summary", key="comments_pattern_summary_refresh"):
+        st.session_state.pop(summary_cache_key, None)
+        st.session_state.pop(summary_page_key, None)
+    if summary_cache_key not in st.session_state:
+        try:
+            with st.spinner("Scanning recent comments for recurring themes..."):
+                summary_page = _load_comment_page(youtube, "published", "")
+            st.session_state[summary_cache_key] = summary_page
+            st.session_state[summary_page_key] = summary_page
+        except Exception as error:
+            st.session_state[summary_cache_key] = {"items": [], "summary_error": str(error)}
+
+    summary_page = st.session_state.get(summary_cache_key) or {}
+    summary_items = summary_page.get("items") or []
+    summary = _comment_pattern_summary(summary_items)
+    with st.container(border=True):
+        st.subheader("Comment pattern summary")
+        st.caption(
+            f"Recent sample: {summary['sample_size']} published video/channel comment threads. "
+            "This is a sample, not a complete historical channel export."
+        )
+        summary_cols = st.columns(4)
+        summary_cols[0].metric("Questions", summary["questions"])
+        summary_cols[1].metric("Unanswered", summary["unanswered"])
+        summary_cols[2].metric("Positive feedback", summary["positive"])
+        summary_cols[3].metric("Patterns", len(summary["patterns"]))
+        if summary_page.get("summary_error"):
+            st.warning(f"Pattern sample unavailable: {summary_page['summary_error']}")
+        elif summary["patterns"]:
+            for item in summary["patterns"]:
+                st.markdown(f"**{item['label']}** · {item['count']} comments")
+                st.caption(f'Example: "{item["example"]}"')
+        else:
+            st.caption("No repeated themes were detected in this sample yet.")
+
     col_status, col_search = st.columns([1, 2])
     with col_status:
         status = st.selectbox(
@@ -446,12 +485,15 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
                 next_page = _load_comment_page(
                     youtube, status, search_terms, page_token=page["next_page_token"]
                 )
-            st.session_state[cache_key] = {
+            combined_page = {
                 "items": items + next_page["items"],
                 "next_page_token": next_page.get("next_page_token"),
                 "total_results": next_page.get("total_results") or page.get("total_results"),
                 "moderation_status": status,
             }
+            st.session_state[cache_key] = combined_page
+            if status == "published" and not search_terms:
+                st.session_state[summary_cache_key] = combined_page
             st.rerun()
         except Exception as error:
             st.error(f"Could not load more comments: {error}")
