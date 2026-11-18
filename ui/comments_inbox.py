@@ -458,6 +458,7 @@ def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], se
         for item in existing_drafts
         if item.get("parent_comment_id")
     }
+    attempted_this_run = 0
 
     for thread in (items or [])[:5]:
         parent_id = str(thread.get("top_level_comment_id") or "")
@@ -535,7 +536,7 @@ def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], se
         if not eligible:
             result["drafted"] += 1
             continue
-        if daily_cap == 0 or len(attempted_today) + result["published"] >= daily_cap:
+        if daily_cap == 0 or len(attempted_today) + attempted_this_run >= daily_cap:
             result["drafted"] += 1
             result["notes"].append("Daily autonomous reply attempt cap reached; the remaining suggestion was left for review.")
             continue
@@ -544,6 +545,7 @@ def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], se
         if not audit_id:
             result["drafted"] += 1
             continue
+        attempted_this_run += 1
         try:
             approved = store.update_comment_reply_draft(audit_id, {
                 "status": "approved",
