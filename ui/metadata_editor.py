@@ -449,6 +449,7 @@ def _render_metadata_insight_summary(
             "[YouTube metadata limits](https://developers.google.com/youtube/data/reference/rest/v3/videos) · "
             "[YouTube tags guidance](https://support.google.com/youtube/answer/146402)"
         )
+    return insight
 
 
 def _run_metadata_automation(
