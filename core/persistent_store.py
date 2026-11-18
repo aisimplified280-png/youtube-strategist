@@ -686,6 +686,19 @@ class SupabasePersistentStore:
         }, prefer="return=representation")
         return rows[0] if rows else None
 
+    def claim_metadata_editor_audit(self, audit_id: str) -> Optional[Dict[str, Any]]:
+        """Atomically transition an owner-approved metadata proposal into publishing."""
+        rows = self._request("PATCH", "metadata_editor_audits", params={
+            "id": f"eq.{audit_id}",
+            "owner_key": f"eq.{self.owner_key}",
+            "status": "eq.approved",
+            "select": "*",
+        }, payload={
+            "status": "publishing",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, prefer="return=representation")
+        return rows[0] if rows else None
+
     def get_publish_request(self, request_id: str) -> Optional[Dict[str, Any]]:
         """Read one publishing request, scoped to the authenticated owner."""
         if not self.owner_key:
