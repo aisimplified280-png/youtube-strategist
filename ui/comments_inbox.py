@@ -262,7 +262,17 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             key="comments_moderation_status",
         )
     with col_search:
-        search_terms = st.text_input("Search comments", key="comments_search_terms")
+        with st.form("comments_search_form"):
+            search_input = st.text_input(
+                "Search comments",
+                value=st.session_state.get("comments_search_committed", ""),
+                key="comments_search_input",
+            )
+            search_clicked = st.form_submit_button("Search")
+    if search_clicked:
+        st.session_state["comments_search_committed"] = search_input.strip()
+        st.rerun()
+    search_terms = st.session_state.get("comments_search_committed", "")
     cache_key = f"_comments_page_{status}_{search_terms.strip().casefold()}"
     if st.button("Refresh latest comments", key=f"comments_refresh_{status}_{search_terms.strip().casefold()}"):
         try:
