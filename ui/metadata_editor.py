@@ -501,16 +501,28 @@ def _run_metadata_automation(
     now = datetime.now(timezone.utc)
     utc_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     cap = max(0, int(settings.get("metadata_daily_cap", 1)))
-    published_today = store.list_metadata_editor_audits(
-        status="approved_published", limit=10, published_since=utc_day_start
+    recent_attempts = store.list_metadata_editor_audits(
+        limit=20, include_result=True, updated_since=utc_day_start
     )
-    if cap == 0 or len(published_today) >= cap:
-        return f"Daily autonomous metadata cap reached ({len(published_today)}/{cap}).", audit_id
+    attempted_today = [
+        row for row in recent_attempts
+        if (row.get("result") or {}).get("automation_mode") == "autonomous"
+        and row.get("status") in {
+            "approved", "publishing", "approved_published",
+            "failed", "verification_unavailable", "stale",
+        }
+    ]
+    if cap == 0 or len(attempted_today) >= cap:
+        return f"Daily autonomous metadata attempt cap reached ({len(attempted_today)}/{cap}).", audit_id
 
-    previous = store.list_metadata_editor_audits(
-        status="approved_published", video_id=video_id, limit=1
-    )
-    if previous:
+    previous = store.list_metadata_editor_audits(video_id=video_id, limit=1)
+    if previous and previous[0].get("status") == "verification_unavailable":
+        return (
+            "A previous metadata update for this video has an uncertain outcome. "
+            "Verify it in YouTube Studio and resolve the audit before attempting another automatic update.",
+            audit_id,
+        )
+    if previous and previous[0].get("status") == "approved_published":
         try:
             published_at = datetime.fromisoformat(
                 str(previous[0].get("published_at") or "").replace("Z", "+00:00")
