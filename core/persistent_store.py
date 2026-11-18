@@ -662,7 +662,8 @@ class SupabasePersistentStore:
 
     def list_comment_reply_drafts(
         self, *, status: Optional[str] = None, limit: int = 20,
-        published_since: Optional[str] = None,
+        published_since: Optional[str] = None, thread_id: Optional[str] = None,
+        parent_comment_id: Optional[str] = None,
     ) -> list[Dict[str, Any]]:
         params = {
             "owner_key": f"eq.{self.owner_key}",
@@ -674,6 +675,10 @@ class SupabasePersistentStore:
             params["status"] = f"eq.{status}"
         if published_since:
             params["published_at"] = f"gte.{published_since}"
+        if thread_id:
+            params["thread_id"] = f"eq.{thread_id}"
+        if parent_comment_id:
+            params["parent_comment_id"] = f"eq.{parent_comment_id}"
         return self._request("GET", "comment_reply_drafts", params=params)
 
     def update_comment_reply_draft(
