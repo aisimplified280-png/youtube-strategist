@@ -1113,11 +1113,48 @@ def _render_persistent_batch_jobs(youtube, subject=None):
     store = st.session_state.get("_copilot_persistent_store")
     if not store:
         return
+    jobs_cache_key = f"_copilot_batch_jobs_cache_{store.owner_key}"
+    cached_jobs = st.session_state.get(jobs_cache_key) or {}
     try:
-        jobs = store.list_jobs(limit=20)
+        recent_jobs = store.list_jobs(limit=3)
     except Exception as error:
         st.warning(f"Could not load background batch jobs: {error}")
         return
+
+    # Always refresh the newest three jobs (the fragment polls active work), while
+    # retaining older pages that the owner explicitly loaded earlier.
+    job_by_id = {str(item.get("id")): item for item in recent_jobs if item.get("id")}
+    for item in cached_jobs.get("items") or []:
+        item_id = str(item.get("id") or "")
+        if item_id and item_id not in job_by_id:
+            job_by_id[item_id] = item
+    jobs = sorted(
+        job_by_id.values(),
+        key=lambda item: str(item.get("created_at") or ""),
+        reverse=True,
+    )
+    has_more_jobs = cached_jobs.get("has_more")
+    if has_more_jobs is None:
+        has_more_jobs = len(recent_jobs) == 3
+    next_job_cursor = cached_jobs.get("next_cursor") or (
+        recent_jobs[-1].get("created_at") if recent_jobs else None
+    )
+    st.session_state[jobs_cache_key] = {
+        "items": jobs,
+        "has_more": bool(has_more_jobs),
+        "next_cursor": next_job_cursor,
+    }
+
+    active_id = st.session_state.get("_copilot_active_job_id")
+    if active_id and str(active_id) not in job_by_id:
+        # A selected older job is resolved by ID, not by downloading the full history.
+        try:
+            selected_older_job = store.get_job(active_id)
+            if selected_older_job and selected_older_job.get("owner_key", store.owner_key) == store.owner_key:
+                jobs.append(selected_older_job)
+                job_by_id[str(active_id)] = selected_older_job
+        except Exception:
+            pass
     if not jobs:
         return
 
@@ -1166,6 +1203,28 @@ def _render_persistent_batch_jobs(youtube, subject=None):
             index=list(labels).index(default_label) if default_label in labels else 0,
             key="persistent_batch_job_selector",
         )
+        if has_more_jobs and st.button(
+            "Load 3 older batch runs",
+            key="copilot_load_older_batch_jobs",
+            use_container_width=True,
+        ):
+            try:
+                older_page = store.list_jobs(limit=3, before=next_job_cursor)
+                existing_ids = {str(item.get("id")) for item in jobs}
+                merged_jobs = jobs + [
+                    item for item in older_page
+                    if str(item.get("id")) not in existing_ids
+                ]
+                st.session_state[jobs_cache_key] = {
+                    "items": merged_jobs,
+                    "has_more": len(older_page) == 3,
+                    "next_cursor": (
+                        older_page[-1].get("created_at") if older_page else next_job_cursor
+                    ),
+                }
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not load older batch runs: {error}")
         job_id = labels[selected_label]
         st.session_state["_copilot_active_job_id"] = job_id
         job = next((item for item in jobs if str(item.get("id")) == str(job_id)), None)
