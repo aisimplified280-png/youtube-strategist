@@ -145,12 +145,15 @@ def compute_comment_reply_digest(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def publish_approved_comment_reply(youtube, draft: dict, owner_key: str) -> dict:
-    """Server-side manual-approval gate for publishing one persisted reply draft."""
+def publish_approved_comment_reply(
+    youtube, draft: dict, owner_key: str, *, allow_automation: bool = False
+) -> dict:
+    """Server-side manual or explicitly enabled automation approval gate."""
     if not isinstance(draft, dict) or draft.get("status") != "publishing":
         raise PermissionError("The reply draft has not passed the explicit approval transition.")
-    if not owner_key or draft.get("approved_by") != owner_key or not draft.get("approved_at"):
-        raise PermissionError("The reply draft has no approval from the verified channel owner.")
+    expected_actor = "automation:comments" if allow_automation else owner_key
+    if not owner_key or draft.get("approved_by") != expected_actor or not draft.get("approved_at"):
+        raise PermissionError("The reply draft has no valid owner or enabled-automation approval.")
     expected = compute_comment_reply_digest(
         owner_key,
         str(draft.get("thread_id") or ""),
