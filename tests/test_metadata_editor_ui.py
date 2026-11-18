@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from ui.metadata_editor import _changed_parts, _parse_video_id
