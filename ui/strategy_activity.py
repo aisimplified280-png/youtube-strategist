@@ -260,7 +260,6 @@ def render_strategy_activity(store, youtube=None):
                     hide_index=True,
                 )
     
-        if active_section == "Overview":
         latest = runs[0] if runs else None
         if not latest:
             st.info(
