@@ -56,8 +56,9 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         self.assertNotIn("page_memory", app_code, "app.py must not define memory page")
         self.assertIn("render_copilot_chat", app_code, "app.py must render the copilot chat directly")
         self.assertIn('st.tabs(["Metadata Copilot", "Channel Strategist"])', app_code)
-        self.assertIn("copilot_history_{conversation_id}", app_code)
-        self.assertNotIn("st.selectbox(", app_code, "Conversation history must use clickable items, not a dropdown.")
+        self.assertIn("st.selectbox(", app_code, "Conversation history should use one compact recent-chat selector.")
+        self.assertIn("_copilot_history_selector_{selected_id}", app_code)
+        self.assertIn("list_conversations(limit=30)", app_code, "Recent chat history should be bounded for fast rendering.")
 
     def test_gemini_defaults_match_owner_api_key_benchmark(self):
         from strategist_chat import (
