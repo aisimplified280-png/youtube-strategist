@@ -49,6 +49,8 @@ class CommentsInboxUITests(unittest.TestCase):
         self.assertIn("_comment_pattern_summary", source)
         self.assertIn("Recent sample:", source)
         self.assertIn("Suggested reply (edit before saving)", source)
+        self.assertIn('elif analysis.get("suggested_reply"):', source)
+        self.assertIn("The suggested text is shown for reference but cannot be submitted here.", source)
         self.assertIn("comment_snapshot = str(thread.get(\"text\") or \"\")[:5000]", source)
         self.assertIn('"channel_id": CHANNEL_ID', source)
         self.assertNotIn('"channel_id": "UCS6Sb5rfaEnWTVPGyQlnHFQ"', source)
