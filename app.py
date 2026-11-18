@@ -201,41 +201,37 @@ def render_app():
             now = time.monotonic()
             cache = st.session_state.get("_copilot_conversations_cache") or {}
             if now - float(cache.get("loaded_at", 0)) >= 45:
-                conversations = persistent_store.list_conversations(limit=30)
+                conversations = persistent_store.list_conversations(limit=15)
                 st.session_state["_copilot_conversations_cache"] = {
                     "loaded_at": now, "items": conversations,
                 }
             else:
                 conversations = cache.get("items") or []
 
-            known_ids = {item["id"] for item in conversations}
             selected_id = st.session_state.get("_copilot_conversation_id")
-            if selected_id not in known_ids:
-                # Only inspect batch jobs when no saved conversation is selected.
-                latest_batch = None
-                try:
-                    latest_batch = next((
-                        job for job in persistent_store.list_jobs(limit=20)
-                        if job.get("status") in {"queued", "running", "review"}
-                        and job.get("conversation_id") in known_ids
-                    ), None)
-                except Exception:
-                    latest_batch = None
-                if latest_batch:
-                    selected_id = latest_batch["conversation_id"]
-                else:
-                    created = persistent_store.create_conversation()
-                    selected_id = created["id"]
-                    conversations = [created, *conversations][:30]
-                    st.session_state["_copilot_conversations_cache"] = {
-                        "loaded_at": now, "items": conversations,
-                    }
+            conversation_by_id = {item["id"]: item for item in conversations if item.get("id")}
+            if selected_id and selected_id not in conversation_by_id:
+                # A selected older conversation may not be in the first recent page.
+                # Fetch only that record instead of silently creating a new chat.
+                selected_conversation = persistent_store.get_conversation(selected_id)
+                if selected_conversation and not selected_conversation.get("archived_at"):
+                    conversations = [selected_conversation, *conversations]
+                    conversation_by_id[selected_id] = selected_conversation
+            if not selected_id:
+                created = persistent_store.create_conversation()
+                selected_id = created["id"]
+                conversations = [created, *conversations]
+                st.session_state["_copilot_conversations_cache"] = {
+                    "loaded_at": now, "items": conversations[:15],
+                    "has_more": len(conversations) >= 15,
+                    "next_cursor": conversations[14].get("updated_at") if len(conversations) >= 15 else None,
+                }
                 st.session_state["_copilot_conversation_id"] = selected_id
                 st.session_state["_copilot_history_loaded"] = False
                 st.session_state["strategist_chat_history"] = []
 
             if selected_id and not st.session_state.get("_copilot_history_loaded"):
-                messages = persistent_store.load_messages(selected_id)
+                messages = persistent_store.load_messages(selected_id, limit=50)
                 st.session_state["strategist_chat_history"] = [
                     {"role": row["role"], "content": row["content"]} for row in messages
                 ]
@@ -271,7 +267,25 @@ def render_app():
                         ):
                             st.session_state.pop(key, None)
                         st.rerun()
-                    st.caption(f"{len(conversations)} recent conversations")
+                    if st.button("Load more chats", key="copilot_load_more_chats", use_container_width=True):
+                        current_cache = st.session_state.get("_copilot_conversations_cache") or {}
+                        cursor = current_cache.get("next_cursor") or (
+                            conversations[-1].get("updated_at") if conversations else None
+                        )
+                        if cursor:
+                            next_page = persistent_store.list_conversations(limit=15, before=cursor)
+                            existing = {str(item.get("id")) for item in conversations}
+                            merged = conversations + [
+                                item for item in next_page if str(item.get("id")) not in existing
+                            ]
+                            st.session_state["_copilot_conversations_cache"] = {
+                                "loaded_at": time.monotonic(),
+                                "items": merged,
+                                "has_more": len(next_page) == 15,
+                                "next_cursor": next_page[-1].get("updated_at") if next_page else None,
+                            }
+                            st.rerun()
+                    st.caption(f"Showing {len(conversations)} recent conversations")
         except Exception as error:
             st.session_state["_copilot_persistence_warning"] = (
                 "Could not load saved chat history. Your current session remains available."
