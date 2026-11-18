@@ -264,6 +264,13 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
     with col_search:
         search_terms = st.text_input("Search comments", key="comments_search_terms")
     cache_key = f"_comments_page_{status}_{search_terms.strip().casefold()}"
+    if st.button("Refresh latest comments", key=f"comments_refresh_{status}_{search_terms.strip().casefold()}"):
+        try:
+            with st.spinner("Refreshing the latest comments..."):
+                st.session_state[cache_key] = _load_comment_page(youtube, status, search_terms)
+            st.rerun()
+        except Exception as error:
+            st.error(f"Could not refresh comments: {error}")
     if cache_key not in st.session_state:
         try:
             with st.spinner("Loading the latest channel comments..."):
