@@ -12,10 +12,11 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
             "verified-owner-subject",
         )
 
-    def _response(self):
+    def _response(self, rows=None):
         response = Mock()
-        response.content = b"[]"
-        response.json.return_value = []
+        rows = rows or []
+        response.content = b"[]" if not rows else b"[{}]"
+        response.json.return_value = rows
         return response
 
     def test_list_jobs_uses_compact_status_projection(self):
@@ -31,6 +32,41 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         self.assertIn("conversation_id", selected)
         self.assertNotIn("input_payload", selected)
         self.assertNotIn("instruction_text", selected)
+
+    def test_conversation_list_uses_recent_page_and_cursor(self):
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_conversations()
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["limit"], "15")
+        self.assertEqual(params["order"], "updated_at.desc")
+
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(),
+        ) as request:
+            self.store.list_conversations(limit=15, before="2026-11-18T10:00:00Z")
+        self.assertEqual(
+            request.call_args.kwargs["params"]["updated_at"],
+            "lt.2026-11-18T10:00:00Z",
+        )
+
+    def test_message_loader_fetches_newest_page_then_restores_chronology(self):
+        rows = [
+            {"id": "new", "created_at": "2026-11-18T10:02:00Z"},
+            {"id": "old", "created_at": "2026-11-18T10:01:00Z"},
+        ]
+        with patch(
+            "core.persistent_store.requests.request",
+            return_value=self._response(rows),
+        ) as request:
+            messages = self.store.load_messages("conversation-1", limit=50)
+        self.assertEqual([row["id"] for row in messages], ["old", "new"])
+        params = request.call_args.kwargs["params"]
+        self.assertEqual(params["limit"], "50")
+        self.assertEqual(params["order"], "created_at.desc")
 
     def test_get_job_rows_uses_only_review_fields(self):
         with patch(
