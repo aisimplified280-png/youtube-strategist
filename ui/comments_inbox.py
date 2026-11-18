@@ -235,7 +235,7 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
                     saved = store.create_comment_reply_draft({
                         "channel_id": "UCS6Sb5rfaEnWTVPGyQlnHFQ",
                         "video_id": thread.get("video_id"),
-                        "video_title": thread.get("video_title") or "",
+                        "video_title": thread.get("video_title") or st.session_state.get("_comment_video_title_" + str(thread.get("video_id") or ""), ""),
                         "thread_id": thread_id,
                         "parent_comment_id": parent_id,
                         "comment_text_snapshot": str(thread.get("text") or "")[:5000],
