@@ -600,6 +600,8 @@ def _append_history(history: List[Dict[str, str]], role: str, content: str):
     if store and conversation_id:
         try:
             store.append_message(conversation_id, role, content)
+            # A new message changes the saved-history ordering and makes a draft visible.
+            st.session_state.pop("_copilot_conversations_cache", None)
             if role == "user":
                 titled_key = f"_copilot_title_initialized_{conversation_id}"
                 if not st.session_state.get(titled_key):
