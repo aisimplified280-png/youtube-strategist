@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import time
+from datetime import datetime, timezone
 import streamlit as st
 
 import youtube_analytics_connector as connector
 from core.strategy_learning import rollback_strategy_action
+from core.metadata.resource import apply_approved_resource_proposal, normalize_video_resource
 
 
 def _pretty_status(value: str) -> str:
@@ -112,6 +115,78 @@ def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
             "status": "failed",
             "error": f"{type(error).__name__}: {str(error)[:1500]}",
             "updated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        })
+        return False, f"Publishing failed safely: {type(error).__name__}: {str(error)[:500]}"
+
+
+def _publish_metadata_editor_audit(store, youtube, audit: dict) -> tuple[bool, str]:
+    """Publish one full-metadata draft from the central review queue."""
+    audit_id = str(audit.get("id") or "")
+    video_id = str(audit.get("video_id") or "")
+    if youtube is None:
+        return False, "Reconnect YouTube before publishing this metadata proposal."
+    if not audit_id or not video_id or audit.get("status") != "pending_review":
+        return False, "This metadata proposal is incomplete or no longer pending review."
+    try:
+        before = normalize_video_resource(audit.get("before_metadata") or {})
+        proposed = normalize_video_resource(audit.get("proposed_metadata") or {})
+        digest = str(audit.get("approval_digest") or "")
+        expected = connector.metadata_proposal_digest(video_id, before, proposed)
+        if not digest or not hmac.compare_digest(expected, digest):
+            store.update_metadata_editor_audit(audit_id, {
+                "status": "stale",
+                "error": "The saved proposal digest no longer matches its exact before/after metadata.",
+            })
+            return False, "The saved proposal changed after review. Reopen the video and stage a fresh draft."
+
+        approved = store.update_metadata_editor_audit(audit_id, {
+            "status": "approved",
+            "approved_by": store.owner_key,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+        if not approved:
+            return False, "Could not persist the owner approval."
+        claimed = store.update_metadata_editor_audit(audit_id, {"status": "publishing"})
+        if not claimed:
+            return False, "Could not claim this proposal for publishing."
+
+        result = apply_approved_resource_proposal(
+            youtube, video_id, before, proposed, digest
+        )
+        if result.get("result") != "success":
+            store.update_metadata_editor_audit(audit_id, {
+                "status": "rejected",
+                "result": result,
+                "error": "The proposal contained no metadata changes.",
+            })
+            return False, "There are no metadata changes to publish."
+
+        store.update_metadata_editor_audit(audit_id, {
+            "status": "approved_published",
+            "after_metadata": result.get("resource") or proposed,
+            "result": result,
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+        return True, "Metadata update was published and verified."
+    except connector.MetadataVerificationUnavailableError as error:
+        store.update_metadata_editor_audit(audit_id, {
+            "status": "verification_unavailable",
+            "error": str(error)[:1500],
+        })
+        return False, "The update may have reached YouTube, but verification is unavailable. Reload the video before retrying."
+    except RuntimeError as error:
+        status = "stale" if "changed after review" in str(error).casefold() else "failed"
+        store.update_metadata_editor_audit(audit_id, {
+            "status": status,
+            "error": str(error)[:1500],
+        })
+        return False, str(error)
+    except Exception as error:
+        store.update_metadata_editor_audit(audit_id, {
+            "status": "failed",
+            "error": f"{type(error).__name__}: {str(error)[:1500]}",
         })
         return False, f"Publishing failed safely: {type(error).__name__}: {str(error)[:500]}"
 
