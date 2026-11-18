@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from core.comments.analyzer import analyze_comment_thread
+from youtube_analytics_connector import CHANNEL_ID
+
 from core.comments.youtube_comments import (
     CommentVerificationUnavailable,
     compute_comment_reply_digest,
@@ -25,7 +27,7 @@ MODERATION_LABELS = {
 def _load_comment_page(youtube, status: str, search_terms: str, page_token: str | None = None):
     return list_channel_comment_threads(
         youtube,
-        "UCS6Sb5rfaEnWTVPGyQlnHFQ",
+        CHANNEL_ID,
         moderation_status=status,
         page_token=page_token,
         max_results=25,
@@ -36,6 +38,7 @@ def _load_comment_page(youtube, status: str, search_terms: str, page_token: str 
 
 def _render_pending_replies(youtube, store):
     st.subheader("Pending reply drafts")
+    st.caption("Publishing a reply uses 50 YouTube Data API quota units. Every reply requires your approval.")
     drafts = store.list_comment_reply_drafts(status="pending_review", limit=20)
     if not drafts:
         st.caption("No replies are waiting for your approval.")
