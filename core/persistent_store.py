@@ -384,12 +384,19 @@ class SupabasePersistentStore:
             "limit": str(max(1, min(int(limit), 50))),
         })
 
-    def list_strategy_actions(self, *, status: Optional[str] = None, cadence: Optional[str] = None, limit: int = 20) -> list[Dict[str, Any]]:
+    def list_strategy_actions(
+        self, *, status: Optional[str] = None, cadence: Optional[str] = None,
+        limit: int = 20, include_metadata: bool = True,
+    ) -> list[Dict[str, Any]]:
         if not self.owner_key:
             raise PersistentStoreError("A verified owner-scoped store is required.")
+        projection = (
+            "id,run_id,video_id,video_title,priority,action_type,classification,status,cadence,confidence,diagnosis,rollback_of,reason,evidence,before_metadata,proposed_metadata,after_metadata,approval_digest,model_name,error,result,created_at,updated_at,executed_at"
+            if include_metadata else "id,run_id,video_id,status,created_at,updated_at"
+        )
         params = {
             "owner_key": f"eq.{self.owner_key}",
-            "select": "id,run_id,video_id,video_title,priority,action_type,classification,status,cadence,confidence,diagnosis,rollback_of,reason,evidence,before_metadata,proposed_metadata,after_metadata,approval_digest,model_name,error,result,created_at,updated_at,executed_at",
+            "select": projection,
             "order": "created_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }
