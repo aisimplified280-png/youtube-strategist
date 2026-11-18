@@ -57,13 +57,6 @@ def normalize_video_resource(resource: dict) -> dict:
             for language, value in localizations.items()
             if isinstance(value, dict)
         }
-    for part, fields in (
-        ("brandPartner", BRAND_PARTNER_FIELDS),
-        ("paidProductPlacementDetails", PAID_PLACEMENT_FIELDS),
-    ):
-        value = resource.get(part)
-        if isinstance(value, dict):
-            snapshot[part] = _pick(value, fields)
     return snapshot
 
 
