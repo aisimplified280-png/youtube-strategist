@@ -25,6 +25,52 @@ class CommentAnalysisError(RuntimeError):
     pass
 
 
+def _safe_reply_for_category(category: str, *, fact_check: bool = False) -> str:
+    """Offer a non-factual clarification reply when AI facts are uncertain."""
+    if fact_check:
+        return "Thanks for asking! I don't want to guess—could you share which exact feature or plan you mean?"
+    templates = {
+        "question": "Thanks for asking! Which part would you like me to explain first?",
+        "correction": "Thanks for pointing that out. Could you share the detail or source you're referring to?",
+        "praise": "Thanks for watching! Glad you found it helpful.",
+        "suggestion": "Thanks for the suggestion! What would be most useful for us to cover?",
+        "confusion": "Thanks for letting us know. Which step should I clarify?",
+        "criticism": "Thanks for the feedback. Which part felt unclear or did not work as expected?",
+        "other": "Thanks for commenting! What would you like to learn more about?",
+    }
+    return templates.get(category, "")
+
+
+def _fallback_comment_analysis(text: str) -> dict:
+    """Always provide a safe, neutral draft when the configured AI providers fail."""
+    lowered = str(text or "").casefold()
+    if any(term in lowered for term in ("spam", "scam", "subscribe to my", "dm me", "whatsapp me")):
+        category, sentiment, recommendation, fact_check = "spam", "negative", "ignore", False
+    elif any(term in lowered for term in ("wrong", "incorrect", "outdated", "not true", "fake")):
+        category, sentiment, recommendation, fact_check = "correction", "negative", "verify_first", True
+    elif any(term in lowered for term in ("thanks", "thank you", "great", "awesome", "helpful", "love this")):
+        category, sentiment, recommendation, fact_check = "praise", "positive", "reply", False
+    elif any(term in lowered for term in ("confused", "don't understand", "not clear", "unclear", "how do i")):
+        category, sentiment, recommendation, fact_check = "confusion", "neutral", "reply", False
+    elif any(term in lowered for term in ("please make", "please cover", "can you explain", "tutorial on", "suggestion")):
+        category, sentiment, recommendation, fact_check = "suggestion", "neutral", "reply", False
+    elif "?" in lowered or any(term in lowered for term in ("how ", "what ", "which ", "when ", "where ", "is it free", "price")):
+        category, sentiment, recommendation, fact_check = "question", "neutral", "verify_first", True
+    else:
+        category, sentiment, recommendation, fact_check = "other", "neutral", "reply", False
+    reply = "" if recommendation == "ignore" else _safe_reply_for_category(category, fact_check=fact_check)
+    return {
+        "category": category,
+        "sentiment": sentiment,
+        "confidence": 0.55,
+        "reason": "AI analysis was unavailable; this is a conservative rule-based fallback.",
+        "reply_recommendation": recommendation,
+        "needs_fact_check": fact_check,
+        "suggested_reply": reply,
+        "safe_fallback": True,
+    }
+
+
 def _parse_analysis(raw: str) -> dict | None:
     try:
         data = json.loads(_clean_json_text(raw))
@@ -51,7 +97,9 @@ def _parse_analysis(raw: str) -> dict | None:
         reply = ""
     elif needs_fact_check or confidence < 0.65:
         recommendation = "verify_first"
-        reply = ""
+        reply = _safe_reply_for_category(category, fact_check=True)
+    elif not reply:
+        reply = _safe_reply_for_category(category)
     if len(reply.split()) > 35:
         return None
     return {
@@ -140,7 +188,13 @@ Rules:
 Thread:
 {json.dumps(context, ensure_ascii=False)}
 """
-    raw, provider, model = _generate_groq_first(secrets, prompt)
+    try:
+        raw, provider, model = _generate_groq_first(secrets, prompt)
+    except CommentAnalysisError:
+        fallback = _fallback_comment_analysis(text)
+        fallback["provider"] = "rule-based fallback"
+        fallback["model"] = "safe-clarification"
+        return fallback
     parsed = _parse_analysis(raw)
     if not parsed:
         repair = (
@@ -148,10 +202,19 @@ Thread:
             + "\nReturn valid JSON only. Repair this response without adding facts:\n"
             + str(raw)[:2000]
         )
-        raw, provider, model = _generate_groq_first(secrets, repair)
+        try:
+            raw, provider, model = _generate_groq_first(secrets, repair)
+        except CommentAnalysisError:
+            fallback = _fallback_comment_analysis(text)
+            fallback["provider"] = "rule-based fallback"
+            fallback["model"] = "safe-clarification"
+            return fallback
         parsed = _parse_analysis(raw)
     if not parsed:
-        raise CommentAnalysisError("AI could not return a valid, policy-compliant comment analysis.")
+        fallback = _fallback_comment_analysis(text)
+        fallback["provider"] = "rule-based fallback"
+        fallback["model"] = "safe-clarification"
+        return fallback
     parsed["provider"] = provider
     parsed["model"] = model
     return parsed
