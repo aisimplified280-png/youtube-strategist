@@ -64,7 +64,8 @@ class SupabasePersistentStore:
         """Return one recent-chat page; use the last row's updated_at as the next-page cursor."""
         params = {
             "owner_key": f"eq.{self.owner_key}", "archived_at": "is.null",
-            "select": "id,title,created_at,updated_at", "order": "updated_at.desc",
+            "last_message_at": "not.is.null",
+            "select": "id,title,created_at,updated_at,last_message_at", "order": "updated_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }
         if before:
@@ -110,13 +111,17 @@ class SupabasePersistentStore:
     def append_message(self, conversation_id: str, role: str, content: str, metadata=None):
         if role not in {"user", "assistant", "system"}:
             raise ValueError("Unsupported chat message role.")
+        timestamp = datetime.now(timezone.utc).isoformat()
         rows = self._request("POST", "copilot_messages", payload={
             "conversation_id": conversation_id, "owner_key": self.owner_key,
             "role": role, "content": str(content), "metadata": metadata or {},
         }, prefer="return=representation")
         self._request("PATCH", "copilot_conversations", params={
             "id": f"eq.{conversation_id}", "owner_key": f"eq.{self.owner_key}",
-        }, payload={"updated_at": datetime.now(timezone.utc).isoformat()}, prefer="return=minimal")
+        }, payload={
+            "updated_at": timestamp,
+            "last_message_at": timestamp,
+        }, prefer="return=minimal")
         return rows[0] if rows else None
 
     def enqueue_batch(self, conversation_id: Optional[str], instruction: str,
@@ -145,12 +150,16 @@ class SupabasePersistentStore:
             self._request("POST", "batch_job_rows", payload=rows_payload, prefer="return=minimal")
         return job
 
-    def list_jobs(self, limit: int = 30) -> list[Dict[str, Any]]:
-        return self._request("GET", "batch_jobs", params={
+    def list_jobs(self, limit: int = 3, before: Optional[str] = None) -> list[Dict[str, Any]]:
+        """Return a bounded recent-job page; older runs are fetched by cursor on demand."""
+        params = {
             "owner_key": f"eq.{self.owner_key}",
             "select": "id,conversation_id,created_at,source_type,status,total_count,processed_count,failed_count,last_error,started_at,finished_at,updated_at",
             "order": "created_at.desc", "limit": str(max(1, min(int(limit), 100))),
-        })
+        }
+        if before:
+            params["created_at"] = f"lt.{before}"
+        return self._request("GET", "batch_jobs", params=params)
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         rows = self._request("GET", "batch_jobs", params={
