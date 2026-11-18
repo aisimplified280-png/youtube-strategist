@@ -147,9 +147,9 @@ def _publish_metadata_editor_audit(store, youtube, audit: dict) -> tuple[bool, s
         })
         if not approved:
             return False, "Could not persist the owner approval."
-        claimed = store.update_metadata_editor_audit(audit_id, {"status": "publishing"})
+        claimed = store.claim_metadata_editor_audit(audit_id)
         if not claimed:
-            return False, "Could not claim this proposal for publishing."
+            return False, "This proposal was already claimed or is no longer approved."
 
         result = apply_approved_resource_proposal(
             youtube, video_id, before, proposed, digest
