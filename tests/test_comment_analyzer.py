@@ -47,6 +47,14 @@ class CommentAnalyzerTests(unittest.TestCase):
         self.assertEqual(result["reply_recommendation"], "verify_first")
         self.assertEqual(result["suggested_reply"], "")
 
+    def test_low_confidence_analysis_never_proposes_a_publishable_reply(self):
+        result = _parse_analysis(json.dumps(valid_analysis(
+            confidence=0.5,
+            suggested_reply="A reply that should not be sent.",
+        )))
+        self.assertEqual(result["reply_recommendation"], "verify_first")
+        self.assertEqual(result["suggested_reply"], "")
+
     def test_invalid_category_confidence_and_long_reply_are_rejected(self):
         self.assertIsNone(_parse_analysis(json.dumps(valid_analysis(category="insult"))))
         self.assertIsNone(_parse_analysis(json.dumps(valid_analysis(confidence=1.5))))
