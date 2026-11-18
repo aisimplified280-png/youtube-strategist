@@ -412,6 +412,25 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
         st.error("Persistent storage is unavailable. Editing is disabled so drafts and approvals cannot be lost.")
         return
 
+    if st.session_state.pop("_metadata_editor_autoload", False):
+        reference = st.session_state.get("_metadata_editor_reference", "")
+        video_id = _parse_video_id(reference)
+        if video_id:
+            try:
+                current = fetch_video_resource(youtube, video_id)
+                st.session_state["_metadata_editor_video_id"] = video_id
+                st.session_state["_metadata_editor_before"] = current
+                st.session_state["_metadata_editor_draft"] = copy.deepcopy(current)
+                st.session_state["_metadata_editor_audit_id"] = None
+                pending = _resume_pending_draft(persistent_store, video_id, current)
+                if pending:
+                    st.session_state["_metadata_editor_draft"] = pending["proposed_metadata"]
+                    st.session_state["_metadata_editor_audit_id"] = pending["id"]
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not open the selected metadata draft: {error}")
+                return
+
     with st.form("metadata_editor_load_form"):
         reference = st.text_input(
             "YouTube video URL or ID",
