@@ -15,7 +15,10 @@ def _pretty_status(value: str) -> str:
 
 
 def _invalidate_activity_cache(store) -> None:
-    st.session_state.pop(f"_strategy_activity_cache_{store.owner_key}", None)
+    prefix = f"_strategy_activity_cache_{store.owner_key}_"
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(prefix):
+            st.session_state.pop(key, None)
 
 
 def _load_activity_snapshot(store, active_section: str = "Overview") -> dict:
@@ -194,69 +197,70 @@ def render_strategy_activity(store, youtube=None):
             "GLOBAL EMERGENCY PAUSE IS ACTIVE — automated publishing is blocked across all monitoring schedules."
         )
 
-    # A quick status strip for the three schedules. No cadence filter or dropdown.
-    latest_by_cadence = {}
-    for cadence in ("daily", "weekly", "monthly"):
-        latest_by_cadence[cadence] = next(
-            (run for run in runs if str(run.get("cadence") or "daily").lower() == cadence),
-            None,
-        )
-
-    cadence_cols = st.columns(3)
-    cadence_descriptions = {
-        "daily": "Daily monitoring · 08:00 IST",
-        "weekly": "Weekly review · Sunday 09:00 IST",
-        "monthly": "Monthly review · Day 5, 10:00 IST",
-    }
-    for col, cadence in zip(cadence_cols, ("daily", "weekly", "monthly")):
-        run = latest_by_cadence[cadence]
-        with col:
-            with st.container(border=True):
-                st.markdown(f"**{cadence.title()}**")
-                st.caption(cadence_descriptions[cadence])
-                if run:
-                    result = run.get("result") or {}
-                    status = _pretty_status(run.get("status"))
-                    st.markdown(f"**{status}**")
-                    st.caption(_short_timestamp(run.get("started_at") or run.get("created_at")))
-                    st.caption(
-                        f"{int(result.get('proposals') or 0)} proposals · "
-                        f"{int(result.get('shadow_published') or 0)} shadow · "
-                        f"{int(result.get('pending_review') or 0)} review"
-                    )
-                else:
-                    st.caption("No run recorded yet")
-
-    if watchdog_events:
-        latest_watchdog = watchdog_events[0]
-        st.markdown("### Backup trigger health")
-        st.caption(
-            f"Latest Supabase watchdog check: {_short_timestamp(latest_watchdog.get('created_at'))} · "
-            f"{_pretty_status(latest_watchdog.get('status'))}"
-        )
-        st.caption(str(latest_watchdog.get("detail") or "No additional details recorded."))
-        with st.expander("Recent backup-trigger checks"):
-            status_labels = {
-                "dispatch_submitted": "Dispatch submitted",
-                "dispatch_accepted": "GitHub accepted",
-                "dispatch_failed": "Dispatch failed",
-                "waiting_for_response": "Waiting for API response",
-                "waiting_for_run": "Waiting for worker run",
-                "run_detected": "Daily run already exists",
-                "secret_missing": "GitHub token missing",
-            }
-            st.dataframe(
-                [{
-                    "Checked (UTC)": _short_timestamp(item.get("created_at")),
-                    "Outcome": status_labels.get(item.get("status"), _pretty_status(item.get("status"))),
-                    "HTTP": item.get("http_status_code") or "",
-                    "Details": item.get("detail") or "",
-                } for item in watchdog_events],
-                use_container_width=True,
-                hide_index=True,
-            )
-
     if active_section == "Overview":
+        # A quick status strip for the three schedules. No cadence filter or dropdown.
+        latest_by_cadence = {}
+        for cadence in ("daily", "weekly", "monthly"):
+            latest_by_cadence[cadence] = next(
+                (run for run in runs if str(run.get("cadence") or "daily").lower() == cadence),
+                None,
+            )
+    
+        cadence_cols = st.columns(3)
+        cadence_descriptions = {
+            "daily": "Daily monitoring · 08:00 IST",
+            "weekly": "Weekly review · Sunday 09:00 IST",
+            "monthly": "Monthly review · Day 5, 10:00 IST",
+        }
+        for col, cadence in zip(cadence_cols, ("daily", "weekly", "monthly")):
+            run = latest_by_cadence[cadence]
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"**{cadence.title()}**")
+                    st.caption(cadence_descriptions[cadence])
+                    if run:
+                        result = run.get("result") or {}
+                        status = _pretty_status(run.get("status"))
+                        st.markdown(f"**{status}**")
+                        st.caption(_short_timestamp(run.get("started_at") or run.get("created_at")))
+                        st.caption(
+                            f"{int(result.get('proposals') or 0)} proposals · "
+                            f"{int(result.get('shadow_published') or 0)} shadow · "
+                            f"{int(result.get('pending_review') or 0)} review"
+                        )
+                    else:
+                        st.caption("No run recorded yet")
+    
+        if watchdog_events:
+            latest_watchdog = watchdog_events[0]
+            st.markdown("### Backup trigger health")
+            st.caption(
+                f"Latest Supabase watchdog check: {_short_timestamp(latest_watchdog.get('created_at'))} · "
+                f"{_pretty_status(latest_watchdog.get('status'))}"
+            )
+            st.caption(str(latest_watchdog.get("detail") or "No additional details recorded."))
+            with st.expander("Recent backup-trigger checks"):
+                status_labels = {
+                    "dispatch_submitted": "Dispatch submitted",
+                    "dispatch_accepted": "GitHub accepted",
+                    "dispatch_failed": "Dispatch failed",
+                    "waiting_for_response": "Waiting for API response",
+                    "waiting_for_run": "Waiting for worker run",
+                    "run_detected": "Daily run already exists",
+                    "secret_missing": "GitHub token missing",
+                }
+                st.dataframe(
+                    [{
+                        "Checked (UTC)": _short_timestamp(item.get("created_at")),
+                        "Outcome": status_labels.get(item.get("status"), _pretty_status(item.get("status"))),
+                        "HTTP": item.get("http_status_code") or "",
+                        "Details": item.get("detail") or "",
+                    } for item in watchdog_events],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+    
+        if active_section == "Overview":
         latest = runs[0] if runs else None
         if not latest:
             st.info(
