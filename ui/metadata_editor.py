@@ -451,6 +451,194 @@ def _render_metadata_insight_summary(
         )
 
 
+def _run_metadata_automation(
+    youtube, store, video_id: str, before: dict, draft: dict,
+    audit_id: str | None, insight: dict, settings: dict,
+) -> tuple[str, str | None]:
+    """Run the selected metadata mode; only high-confidence text fields can auto-publish."""
+    mode = str(settings.get("metadata_mode") or "shadow")
+    if settings.get("emergency_pause"):
+        return "Workspace emergency pause is active. No metadata actions were run.", audit_id
+    if mode == "paused":
+        return "Metadata automation is paused.", audit_id
+    if mode == "shadow":
+        return "Shadow run complete: suggestions were inspected only. Nothing was saved or published.", audit_id
+
+    minimum = float(settings.get("minimum_confidence", 0.92))
+    recommendations = [
+        item for item in (insight.get("recommendations") or [])
+        if item.get("field") in {"title", "description", "tags"}
+        and float(item.get("confidence") or 0) >= minimum
+    ]
+    current_snippet = before.get("snippet") or {}
+    updated = copy.deepcopy(draft)
+    proposed_snippet = copy.deepcopy(updated.get("snippet") or {})
+    for item in recommendations:
+        field = item["field"]
+        value = item.get("suggested_value")
+        if proposed_snippet.get(field) != value:
+            proposed_snippet[field] = copy.deepcopy(value)
+    if not recommendations or proposed_snippet == (draft.get("snippet") or {}):
+        return (
+            f"No safe text-only recommendation met the {minimum:.0%} confidence threshold.",
+            audit_id,
+        )
+    updated["snippet"] = proposed_snippet
+    _validate_resource(updated)
+
+    if mode == "review":
+        saved_id = _stage_draft(store, video_id, before, updated, audit_id)
+        return "Review mode: a high-confidence text-only draft was saved in Review & Publishing. Nothing was published.", saved_id
+
+    # Autonomous publishing is limited to snippet text fields, one video at a time.
+    if mode != "autonomous":
+        return "Unknown metadata automation mode; no action was taken.", audit_id
+    if youtube is None:
+        return "Reconnect YouTube before autonomous metadata publishing.", audit_id
+
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    utc_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    cap = max(0, int(settings.get("metadata_daily_cap", 1)))
+    published_today = store.list_metadata_editor_audits(
+        status="approved_published", limit=10, published_since=utc_day_start
+    )
+    if cap == 0 or len(published_today) >= cap:
+        return f"Daily autonomous metadata cap reached ({len(published_today)}/{cap}).", audit_id
+
+    previous = store.list_metadata_editor_audits(
+        status="approved_published", video_id=video_id, limit=1
+    )
+    if previous:
+        try:
+            published_at = datetime.fromisoformat(
+                str(previous[0].get("published_at") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            return "A previous metadata publication has no verifiable timestamp; the seven-day cooldown is enforced conservatively.", audit_id
+        if now - published_at < timedelta(days=7):
+            remaining = 7 - (now - published_at).days
+            return f"Seven-day metadata cooldown is active for this video (about {remaining} day(s) remain).", audit_id
+
+    checks = metadata_standard_checks(updated)
+    blocking = [item for item in checks if item.get("status") == "error"]
+    if blocking:
+        return "Autonomous publishing stopped by YouTube metadata validation: " + "; ".join(
+            item.get("detail", "") for item in blocking
+        ), audit_id
+
+    saved_id = _stage_draft(store, video_id, before, updated, audit_id)
+    audit = store.get_metadata_editor_audit(saved_id)
+    if not audit:
+        return "Could not reload the saved metadata proposal. Nothing was published.", saved_id
+
+    approved = store.update_metadata_editor_audit(saved_id, {
+        "status": "approved",
+        "approved_by": "automation:metadata",
+        "approved_at": now.isoformat(),
+        "result": {
+            "automation_mode": "autonomous",
+            "confidence_threshold": minimum,
+            "eligible_fields": [item["field"] for item in recommendations],
+            "manual_owner_approval": False,
+        },
+        "error": None,
+    })
+    if not approved:
+        return "Could not persist the autonomous approval. Nothing was published.", saved_id
+    claimed = store.claim_metadata_editor_audit(saved_id)
+    if not claimed:
+        return "The proposal was already claimed or is no longer approved.", saved_id
+
+    digest = str(claimed.get("approval_digest") or "")
+    try:
+        result = apply_approved_resource_proposal(
+            youtube, video_id, before, updated, digest
+        )
+        after = result.get("resource") or updated
+        store.update_metadata_editor_audit(saved_id, {
+            "status": "approved_published",
+            "after_metadata": after,
+            "result": {
+                **(result or {}),
+                "automation_mode": "autonomous",
+                "manual_owner_approval": False,
+                "confidence_threshold": minimum,
+                "eligible_fields": [item["field"] for item in recommendations],
+            },
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+        return "Autonomous metadata update was published and verified.", saved_id
+    except connector.MetadataVerificationUnavailableError as error:
+        store.update_metadata_editor_audit(saved_id, {
+            "status": "verification_unavailable",
+            "error": str(error)[:1200],
+        })
+        return "The metadata update may have reached YouTube, but verification was unavailable. Do not retry blindly.", saved_id
+    except Exception as error:
+        status = "stale" if "changed after review" in str(error).casefold() else "failed"
+        store.update_metadata_editor_audit(saved_id, {
+            "status": status,
+            "error": f"{type(error).__name__}: {str(error)[:1200]}",
+        })
+        return f"Autonomous metadata update stopped safely: {error}", saved_id
+
+
+def _render_metadata_automation_controls(store):
+    settings = store.get_workspace_automation_settings()
+    with st.expander("Metadata automation settings", expanded=False):
+        mode_options = ["paused", "shadow", "review", "autonomous"]
+        mode = st.selectbox(
+            "Metadata automation mode",
+            mode_options,
+            index=mode_options.index(settings.get("metadata_mode", "shadow")),
+            key="metadata_automation_mode",
+            format_func=lambda value: {
+                "paused": "Paused",
+                "shadow": "Shadow · analyze only",
+                "review": "Review · stage proposals",
+                "autonomous": "Autonomous · publish safe text changes",
+            }[value],
+        )
+        cap = st.number_input(
+            "Maximum autonomous metadata updates per UTC day",
+            min_value=0,
+            max_value=5,
+            value=int(settings.get("metadata_daily_cap", 1)),
+            key="metadata_automation_daily_cap",
+        )
+        confidence = st.slider(
+            "Minimum AI confidence for autonomous metadata",
+            min_value=0.85,
+            max_value=1.0,
+            value=float(settings.get("minimum_confidence", 0.92)),
+            step=0.01,
+            key="metadata_automation_confidence",
+        )
+        paused = st.checkbox(
+            "Emergency pause all workspace automation",
+            value=bool(settings.get("emergency_pause", False)),
+            key="metadata_automation_emergency_pause",
+        )
+        st.caption(
+            "Autonomous mode is opt-in and runs only when you press Run metadata automation for the loaded video. "
+            "It can publish title, description and tags only, requires the confidence threshold, YouTube validation, "
+            "a seven-day per-video cooldown and the daily cap. Visibility, audience, synthetic-media, license, localization "
+            "and scheduling fields always remain manual-review only."
+        )
+        if st.button("Save metadata automation settings", key="metadata_automation_save"):
+            saved = store.set_workspace_automation_settings({
+                "metadata_mode": mode,
+                "metadata_daily_cap": cap,
+                "minimum_confidence": confidence,
+                "emergency_pause": paused,
+            })
+            st.success(f"Metadata automation mode saved: {saved['metadata_mode']}.")
+            st.rerun()
+    return settings
+
+
 def render_metadata_editor(
     youtube, persistent_store, owner_subject: str,
     analytics=None, secrets: dict | None = None,
@@ -463,6 +651,8 @@ def render_metadata_editor(
     if persistent_store is None:
         st.error("Persistent storage is unavailable. Editing is disabled so drafts and approvals cannot be lost.")
         return
+
+    automation_settings = _render_metadata_automation_controls(persistent_store)
 
     if st.session_state.pop("_metadata_editor_autoload", False):
         reference = st.session_state.get("_metadata_editor_reference", "")
@@ -520,10 +710,24 @@ def render_metadata_editor(
 
     st.markdown(f"**Video:** https://www.youtube.com/watch?v={video_id}")
     st.caption(f"Currently published title: {(before.get('snippet') or {}).get('title', 'Unavailable')}")
-    _render_metadata_insight_summary(
+    insight = _render_metadata_insight_summary(
         youtube, analytics, secrets or {}, persistent_store, video_id,
         before, draft, st.session_state.get("_metadata_editor_audit_id"),
     )
+    if st.button(
+        "Run metadata automation for this video",
+        key=f"metadata_run_automation_{video_id}",
+        disabled=automation_settings.get("metadata_mode") == "paused",
+    ):
+        with st.spinner("Evaluating the selected metadata automation mode..."):
+            message, automation_audit_id = _run_metadata_automation(
+                youtube, persistent_store, video_id, before, draft,
+                st.session_state.get("_metadata_editor_audit_id"),
+                insight, automation_settings,
+            )
+        st.session_state["_metadata_editor_audit_id"] = automation_audit_id
+        st.info(message)
+        st.rerun()
     section = st.segmented_control(
         "Metadata section",
         options=SECTIONS,
