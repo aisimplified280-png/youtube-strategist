@@ -468,6 +468,52 @@ def render_strategy_activity(store, youtube=None, analytics=None):
                 delta_text = f"{delta:+.1f}% vs prior period" if isinstance(delta, (int, float)) else None
                 col.metric(label, number, delta=delta_text)
 
+            live_key = f"_strategy_live_performance_{store.owner_key}"
+            if st.button(
+                "Fetch latest available channel performance",
+                key="strategy_fetch_live_performance",
+                disabled=analytics is None,
+            ):
+                with st.spinner("Fetching the latest mature YouTube Analytics period..."):
+                    st.session_state[live_key] = _fetch_live_channel_performance(analytics)
+            live_performance = st.session_state.get(live_key)
+            if analytics is None:
+                st.caption("On-demand refresh is unavailable because the YouTube Analytics client is not connected.")
+            if live_performance:
+                st.markdown("**On-demand YouTube Analytics refresh**")
+                if live_performance.get("status") == "unavailable":
+                    st.warning(f"Live refresh unavailable: {live_performance.get('reason', 'No details returned.')}")
+                elif live_performance.get("status") == "no_data":
+                    st.info("YouTube Analytics returned no channel rows for the selected mature date range.")
+                else:
+                    current_period = live_performance.get("current_period") or ["?", "?"]
+                    previous_period = live_performance.get("previous_period") or ["?", "?"]
+                    st.caption(
+                        f"{live_performance.get('source')} · current {current_period[0]} to {current_period[1]} "
+                        f"vs previous {previous_period[0]} to {previous_period[1]} · "
+                        f"retrieved {_short_timestamp(live_performance.get('retrieved_at'))}"
+                    )
+                    live_metrics = live_performance.get("metrics") or {}
+                    live_cols = st.columns(4)
+                    for col, (metric, label, suffix) in zip(
+                        live_cols,
+                        (
+                            ("views", "Views", ""),
+                            ("estimatedMinutesWatched", "Watch time", " min"),
+                            ("subscribersGained", "Subscribers gained", ""),
+                            ("subscribersLost", "Subscribers lost", ""),
+                        ),
+                    ):
+                        item = live_metrics.get(metric) or {}
+                        value = item.get("current")
+                        delta = item.get("delta_percent")
+                        shown = f"{value:,.0f}{suffix}" if isinstance(value, (int, float)) else "Unavailable"
+                        delta_label = f"{delta:+.1f}% vs prior" if isinstance(delta, (int, float)) else None
+                        col.metric(label, shown, delta=delta_label)
+                    st.caption(
+                        "This report excludes the latest three YouTube Analytics days. It does not contain thumbnail impressions or CTR; those require a separate reach report."
+                    )
+
             report = latest.get("strategy_report") or {}
             st.markdown("### Gemini growth briefing")
             if report.get("executive_summary"):
