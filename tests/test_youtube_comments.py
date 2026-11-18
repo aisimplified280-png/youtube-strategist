@@ -152,6 +152,19 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         )
         self.assertEqual(comments.list_calls[0]["parentId"], "comment-1")
 
+    def test_uncertain_insert_transport_error_is_not_safe_to_retry(self):
+        class TransportFailureComments(FakeComments):
+            def insert(self, **kwargs):
+                raise TimeoutError("connection lost after request")
+
+        with self.assertRaises(CommentVerificationUnavailable):
+            publish_comment_reply(
+                FakeYoutube(comments=TransportFailureComments()),
+                "comment-1",
+                "Thanks!",
+                can_reply=True,
+            )
+
     def test_reply_readback_failure_is_not_reported_as_success(self):
         comments = FakeComments([{"items": []}], {"id": "reply-1"})
         with self.assertRaises(CommentVerificationUnavailable):
