@@ -173,15 +173,22 @@ def render_app():
             token_store = local_token_store
 
     # Migrate the existing encrypted local OAuth grant into the shared vault once.
-    if subject and token_store and local_token_store and token_store is not local_token_store:
-        for purpose in ("youtube", "memory"):
-            try:
+    migration_key = f"_oauth_vault_migrated_{subject}"
+    if (
+        subject and token_store and local_token_store
+        and token_store is not local_token_store
+        and not st.session_state.get(migration_key)
+    ):
+        try:
+            for purpose in ("youtube", "memory"):
                 if token_store.get_credentials_record(subject, purpose).get("status") == "missing":
                     local_record = local_token_store.get_credentials_record(subject, purpose)
                     if local_record.get("status") == "active":
                         token_store.save_credentials_json(subject, purpose, local_record["credentials_json"])
-            except Exception:
-                pass
+            st.session_state[migration_key] = True
+        except Exception:
+            # Retry a failed one-time migration on a later run.
+            pass
 
     # Handle incoming OAuth callback
     if subject and token_store:
@@ -395,7 +402,7 @@ def main():
         page_title="AI Simplified Lab — YouTube Metadata Copilot",
         page_icon="▶",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
     page = st.navigation(
         [st.Page(render_app, title="Metadata Copilot", icon="▶", default=True)],
