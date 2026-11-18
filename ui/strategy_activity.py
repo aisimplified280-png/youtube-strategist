@@ -411,12 +411,16 @@ def render_strategy_activity(store, youtube=None):
                 # Make the reason for a review hold visible instead of making
                 # Autonomous mode look as though it failed to activate.
                 confidence_value = action.get("confidence")
+                try:
+                    confidence_numeric = float(confidence_value)
+                except (TypeError, ValueError):
+                    confidence_numeric = None
                 threshold = float(settings.get("min_confidence_auto_publish", 0.85))
                 if action.get("diagnosis") == "metadata_quality":
                     st.info("Review-only metadata audit: this proposal is intentionally excluded from autonomous publishing.")
-                elif isinstance(confidence_value, (int, float)) and float(confidence_value) < threshold:
+                elif confidence_numeric is not None and confidence_numeric < threshold:
                     st.info(
-                        f"Review required: confidence {float(confidence_value):.2f} is below your "
+                        f"Review required: confidence {confidence_numeric:.2f} is below your "
                         f"autonomous publishing threshold of {threshold:.2f}."
                     )
                 elif "model requested review" in str(action.get("reason") or "").casefold():
