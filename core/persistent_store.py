@@ -552,11 +552,14 @@ class SupabasePersistentStore:
 
     def list_metadata_editor_audits(
         self, *, status: Optional[str] = None, video_id: Optional[str] = None,
-        limit: int = 20,
+        limit: int = 20, include_metadata: bool = False,
     ) -> list[Dict[str, Any]]:
+        projection = "id,video_id,video_title,updated_parts,approval_digest,status,approved_by,created_at,updated_at,published_at,error"
+        if include_metadata:
+            projection += ",before_metadata,proposed_metadata"
         params = {
             "owner_key": f"eq.{self.owner_key}",
-            "select": "id,video_id,video_title,updated_parts,approval_digest,status,approved_by,created_at,updated_at,published_at,error",
+            "select": projection,
             "order": "updated_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }
