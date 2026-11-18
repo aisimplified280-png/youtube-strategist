@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import streamlit as st
 
 import youtube_analytics_connector as connector
@@ -45,6 +46,59 @@ def _load_activity_snapshot(store, active_section: str = "Overview") -> dict:
 
     st.session_state[key] = {"loaded_at": now, "data": data}
     return data
+
+
+def _fetch_live_channel_performance(analytics) -> dict:
+    """Fetch a transparent mature 28-day channel comparison from YouTube Analytics."""
+    if analytics is None:
+        return {"status": "unavailable", "reason": "YouTube Analytics is not connected."}
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo("America/Los_Angeles")).date()
+    end = today - timedelta(days=3)
+    start = end - timedelta(days=27)
+    previous_end = start - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=27)
+    metrics = "views,estimatedMinutesWatched,subscribersGained,subscribersLost"
+    try:
+        current_rows = connector._query_analytics(
+            analytics, start.isoformat(), end.isoformat(), metrics, max_results=10
+        )
+        previous_rows = connector._query_analytics(
+            analytics, previous_start.isoformat(), previous_end.isoformat(), metrics, max_results=10
+        )
+    except Exception as error:
+        return {
+            "status": "unavailable",
+            "reason": f"{type(error).__name__}: {str(error)[:500]}",
+            "current_period": [start.isoformat(), end.isoformat()],
+            "previous_period": [previous_start.isoformat(), previous_end.isoformat()],
+        }
+    current = current_rows[0] if current_rows else {}
+    previous = previous_rows[0] if previous_rows else {}
+    result = {}
+    for key in ("views", "estimatedMinutesWatched", "subscribersGained", "subscribersLost"):
+        current_value = current.get(key)
+        previous_value = previous.get(key)
+        delta = None
+        if (
+            isinstance(current_value, (int, float)) and not isinstance(current_value, bool)
+            and isinstance(previous_value, (int, float)) and not isinstance(previous_value, bool)
+            and previous_value != 0
+        ):
+            delta = round((current_value - previous_value) / abs(previous_value) * 100, 2)
+        result[key] = {
+            "current": current_value,
+            "previous": previous_value,
+            "delta_percent": delta,
+        }
+    return {
+        "status": "available" if current_rows else "no_data",
+        "source": "YouTube Analytics API · ids=channel==MINE",
+        "current_period": [start.isoformat(), end.isoformat()],
+        "previous_period": [previous_start.isoformat(), previous_end.isoformat()],
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "analytics_delay_days": 3,
+        "metrics": result,
+    }
 
 
 def _publish_review_action(store, youtube, action: dict) -> tuple[bool, str]:
@@ -229,7 +283,7 @@ def _short_timestamp(value: str) -> str:
     return raw[:19] or "Not recorded"
 
 
-def render_strategy_activity(store, youtube=None):
+def render_strategy_activity(store, youtube=None, analytics=None):
     """Render a separated, user-centred channel strategist workspace."""
     if not store:
         st.info("Connect the owner workspace to load the Channel Strategist.")
@@ -240,6 +294,11 @@ def render_strategy_activity(store, youtube=None):
         "A dedicated workspace for scheduled channel monitoring, Gemini analysis, "
         "metadata approvals and measured outcomes."
     )
+
+    if st.button("Refresh Channel Strategist data", key="strategy_refresh_overview"):
+        _invalidate_activity_cache(store)
+        st.session_state.pop(f"_strategy_live_performance_{store.owner_key}", None)
+        st.rerun()
 
     active_section = st.segmented_control(
         "Strategist section",
@@ -265,6 +324,16 @@ def render_strategy_activity(store, youtube=None):
                 status="pending_review", limit=100, include_metadata=True
             )
             if active_section == "Review queue" else []
+        )
+        pending_now = (
+            store.list_strategy_actions(
+                status="pending_review", limit=100, include_metadata=False
+            )
+            if active_section == "Overview" else []
+        )
+        metadata_pending_now = (
+            store.list_metadata_editor_audits(status="pending_review", limit=100)
+            if active_section == "Overview" else []
         )
         recent_actions = snapshot.get("recent_actions") or []
         evaluations = snapshot.get("evaluations") or []
@@ -307,7 +376,7 @@ def render_strategy_activity(store, youtube=None):
                         st.caption(
                             f"{int(result.get('proposals') or 0)} proposals · "
                             f"{int(result.get('shadow_published') or 0)} shadow · "
-                            f"{int(result.get('pending_review') or 0)} review"
+                            f"{int(result.get('pending_review') or 0)} review at scan"
                         )
                     else:
                         st.caption("No run recorded yet")
@@ -355,7 +424,14 @@ def render_strategy_activity(store, youtube=None):
             top_cols[0].metric("Run status", _pretty_status(latest.get("status")))
             top_cols[1].metric("Proposals", int(result.get("proposals") or 0))
             top_cols[2].metric("Shadow-tested", int(result.get("shadow_published") or 0))
-            top_cols[3].metric("Needs review", int(result.get("pending_review") or 0))
+            pending_total_now = len(pending_now) + len(metadata_pending_now)
+            top_cols[3].metric("Pending now", pending_total_now)
+            historical_pending = int(result.get("pending_review") or 0)
+            st.caption(
+                f"Review count at scan completion: {historical_pending}. "
+                f"Current open review queue: {pending_total_now}. "
+                "The current count is queried live and is not taken from the saved scan snapshot."
+            )
 
             model_used = str(latest.get("model_name") or "Not recorded")
             st.caption(
@@ -374,6 +450,12 @@ def render_strategy_activity(store, youtube=None):
             channel_metrics = snapshot.get("channel_metrics") or {}
             deltas = snapshot.get("period_deltas_percent") or {}
             st.markdown("### Channel performance")
+            st.caption(
+                "The figures below are stored in the latest completed Channel Strategist scan. "
+                "They come from YouTube Analytics API channel reports, not live view counters. "
+                "Daily and weekly scans compare a mature 28-day period with the preceding 28 days, "
+                "ending three calendar days before the run; monthly scans use complete prior calendar months."
+            )
             metric_cols = st.columns(4)
             metric_items = [
                 ("Period views", channel_metrics.get("views"), deltas.get("views")),
