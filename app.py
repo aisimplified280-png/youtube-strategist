@@ -346,21 +346,23 @@ def render_app():
         try:
             cache = st.session_state.get("_youtube_api_client_cache") or {}
             cache_token = (getattr(yt_creds, "token", None), str(getattr(yt_creds, "expiry", None)))
+            analytics_workspaces = {"Metadata Copilot", "Metadata Editor", "Channel Strategist"}
+            needs_analytics = active_workspace_hint in analytics_workspaces
             if cache.get("credential_fingerprint") == cache_token and cache.get("youtube") is not None:
                 youtube = cache["youtube"]
-                analytics = cache.get("analytics") if active_workspace_hint == "Metadata Copilot" else None
+                analytics = cache.get("analytics") if needs_analytics else None
             else:
                 youtube = build("youtube", "v3", credentials=yt_creds, cache_discovery=False)
                 analytics = (
                     build("youtubeAnalytics", "v2", credentials=yt_creds, cache_discovery=False)
-                    if active_workspace_hint == "Metadata Copilot" else None
+                    if needs_analytics else None
                 )
                 st.session_state["_youtube_api_client_cache"] = {
                     "credential_fingerprint": cache_token,
                     "youtube": youtube,
                     "analytics": analytics,
                 }
-            if active_workspace_hint == "Metadata Copilot" and analytics is None:
+            if needs_analytics and analytics is None:
                 analytics = build("youtubeAnalytics", "v2", credentials=yt_creds, cache_discovery=False)
                 st.session_state["_youtube_api_client_cache"]["analytics"] = analytics
         except Exception:
@@ -441,11 +443,11 @@ def render_app():
             subject=subject,
         )
     elif active_workspace == "Metadata Editor":
-        render_metadata_editor(youtube, persistent_store, subject)
+        render_metadata_editor(youtube, persistent_store, subject, analytics=analytics, secrets=secrets)
     elif active_workspace == "Comments Inbox":
         render_comments_inbox(youtube, persistent_store, subject, secrets)
     elif active_workspace == "Channel Strategist":
-        render_strategy_activity(persistent_store, youtube=youtube)
+        render_strategy_activity(persistent_store, youtube=youtube, analytics=analytics)
 
 
 def main():
