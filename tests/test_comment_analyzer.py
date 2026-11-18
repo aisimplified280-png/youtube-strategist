@@ -100,18 +100,19 @@ class CommentAnalyzerTests(unittest.TestCase):
         self.assertIn("Some plans are free.", prompt)
 
     def test_invalid_ai_output_fails_closed_after_repair(self):
-        router = unittest.mock.Mock()
-        router.generate.side_effect = [
-            ("not json", "Groq", "model"),
-            ("still not json", "Groq", "model"),
-        ]
-        with patch("core.comments.analyzer.LLMRouter", return_value=router):
+        with patch(
+            "core.comments.analyzer._generate_groq_first",
+            side_effect=[
+                ("not json", "Groq", "model"),
+                ("still not json", "Groq", "model"),
+            ],
+        ) as generate:
             with self.assertRaises(CommentAnalysisError):
                 analyze_comment_thread(
                     {"groq": {"api_key": "test"}},
                     {"text": "A question"},
                 )
-        self.assertEqual(router.generate.call_count, 2)
+        self.assertEqual(generate.call_count, 2)
 
 
 if __name__ == "__main__":
