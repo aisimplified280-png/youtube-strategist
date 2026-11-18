@@ -375,6 +375,13 @@ def _render_comment_automation_controls(store):
             step=0.01,
             key="comments_automation_confidence",
         )
+        autonomous_confirmed = True
+        if mode == "autonomous":
+            autonomous_confirmed = st.checkbox(
+                "I explicitly authorize automatic publishing of limited praise acknowledgements.",
+                value=False,
+                key="comments_automation_autonomous_confirm",
+            )
         paused = st.checkbox(
             "Emergency pause all workspace automation",
             value=bool(settings.get("emergency_pause", False)),
@@ -386,7 +393,11 @@ def _render_comment_automation_controls(store):
             "thank-you reply only for a published, unanswered praise comment with high confidence. Questions, "
             "pricing, corrections, criticisms, spam and uncertain facts are never auto-replied."
         )
-        if st.button("Save comment automation settings", key="comments_automation_save"):
+        if st.button(
+            "Save comment automation settings",
+            key="comments_automation_save",
+            disabled=mode == "autonomous" and not autonomous_confirmed,
+        ):
             saved = store.set_workspace_automation_settings({
                 "comments_mode": mode,
                 "comments_daily_cap": cap,
