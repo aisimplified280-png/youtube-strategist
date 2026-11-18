@@ -344,6 +344,214 @@ def _render_uncertain_replies(store):
                 st.rerun()
 
 
+def _render_comment_automation_controls(store):
+    settings = store.get_workspace_automation_settings()
+    with st.expander("Comment automation settings", expanded=False):
+        modes = ["paused", "shadow", "review", "autonomous"]
+        mode = st.selectbox(
+            "Comment automation mode",
+            modes,
+            index=modes.index(settings.get("comments_mode", "shadow")),
+            key="comments_automation_mode",
+            format_func=lambda value: {
+                "paused": "Paused",
+                "shadow": "Shadow · analyze only",
+                "review": "Review · save reply drafts",
+                "autonomous": "Autonomous · publish safe praise replies",
+            }[value],
+        )
+        cap = st.number_input(
+            "Maximum autonomous replies per UTC day",
+            min_value=0,
+            max_value=10,
+            value=int(settings.get("comments_daily_cap", 3)),
+            key="comments_automation_daily_cap",
+        )
+        confidence = st.slider(
+            "Minimum confidence for autonomous replies",
+            min_value=0.85,
+            max_value=1.0,
+            value=float(settings.get("minimum_confidence", 0.92)),
+            step=0.01,
+            key="comments_automation_confidence",
+        )
+        paused = st.checkbox(
+            "Emergency pause all workspace automation",
+            value=bool(settings.get("emergency_pause", False)),
+            key="comments_automation_emergency_pause",
+        )
+        st.caption(
+            "Automation runs only when you press the run button in this inbox; it is not a background monitor. "
+            "Shadow mode creates no drafts. Review mode saves drafts only. Autonomous mode may publish a short "
+            "thank-you reply only for a published, unanswered praise comment with high confidence. Questions, "
+            "pricing, corrections, criticisms, spam and uncertain facts are never auto-replied."
+        )
+        if st.button("Save comment automation settings", key="comments_automation_save"):
+            saved = store.set_workspace_automation_settings({
+                "comments_mode": mode,
+                "comments_daily_cap": cap,
+                "minimum_confidence": confidence,
+                "emergency_pause": paused,
+            })
+            st.success(f"Comment automation mode saved: {saved['comments_mode']}.")
+            st.rerun()
+    return settings
+
+
+def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], settings: dict) -> dict:
+    """On-demand comment scan; autonomous replies are deliberately limited to praise."""
+    mode = str(settings.get("comments_mode") or "shadow")
+    result = {"mode": mode, "analyzed": 0, "drafted": 0, "published": 0, "skipped": 0, "notes": []}
+    if settings.get("emergency_pause"):
+        result["notes"].append("Workspace emergency pause is active.")
+        return result
+    if mode == "paused":
+        result["notes"].append("Comment automation is paused.")
+        return result
+
+    now = datetime.now(timezone.utc)
+    utc_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    daily_cap = max(0, int(settings.get("comments_daily_cap", 3)))
+    minimum_confidence = float(settings.get("minimum_confidence", 0.92))
+    already_published = store.list_comment_reply_drafts(
+        status="published", published_since=utc_day_start, limit=20
+    )
+    published_today = len(already_published)
+    existing_drafts = store.list_comment_reply_drafts(limit=100)
+    existing_parent_ids = {
+        str(item.get("parent_comment_id"))
+        for item in existing_drafts
+        if item.get("parent_comment_id")
+    }
+
+    for thread in (items or [])[:5]:
+        parent_id = str(thread.get("top_level_comment_id") or "")
+        thread_id = str(thread.get("thread_id") or "")
+        text_value = str(thread.get("text") or "").strip()
+        if (
+            not parent_id or not thread_id or not text_value
+            or not thread.get("can_reply")
+            or int(thread.get("total_reply_count") or 0) > 0
+            or str(thread.get("moderation_status") or "published") != "published"
+        ):
+            result["skipped"] += 1
+            continue
+        if parent_id in existing_parent_ids:
+            result["skipped"] += 1
+            continue
+
+        try:
+            analysis = analyze_comment_thread(secrets, thread, [])
+        except Exception as error:
+            result["skipped"] += 1
+            result["notes"].append(f"Analysis skipped for {parent_id}: {type(error).__name__}")
+            continue
+        result["analyzed"] += 1
+        suggestion = str(analysis.get("suggested_reply") or "").strip()
+        category = str(analysis.get("category") or "")
+        if analysis.get("reply_recommendation") == "ignore" or not suggestion:
+            result["skipped"] += 1
+            continue
+
+        if mode == "shadow":
+            result["notes"].append(
+                f"Shadow suggestion for {parent_id}: {category} · {suggestion[:120]}"
+            )
+            continue
+
+        comment_snapshot = text_value[:5000]
+        digest = compute_comment_reply_digest(
+            store.owner_key, thread_id, parent_id, comment_snapshot, suggestion
+        )
+        try:
+            saved = store.create_comment_reply_draft({
+                "channel_id": CHANNEL_ID,
+                "video_id": thread.get("video_id"),
+                "video_title": thread.get("video_title") or "",
+                "thread_id": thread_id,
+                "parent_comment_id": parent_id,
+                "comment_text_snapshot": comment_snapshot,
+                "comment_author_display_name": thread.get("author_display_name") or "",
+                "can_reply": True,
+                "draft_text": suggestion,
+                "approval_digest": digest,
+                "status": "pending_review",
+            })
+            existing_parent_ids.add(parent_id)
+        except Exception as error:
+            result["skipped"] += 1
+            result["notes"].append(f"Could not save draft for {parent_id}: {str(error)[:140]}")
+            continue
+
+        if mode == "review":
+            result["drafted"] += 1
+            continue
+
+        # Never autonomously answer questions, correct facts, criticize or moderate.
+        eligible = (
+            mode == "autonomous"
+            and category == "praise"
+            and analysis.get("reply_recommendation") == "reply"
+            and not analysis.get("needs_fact_check")
+            and not analysis.get("safe_fallback")
+            and float(analysis.get("confidence") or 0) >= minimum_confidence
+            and suggestion == "Thanks for watching! Glad you found it helpful."
+        )
+        if not eligible:
+            result["drafted"] += 1
+            continue
+        if daily_cap == 0 or published_today + result["published"] >= daily_cap:
+            result["drafted"] += 1
+            result["notes"].append("Daily autonomous reply cap reached; the remaining suggestion was left for review.")
+            continue
+
+        audit_id = saved.get("id")
+        if not audit_id:
+            result["drafted"] += 1
+            continue
+        try:
+            approved = store.update_comment_reply_draft(audit_id, {
+                "status": "approved",
+                "approved_by": "automation:comments",
+                "approved_at": datetime.now(timezone.utc).isoformat(),
+                "error": None,
+            })
+            claimed = store.claim_comment_reply_draft(audit_id) if approved else None
+            if not claimed:
+                result["drafted"] += 1
+                continue
+            published = publish_approved_comment_reply(
+                youtube, claimed, store.owner_key, allow_automation=True
+            )
+            store.update_comment_reply_draft(audit_id, {
+                "status": "published",
+                "published_comment_id": published["comment_id"],
+                "result": {
+                    **published,
+                    "automation_mode": "autonomous",
+                    "manual_owner_approval": False,
+                },
+                "published_at": datetime.now(timezone.utc).isoformat(),
+                "error": None,
+            })
+            result["published"] += 1
+        except CommentVerificationUnavailable as error:
+            store.update_comment_reply_draft(audit_id, {
+                "status": "verification_unavailable",
+                "error": str(error)[:1000],
+            })
+            result["notes"].append(
+                f"Reply outcome for {parent_id} is uncertain. Verify it in YouTube Studio; no retry was attempted."
+            )
+        except Exception as error:
+            store.update_comment_reply_draft(audit_id, {
+                "status": "failed",
+                "error": str(error)[:1000],
+            })
+            result["notes"].append(f"Autonomous reply stopped for {parent_id}: {str(error)[:160]}")
+    return result
+
+
 def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets: dict):
     st.header("Comments Inbox")
     st.caption(
@@ -356,6 +564,8 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
     if persistent_store is None:
         st.error("Persistent storage is unavailable. Reply drafts cannot be saved safely.")
         return
+
+    automation_settings = _render_comment_automation_controls(persistent_store)
 
     # A compact pattern sample is deliberately limited to the latest 25 published
     # threads; the UI states the sample size so it is not mistaken for a full-channel export.
@@ -437,6 +647,33 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
     page = st.session_state.get(cache_key) or {}
     items = page.get("items") or []
     st.caption(f"Showing {len(items)} comments · {MODERATION_LABELS[status]}")
+    if st.button(
+        "Run comment automation on the latest 5 comments",
+        key="comments_run_automation",
+        disabled=automation_settings.get("comments_mode") == "paused",
+    ):
+        with st.spinner("Running the selected comment automation mode..."):
+            automation_result = _run_comment_automation(
+                youtube, persistent_store, secrets, items, automation_settings
+            )
+        st.session_state["_comments_last_automation_result"] = automation_result
+        st.success(
+            f"{automation_result['mode'].title()} run complete: "
+            f"{automation_result['analyzed']} analyzed · "
+            f"{automation_result['drafted']} drafts · "
+            f"{automation_result['published']} published."
+        )
+        for note in automation_result.get("notes") or []:
+            st.caption(note)
+        st.rerun()
+    previous_automation = st.session_state.get("_comments_last_automation_result")
+    if previous_automation:
+        st.caption(
+            f"Last run: {previous_automation.get('mode')} · "
+            f"{previous_automation.get('analyzed', 0)} analyzed · "
+            f"{previous_automation.get('drafted', 0)} drafts · "
+            f"{previous_automation.get('published', 0)} published"
+        )
     if not items:
         st.info("No comments were returned for this filter.")
     else:
