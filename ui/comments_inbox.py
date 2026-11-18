@@ -383,10 +383,11 @@ def _render_comment_automation_controls(store):
                 key="comments_automation_autonomous_confirm",
             )
         paused = st.checkbox(
-            "Emergency pause all workspace automation",
+            "Pause Metadata Editor and Comments Inbox automation",
             value=bool(settings.get("emergency_pause", False)),
             key="comments_automation_emergency_pause",
         )
+        st.caption("Channel Strategist has its own independent emergency pause in its Settings section.")
         st.caption(
             "Automation runs only when you press the run button in this inbox; it is not a background monitor. "
             "Shadow mode creates no drafts. Review mode saves drafts only. Autonomous mode may publish a short "
@@ -428,6 +429,15 @@ def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], se
         status="published", published_since=utc_day_start, limit=20
     )
     published_today = len(already_published)
+    unresolved = store.list_comment_reply_drafts(
+        status="verification_unavailable", limit=20
+    )
+    if mode == "autonomous" and unresolved:
+        result["notes"].append(
+            "Autonomous replies are paused because a previous reply outcome is uncertain. "
+            "Resolve the item in YouTube Studio under 'Replies needing verification' first."
+        )
+        return result
     existing_drafts = store.list_comment_reply_drafts(limit=100)
     existing_parent_ids = {
         str(item.get("parent_comment_id"))
@@ -668,6 +678,8 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
                 youtube, persistent_store, secrets, items, automation_settings
             )
         st.session_state["_comments_last_automation_result"] = automation_result
+        if automation_result.get("mode") == "review" and automation_result.get("drafted", 0):
+            st.session_state["_comments_show_pending_replies"] = True
         st.success(
             f"{automation_result['mode'].title()} run complete: "
             f"{automation_result['analyzed']} analyzed · "
@@ -685,6 +697,8 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             f"{previous_automation.get('drafted', 0)} drafts · "
             f"{previous_automation.get('published', 0)} published"
         )
+        for note in previous_automation.get("notes") or []:
+            st.caption(note)
     if not items:
         st.info("No comments were returned for this filter.")
     else:
