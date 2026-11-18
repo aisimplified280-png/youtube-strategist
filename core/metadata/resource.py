@@ -231,7 +231,9 @@ def _reject_unsupported_proposed_fields(resource: dict) -> None:
     }
     for part, allowed in field_sets.items():
         value = resource.get(part)
-        if value is not None and isinstance(value, dict):
+        if part in resource and not isinstance(value, dict):
+            raise connector.MetadataValidationError(f"{part} must be an object.")
+        if isinstance(value, dict):
             unexpected = set(value) - allowed
             if unexpected:
                 raise connector.MetadataValidationError(
