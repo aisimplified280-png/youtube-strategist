@@ -7,6 +7,7 @@ fields and sends only the resource parts that actually changed.
 from __future__ import annotations
 
 import copy
+import hmac
 import re
 from datetime import datetime
 from typing import Any
@@ -144,7 +145,7 @@ def _validate_resource(snapshot: dict) -> None:
         if not isinstance(localizations, dict):
             raise connector.MetadataValidationError("localizations must be an object keyed by language code.")
         default_language = (snippet or {}).get("defaultLanguage")
-        if not default_language:
+        if localizations and not default_language:
             raise connector.MetadataValidationError(
                 "Set the video's defaultLanguage before adding localized metadata."
             )
@@ -200,10 +201,13 @@ def apply_approved_resource_proposal(
     before = normalize_video_resource(before_resource)
     proposed = normalize_video_resource(proposed_resource)
     expected_digest = connector.metadata_proposal_digest(video_id, before, proposed)
-    if not isinstance(approved_digest, str) or not __import__("hmac").compare_digest(expected_digest, approved_digest):
+    if not isinstance(approved_digest, str) or not hmac.compare_digest(expected_digest, approved_digest):
         raise connector.MetadataValidationError("The approval does not match this exact metadata proposal.")
 
-    _validate_resource(proposed)
+    merged_proposal = copy.deepcopy(before)
+    for part, value in proposed.items():
+        merged_proposal[part] = copy.deepcopy(value)
+    _validate_resource(merged_proposal)
     parts = _changed_parts(before, proposed)
     if not parts:
         return {"result": "no changes", "video_id": video_id, "updated_parts": []}
@@ -237,7 +241,14 @@ def apply_approved_resource_proposal(
             f"The metadata update for {video_id} may have succeeded, but read-back verification was unavailable: {error}"
         ) from error
     for part in parts:
-        if verified.get(part, {}) != proposed.get(part, {}):
+        expected_part = proposed.get(part, {})
+        actual_part = verified.get(part, {})
+        if part == "localizations":
+            matches = actual_part == expected_part
+        else:
+            matches = all(actual_part.get(key) == value for key, value in expected_part.items())
+            matches = matches and not (set(before.get(part, {})) - set(expected_part)).intersection(actual_part)
+        if not matches:
             raise connector.MetadataVerificationUnavailableError(
                 f"YouTube did not return the exact approved {part} metadata after update. Reload before retrying."
             )
