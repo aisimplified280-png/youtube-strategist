@@ -248,7 +248,10 @@ def render_app():
             if conversations:
                 with st.sidebar:
                     st.markdown("### Conversations")
-                    st.caption("Recent chats")
+                    st.caption("Saved chats with messages · newest activity first")
+                    if st.button("Refresh saved chats", key="copilot_refresh_saved_chats", use_container_width=True):
+                        st.session_state.pop("_copilot_conversations_cache", None)
+                        st.rerun()
                     conversation_by_id = {item["id"]: item for item in conversations if item.get("id")}
                     conversation_ids = list(conversation_by_id)
                     selected_from_sidebar = st.selectbox(
