@@ -120,7 +120,12 @@ class MetadataCopilotAcceptanceTests(unittest.TestCase):
         with open(activity_path, "r", encoding="utf-8") as f:
             activity_code = f.read()
 
-        self.assertIn('["Overview", f"Review queue ({len(pending)})", "Run & action history", "Learning", "Settings"]', activity_code)
+        self.assertIn('options=["Overview", "Review queue", "Run & action history", "Learning", "Settings"]', activity_code)
+        self.assertIn("st.segmented_control(", activity_code)
+        self.assertNotIn("st.tabs(", activity_code)
+        self.assertIn("def _load_activity_snapshot(store, active_section", activity_code)
+        self.assertIn('if section == "Run & action history":', activity_code)
+        self.assertIn('if section == "Learning":', activity_code)
         self.assertIn("def _friendly_gemini_error", activity_code)
         self.assertIn("Gemini 3.6 Flash", activity_code)
         self.assertNotIn("Monitoring Cadence", activity_code)
