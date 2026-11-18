@@ -250,7 +250,7 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
             )
         if analysis["reply_recommendation"] == "ignore":
             st.info("Recommended action: do not reply to this comment.")
-        elif analysis.get("suggested_reply") and thread.get("can_reply"):
+        elif analysis.get("suggested_reply"):
             if analysis.get("safe_fallback"):
                 st.caption("AI providers were unavailable or uncertain; showing a conservative clarification reply.")
             elif analysis.get("needs_fact_check"):
@@ -263,7 +263,10 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
                 key=f"comment_reply_editor_{thread_id}",
                 height=100,
             )
-            if st.button("Save reply draft for approval", key=f"comment_save_reply_{thread_id}"):
+            if thread.get("can_reply") and st.button(
+                "Save reply draft for approval",
+                key=f"comment_save_reply_{thread_id}",
+            ):
                 comment_snapshot = str(thread.get("text") or "")[:5000]
                 digest = compute_comment_reply_digest(
                     store.owner_key,
@@ -291,6 +294,11 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
                     st.rerun()
                 except Exception as error:
                     st.error(f"Could not save reply draft: {error}")
+            elif not thread.get("can_reply"):
+                st.warning(
+                    "YouTube does not allow replies to this thread. "
+                    "The suggested text is shown for reference but cannot be submitted here."
+                )
         elif not thread.get("can_reply"):
             st.warning("YouTube does not allow replies to this thread.")
 
