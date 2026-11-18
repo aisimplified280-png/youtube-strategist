@@ -368,10 +368,16 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             options=video_options,
             key=f"comments_video_filter_{status}_{search_terms.strip().casefold()}",
         )
+        only_unanswered = st.checkbox(
+            "Only unanswered comments",
+            key=f"comments_unanswered_{status}_{search_terms.strip().casefold()}",
+        )
         visible = items if selected_video == "All loaded videos" else [
             item for item in items
             if (item.get("video_id") or "Channel comment") == selected_video
         ]
+        if only_unanswered:
+            visible = [item for item in visible if item.get("total_reply_count", 0) == 0]
         for thread in visible:
             with st.container(border=True):
                 st.caption(
