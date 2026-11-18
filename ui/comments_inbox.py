@@ -433,10 +433,16 @@ def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], se
     utc_day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     daily_cap = max(0, int(settings.get("comments_daily_cap", 3)))
     minimum_confidence = float(settings.get("minimum_confidence", 0.92))
-    already_published = store.list_comment_reply_drafts(
-        status="published", published_since=utc_day_start, limit=20
+    recent_attempts = store.list_comment_reply_drafts(
+        limit=100, updated_since=utc_day_start, include_result=True
     )
-    published_today = len(already_published)
+    attempted_today = [
+        row for row in recent_attempts
+        if (row.get("result") or {}).get("automation_mode") == "autonomous"
+        and row.get("status") in {
+            "approved", "publishing", "published", "failed", "verification_unavailable"
+        }
+    ]
     unresolved = store.list_comment_reply_drafts(
         status="verification_unavailable", limit=20
     )
@@ -529,9 +535,9 @@ def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], se
         if not eligible:
             result["drafted"] += 1
             continue
-        if daily_cap == 0 or published_today + result["published"] >= daily_cap:
+        if daily_cap == 0 or len(attempted_today) + result["published"] >= daily_cap:
             result["drafted"] += 1
-            result["notes"].append("Daily autonomous reply cap reached; the remaining suggestion was left for review.")
+            result["notes"].append("Daily autonomous reply attempt cap reached; the remaining suggestion was left for review.")
             continue
 
         audit_id = saved.get("id")
@@ -543,6 +549,11 @@ def _run_comment_automation(youtube, store, secrets: dict, items: list[dict], se
                 "status": "approved",
                 "approved_by": "automation:comments",
                 "approved_at": datetime.now(timezone.utc).isoformat(),
+                "result": {
+                    "automation_mode": "autonomous",
+                    "manual_owner_approval": False,
+                    "confidence": float(analysis.get("confidence") or 0),
+                },
                 "error": None,
             })
             claimed = store.claim_comment_reply_draft(audit_id) if approved else None
