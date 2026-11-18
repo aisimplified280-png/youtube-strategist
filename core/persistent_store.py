@@ -668,12 +668,16 @@ class SupabasePersistentStore:
 
     def list_comment_reply_drafts(
         self, *, status: Optional[str] = None, limit: int = 20,
-        published_since: Optional[str] = None, thread_id: Optional[str] = None,
-        parent_comment_id: Optional[str] = None,
+        published_since: Optional[str] = None, updated_since: Optional[str] = None,
+        thread_id: Optional[str] = None, parent_comment_id: Optional[str] = None,
+        include_result: bool = False,
     ) -> list[Dict[str, Any]]:
+        projection = "id,video_id,video_title,thread_id,parent_comment_id,comment_text_snapshot,comment_author_display_name,can_reply,draft_text,approval_digest,status,approved_at,published_at,error,updated_at"
+        if include_result:
+            projection += ",result"
         params = {
             "owner_key": f"eq.{self.owner_key}",
-            "select": "id,video_id,video_title,thread_id,parent_comment_id,comment_text_snapshot,comment_author_display_name,can_reply,draft_text,approval_digest,status,approved_at,published_at,error,updated_at",
+            "select": projection,
             "order": "updated_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }
@@ -681,6 +685,8 @@ class SupabasePersistentStore:
             params["status"] = f"eq.{status}"
         if published_since:
             params["published_at"] = f"gte.{published_since}"
+        if updated_since:
+            params["updated_at"] = f"gte.{updated_since}"
         if thread_id:
             params["thread_id"] = f"eq.{thread_id}"
         if parent_comment_id:
