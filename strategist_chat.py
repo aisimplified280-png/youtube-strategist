@@ -600,6 +600,15 @@ def _append_history(history: List[Dict[str, str]], role: str, content: str):
     if store and conversation_id:
         try:
             store.append_message(conversation_id, role, content)
+            if role == "user":
+                titled_key = f"_copilot_title_initialized_{conversation_id}"
+                if not st.session_state.get(titled_key):
+                    title = " ".join(str(content or "").split()).strip()
+                    if title:
+                        store.update_conversation_title(conversation_id, title)
+                    st.session_state[titled_key] = True
+                    # The sidebar cache is refreshed on the next app rerun.
+                    st.session_state.pop("_copilot_conversations_cache", None)
         except Exception as error:
             # Do not lose the in-session interaction if persistence is temporarily unavailable.
             st.session_state["_copilot_persistence_warning"] = (
