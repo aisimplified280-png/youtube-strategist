@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.comments.analyzer import (
     CommentAnalysisError,
@@ -54,7 +54,7 @@ class CommentAnalyzerTests(unittest.TestCase):
 
     def test_analyze_selected_thread_uses_router_and_returns_provider_metadata(self):
         raw = json.dumps(valid_analysis())
-        router = unittest.mock.Mock()
+        router = Mock()
         router.generate.return_value = (raw, "Groq", "test-model")
         with patch("core.comments.analyzer.LLMRouter", return_value=router):
             result = analyze_comment_thread(
