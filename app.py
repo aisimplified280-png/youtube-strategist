@@ -222,18 +222,18 @@ def render_app():
                 # A selected older conversation may not be in the first recent page.
                 # Fetch only that record instead of silently creating a new chat.
                 selected_conversation = persistent_store.get_conversation(selected_id)
-                if selected_conversation and not selected_conversation.get("archived_at"):
+                if (
+                    selected_conversation
+                    and not selected_conversation.get("archived_at")
+                    and selected_conversation.get("last_message_at")
+                ):
                     conversations = [selected_conversation, *conversations]
                     conversation_by_id[selected_id] = selected_conversation
             if not selected_id:
                 created = persistent_store.create_conversation()
                 selected_id = created["id"]
-                conversations = [created, *conversations]
-                st.session_state["_copilot_conversations_cache"] = {
-                    "loaded_at": now, "items": conversations[:15],
-                    "has_more": len(conversations) >= 15,
-                    "next_cursor": conversations[14].get("updated_at") if len(conversations) >= 15 else None,
-                }
+                # The new active draft is not a saved-history entry until its first message.
+                # Keep it as the active conversation, but do not put it in the sidebar list.
                 st.session_state["_copilot_conversation_id"] = selected_id
                 st.session_state["_copilot_history_loaded"] = False
                 st.session_state["strategist_chat_history"] = []
@@ -245,8 +245,7 @@ def render_app():
                 ]
                 st.session_state["_copilot_history_loaded"] = True
 
-            if conversations:
-                with st.sidebar:
+            with st.sidebar:
                     st.markdown("### Conversations")
                     st.caption("Saved chats with messages · newest activity first")
                     if st.button("Refresh saved chats", key="copilot_refresh_saved_chats", use_container_width=True):
@@ -278,6 +277,61 @@ def render_app():
                         ):
                             st.session_state.pop(key, None)
                         st.rerun()
+                    current_cache = st.session_state.get("_copilot_conversations_cache") or {}
+                    if current_cache.get("has_more") and st.button(
+                        "Load more chats", key="copilot_load_more_chats", use_container_width=True
+                    ):
+                        cursor = current_cache.get("next_cursor") or (
+                            conversations[-1].get("updated_at") if conversations else None
+                        )
+                        if cursor:
+                            next_page = persistent_store.list_conversations(limit=15, before=cursor)
+                            existing = {str(item.get("id")) for item in conversations}
+                            merged = conversations + [
+                                item for item in next_page if str(item.get("id")) not in existing
+                            ]
+                            st.session_state["_copilot_conversations_cache"] = {
+                                "loaded_at": time.monotonic(),
+                                "items": merged,
+                                "has_more": len(next_page) == 15,
+                                "next_cursor": next_page[-1].get("updated_at") if next_page else None,
+                            }
+                            st.rerun()
+                    st.caption(f"Showing {len(conversations)} recent conversations")                st.markdown("### Conversations")
+                st.caption("Saved chats with messages · newest activity first")
+                if st.button("Refresh saved chats", key="copilot_refresh_saved_chats", use_container_width=True):
+                    st.session_state.pop("_copilot_conversations_cache", None)
+                    st.rerun()
+                if not conversations:
+                    st.caption("No saved conversations yet. New chats appear here after the first message.")
+                else:
+                        conversation_by_id = {item["id"]: item for item in conversations if item.get("id")}
+                        conversation_ids = list(conversation_by_id)
+                        selected_from_sidebar = st.selectbox(
+                            "Open conversation",
+                            options=conversation_ids,
+                            index=(conversation_ids.index(selected_id)
+                                   if selected_id in conversation_ids else 0),
+                            format_func=lambda conversation_id: (
+                                str(conversation_by_id[conversation_id].get("title") or "Untitled chat")[:48]
+                                + "  ·  "
+                                + str(conversation_by_id[conversation_id].get("updated_at") or "")[:10]
+                            ),
+                            label_visibility="collapsed",
+                            key=f"_copilot_history_selector_{selected_id}",
+                        )
+                        if selected_from_sidebar and selected_from_sidebar != selected_id:
+                            st.session_state["_copilot_conversation_id"] = selected_from_sidebar
+                            st.session_state["_copilot_history_loaded"] = False
+                            st.session_state["strategist_chat_history"] = []
+                            for key in (
+                                "strategist_target_reference", "strategist_chat_proposal",
+                                "strategist_chat_digest", "batch_metadata_review",
+                                "batch_metadata_payload", "batch_flow_step",
+                            ):
+                                st.session_state.pop(key, None)
+                            st.rerun()
+    
                     current_cache = st.session_state.get("_copilot_conversations_cache") or {}
                     if current_cache.get("has_more") and st.button(
                         "Load more chats", key="copilot_load_more_chats", use_container_width=True
