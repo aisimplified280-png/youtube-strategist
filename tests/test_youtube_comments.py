@@ -3,8 +3,10 @@ from unittest.mock import Mock
 
 from core.comments.youtube_comments import (
     CommentVerificationUnavailable,
+    compute_comment_reply_digest,
     list_channel_comment_threads,
     list_thread_replies,
+    publish_approved_comment_reply,
     publish_comment_reply,
 )
 
@@ -154,6 +156,52 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         comments = FakeComments([{"items": []}], {"id": "reply-1"})
         with self.assertRaises(CommentVerificationUnavailable):
             publish_comment_reply(FakeYoutube(comments=comments), "comment-1", "Thanks!", can_reply=True)
+
+    def test_reply_publish_requires_persisted_owner_approval_and_exact_digest(self):
+        youtube = FakeYoutube(comments=FakeComments([{
+            "items": [{
+                "id": "reply-1",
+                "snippet": {"parentId": "comment-1", "textDisplay": "Thanks!"},
+            }],
+        }], {"id": "reply-1"}))
+        owner_key = "hashed-owner"
+        draft = {
+            "status": "publishing",
+            "approved_by": owner_key,
+            "approved_at": "2026-11-18T12:00:00Z",
+            "thread_id": "thread-1",
+            "parent_comment_id": "comment-1",
+            "comment_text_snapshot": "Question?",
+            "draft_text": "Thanks!",
+            "can_reply": True,
+        }
+        draft["approval_digest"] = compute_comment_reply_digest(
+            owner_key, "thread-1", "comment-1", "Question?", "Thanks!"
+        )
+        result = publish_approved_comment_reply(youtube, draft, owner_key)
+        self.assertEqual(result["status"], "published")
+
+    def test_reply_publish_rejects_unapproved_or_modified_draft(self):
+        owner_key = "hashed-owner"
+        draft = {
+            "status": "pending_review",
+            "approved_by": owner_key,
+            "approved_at": "2026-11-18T12:00:00Z",
+            "thread_id": "thread-1",
+            "parent_comment_id": "comment-1",
+            "comment_text_snapshot": "Question?",
+            "draft_text": "Thanks!",
+            "can_reply": True,
+        }
+        draft["approval_digest"] = compute_comment_reply_digest(
+            owner_key, "thread-1", "comment-1", "Question?", "Thanks!"
+        )
+        with self.assertRaises(PermissionError):
+            publish_approved_comment_reply(FakeYoutube(), draft, owner_key)
+        draft["status"] = "publishing"
+        draft["draft_text"] = "Changed after approval."
+        with self.assertRaises(PermissionError):
+            publish_approved_comment_reply(FakeYoutube(), draft, owner_key)
 
     def test_empty_or_oversized_reply_is_rejected_before_write(self):
         youtube = FakeYoutube()
