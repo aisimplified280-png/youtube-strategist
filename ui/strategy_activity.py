@@ -18,20 +18,25 @@ def _invalidate_activity_cache(store) -> None:
     st.session_state.pop(f"_strategy_activity_cache_{store.owner_key}", None)
 
 
-def _load_activity_snapshot(store) -> dict:
-    """Cache read-only dashboard queries briefly; never cache mutable approval state long-term."""
-    key = f"_strategy_activity_cache_{store.owner_key}"
+def _load_activity_snapshot(store, active_section: str = "Overview") -> dict:
+    """Load and cache only the read-only data required by the active section."""
+    section = str(active_section or "Overview")
+    key = f"_strategy_activity_cache_{store.owner_key}_{section.casefold().replace(' ', '_')}"
     now = time.monotonic()
     cached = st.session_state.get(key) or {}
     if now - float(cached.get("loaded_at", 0)) < 15:
         return cached.get("data") or {}
-    data = {
-        "settings": store.get_strategy_settings(),
-        "runs": store.list_strategy_runs(limit=30),
-        "watchdog_events": store.list_strategy_watchdog_events(limit=12),
-        "recent_actions": store.list_strategy_actions(limit=40),
-        "evaluations": store.list_action_evaluations(limit=50),
-    }
+
+    data = {"settings": store.get_strategy_settings()}
+    if section in {"Overview", "Run & action history"}:
+        data["runs"] = store.list_strategy_runs(limit=30)
+    if section == "Overview":
+        data["watchdog_events"] = store.list_strategy_watchdog_events(limit=12)
+    if section == "Run & action history":
+        data["recent_actions"] = store.list_strategy_actions(limit=40)
+    if section == "Learning":
+        data["evaluations"] = store.list_action_evaluations(limit=50)
+
     st.session_state[key] = {"loaded_at": now, "data": data}
     return data
 
@@ -158,15 +163,27 @@ def render_strategy_activity(store, youtube=None):
         "metadata approvals and measured outcomes."
     )
 
+    active_section = st.segmented_control(
+        "Strategist section",
+        options=["Overview", "Review queue", "Run & action history", "Learning", "Settings"],
+        default="Overview",
+        key="strategy_active_section",
+        label_visibility="collapsed",
+        width="stretch",
+    ) or "Overview"
+
     try:
-        snapshot = _load_activity_snapshot(store)
-        settings = snapshot["settings"]
-        runs = snapshot["runs"]
-        watchdog_events = snapshot["watchdog_events"]
-        # Approval queues are mutable state: always read them live, not from the dashboard cache.
-        pending = store.list_strategy_actions(status="pending_review", limit=100)
-        recent_actions = snapshot["recent_actions"]
-        evaluations = snapshot["evaluations"]
+        snapshot = _load_activity_snapshot(store, active_section)
+        settings = snapshot.get("settings") or {}
+        runs = snapshot.get("runs") or []
+        watchdog_events = snapshot.get("watchdog_events") or []
+        # The mutable approval queue is fetched only when its section is open.
+        pending = (
+            store.list_strategy_actions(status="pending_review", limit=100)
+            if active_section == "Review queue" else []
+        )
+        recent_actions = snapshot.get("recent_actions") or []
+        evaluations = snapshot.get("evaluations") or []
     except Exception as error:
         st.warning(f"Could not load strategist activity: {error}")
         return
@@ -239,11 +256,7 @@ def render_strategy_activity(store, youtube=None):
                 hide_index=True,
             )
 
-    overview_tab, review_tab, history_tab, learning_tab, settings_tab = st.tabs(
-        ["Overview", f"Review queue ({len(pending)})", "Run & action history", "Learning", "Settings"]
-    )
-
-    with overview_tab:
+    if active_section == "Overview":
         latest = runs[0] if runs else None
         if not latest:
             st.info(
@@ -334,7 +347,7 @@ def render_strategy_activity(store, youtube=None):
                             st.write(f"Suggested hook: {item['hook']}")
                         st.caption(item.get("evidence") or "")
 
-    with review_tab:
+    elif active_section == "Review queue":
         st.markdown("### Metadata proposals")
         st.caption(
             "Review the exact original and proposed metadata. Bulk publishing requires a separate "
@@ -512,7 +525,7 @@ def render_strategy_activity(store, youtube=None):
                         except Exception as error:
                             st.error(f"Could not update the action log: {error}")
 
-    with history_tab:
+    elif active_section == "Run & action history":
         st.markdown("### Monitoring run history")
         if not runs:
             st.caption("No strategy runs recorded yet.")
@@ -574,7 +587,7 @@ def render_strategy_activity(store, youtube=None):
                             st.error(message)
                         st.rerun()
 
-    with learning_tab:
+    elif active_section == "Learning":
         st.markdown("### Metadata performance feedback")
         st.caption(
             "The worker compares eligible published changes against their baselines at 7, 14 "
@@ -598,7 +611,7 @@ def render_strategy_activity(store, youtube=None):
                 })
             st.dataframe(evaluation_rows, use_container_width=True, hide_index=True)
 
-    with settings_tab:
+    elif active_section == "Settings":
         st.markdown("### Automation policy")
         st.caption(
             "These controls govern future scheduled runs. Shadow mode records what Gemini would "
