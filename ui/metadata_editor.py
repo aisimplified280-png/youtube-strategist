@@ -637,10 +637,11 @@ def _render_metadata_automation_controls(store):
                 key="metadata_automation_autonomous_confirm",
             )
         paused = st.checkbox(
-            "Emergency pause all workspace automation",
+            "Pause Metadata Editor and Comments Inbox automation",
             value=bool(settings.get("emergency_pause", False)),
             key="metadata_automation_emergency_pause",
         )
+        st.caption("Channel Strategist has its own independent emergency pause in its Settings section.")
         st.caption(
             "Autonomous mode is opt-in and runs only when you press Run metadata automation for the loaded video. "
             "It can publish title, description and tags only, requires the confidence threshold, YouTube validation, "
