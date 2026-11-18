@@ -89,6 +89,7 @@ class CommentsInboxUITests(unittest.TestCase):
 
     def test_review_comment_automation_saves_draft_but_never_publishes(self):
         store = Mock()
+        store.owner_key = "owner-hash"
         store.list_comment_reply_drafts.return_value = []
         store.create_comment_reply_draft.return_value = {"id": "draft-1"}
         item = {
@@ -122,6 +123,7 @@ class CommentsInboxUITests(unittest.TestCase):
 
     def test_autonomous_comment_mode_replies_only_to_high_confidence_praise(self):
         store = Mock()
+        store.owner_key = "owner-hash"
         store.list_comment_reply_drafts.return_value = []
         store.create_comment_reply_draft.return_value = {"id": "draft-1"}
         store.update_comment_reply_draft.return_value = {"id": "draft-1"}
@@ -227,7 +229,8 @@ class CommentsInboxUITests(unittest.TestCase):
         with open(os.path.join(root, "core", "comments", "youtube_comments.py"), encoding="utf-8") as handle:
             source = handle.read()
         self.assertIn('draft.get("status") != "publishing"', source)
-        self.assertIn('draft.get("approved_by") != owner_key', source)
+        self.assertIn('expected_actor = "automation:comments" if allow_automation else owner_key', source)
+        self.assertIn('draft.get("approved_by") != expected_actor', source)
         self.assertIn("compare_digest", source)
         self.assertIn("publish_comment_reply(", source)
 
