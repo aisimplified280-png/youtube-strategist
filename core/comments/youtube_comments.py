@@ -1,6 +1,9 @@
 """Owner-channel YouTube comment retrieval, replies and manual publish verification."""
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from typing import Any
 
 
@@ -120,6 +123,47 @@ def list_thread_replies(
         "next_page_token": response.get("nextPageToken"),
     }
 
+
+
+def compute_comment_reply_digest(
+    owner_key: str,
+    thread_id: str,
+    parent_comment_id: str,
+    comment_text_snapshot: str,
+    reply_text: str,
+) -> str:
+    payload = {
+        "owner_key": owner_key,
+        "thread_id": thread_id,
+        "parent_comment_id": parent_comment_id,
+        "comment_text_snapshot": comment_text_snapshot,
+        "reply_text": str(reply_text or "").strip(),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def publish_approved_comment_reply(youtube, draft: dict, owner_key: str) -> dict:
+    """Server-side manual-approval gate for publishing one persisted reply draft."""
+    if not isinstance(draft, dict) or draft.get("status") != "publishing":
+        raise PermissionError("The reply draft has not passed the explicit approval transition.")
+    if not owner_key or draft.get("approved_by") != owner_key or not draft.get("approved_at"):
+        raise PermissionError("The reply draft has no approval from the verified channel owner.")
+    expected = compute_comment_reply_digest(
+        owner_key,
+        str(draft.get("thread_id") or ""),
+        str(draft.get("parent_comment_id") or ""),
+        str(draft.get("comment_text_snapshot") or ""),
+        str(draft.get("draft_text") or ""),
+    )
+    if not hmac.compare_digest(expected, str(draft.get("approval_digest") or "")):
+        raise PermissionError("The approved reply text or comment context changed after approval.")
+    return publish_comment_reply(
+        youtube,
+        str(draft.get("parent_comment_id") or ""),
+        str(draft.get("draft_text") or ""),
+        can_reply=bool(draft.get("can_reply")),
+    )
 
 def publish_comment_reply(
     youtube,
