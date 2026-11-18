@@ -454,7 +454,8 @@ def render_strategy_activity(store, youtube=None, analytics=None):
                 "The figures below are stored in the latest completed Channel Strategist scan. "
                 "They come from YouTube Analytics API channel reports, not live view counters. "
                 "Daily and weekly scans compare a mature 28-day period with the preceding 28 days, "
-                "ending three calendar days before the run; monthly scans use complete prior calendar months."
+                "ending three calendar days before the run; monthly scans compare the last completed calendar month "
+                "with the month before it. Thumbnail impressions and CTR require a separate reach report."
             )
             metric_cols = st.columns(4)
             metric_items = [
