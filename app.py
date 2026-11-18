@@ -131,6 +131,9 @@ def render_app():
             # Retry on a later run if the migration call failed.
             pass
 
+    # Use the last selected workspace to avoid initializing unrelated API clients.
+    active_workspace_hint = st.session_state.get("active_workspace", "Metadata Copilot")
+
     # Vault & Token Management
     state_secret = secrets.get("security", {}).get("state_secret", "")
     token_store = None
@@ -203,7 +206,10 @@ def render_app():
             if now - float(cache.get("loaded_at", 0)) >= 45:
                 conversations = persistent_store.list_conversations(limit=15)
                 st.session_state["_copilot_conversations_cache"] = {
-                    "loaded_at": now, "items": conversations,
+                    "loaded_at": now,
+                    "items": conversations,
+                    "has_more": len(conversations) == 15,
+                    "next_cursor": conversations[-1].get("updated_at") if conversations else None,
                 }
             else:
                 conversations = cache.get("items") or []
@@ -267,8 +273,10 @@ def render_app():
                         ):
                             st.session_state.pop(key, None)
                         st.rerun()
-                    if st.button("Load more chats", key="copilot_load_more_chats", use_container_width=True):
-                        current_cache = st.session_state.get("_copilot_conversations_cache") or {}
+                    current_cache = st.session_state.get("_copilot_conversations_cache") or {}
+                    if current_cache.get("has_more") and st.button(
+                        "Load more chats", key="copilot_load_more_chats", use_container_width=True
+                    ):
                         cursor = current_cache.get("next_cursor") or (
                             conversations[-1].get("updated_at") if conversations else None
                         )
@@ -329,15 +337,33 @@ def render_app():
             except Exception:
                 pass
 
-    # Build API clients
+    # Build only the clients required by the active workspace. The reporting API
+    # client was never consumed by the current chat or strategist renderers.
     youtube = analytics = reporting = None
     if yt_creds:
         try:
-            youtube = build("youtube", "v3", credentials=yt_creds, cache_discovery=False)
-            analytics = build("youtubeAnalytics", "v2", credentials=yt_creds, cache_discovery=False)
-            reporting = build("youtubereporting", "v1", credentials=yt_creds, cache_discovery=False)
+            cache = st.session_state.get("_youtube_api_client_cache") or {}
+            cache_token = (getattr(yt_creds, "token", None), str(getattr(yt_creds, "expiry", None)))
+            if cache.get("credential_fingerprint") == cache_token and cache.get("youtube") is not None:
+                youtube = cache["youtube"]
+                analytics = cache.get("analytics") if active_workspace_hint == "Metadata Copilot" else None
+            else:
+                youtube = build("youtube", "v3", credentials=yt_creds, cache_discovery=False)
+                analytics = (
+                    build("youtubeAnalytics", "v2", credentials=yt_creds, cache_discovery=False)
+                    if active_workspace_hint == "Metadata Copilot" else None
+                )
+                st.session_state["_youtube_api_client_cache"] = {
+                    "credential_fingerprint": cache_token,
+                    "youtube": youtube,
+                    "analytics": analytics,
+                }
+            if active_workspace_hint == "Metadata Copilot" and analytics is None:
+                analytics = build("youtubeAnalytics", "v2", credentials=yt_creds, cache_discovery=False)
+                st.session_state["_youtube_api_client_cache"]["analytics"] = analytics
         except Exception:
             youtube = None
+            analytics = None
 
     # Persistent chat header: New chat + one direct YouTube connection control.
     col_brand, col_new_chat, col_youtube = st.columns([3.8, 1.2, 1.7], vertical_alignment="center")
