@@ -47,8 +47,13 @@ def _stage_draft(store, video_id: str, before: dict, draft: dict, audit_id: str 
     _validate_resource(draft)
     changed = _changed_parts(before, draft)
     if not changed:
+        if audit_id:
+            store.update_metadata_editor_audit(audit_id, {
+                "status": "rejected",
+                "error": "Draft reset to the currently published metadata.",
+            })
         st.info("There are no metadata changes to stage.")
-        return audit_id
+        return None
     digest = connector.metadata_proposal_digest(video_id, before, draft)
     title = (draft.get("snippet") or {}).get("title") or ""
     values = {
@@ -309,7 +314,7 @@ def _render_pending_review(youtube, store, owner_subject: str, video_id: str, be
         try:
             saved = store.update_metadata_editor_audit(audit_id, {
                 "status": "approved",
-                "approved_by": owner_subject,
+                "approved_by": persistent_store.owner_key,
                 "approved_at": now,
                 "error": None,
             })
