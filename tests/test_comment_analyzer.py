@@ -54,9 +54,10 @@ class CommentAnalyzerTests(unittest.TestCase):
 
     def test_analyze_selected_thread_uses_router_and_returns_provider_metadata(self):
         raw = json.dumps(valid_analysis())
-        router = Mock()
-        router.generate.return_value = (raw, "Groq", "test-model")
-        with patch("core.comments.analyzer.LLMRouter", return_value=router):
+        with patch(
+            "core.comments.analyzer._generate_groq_first",
+            return_value=(raw, "Groq", "test-model"),
+        ) as generate:
             result = analyze_comment_thread(
                 {"groq": {"api_key": "test"}},
                 {"video_title": "AI tools", "text": "Can I use this tool for free?"},
@@ -64,7 +65,7 @@ class CommentAnalyzerTests(unittest.TestCase):
             )
         self.assertEqual(result["provider"], "Groq")
         self.assertEqual(result["model"], "test-model")
-        prompt = router.generate.call_args.args[0]
+        prompt = generate.call_args.args[1]
         self.assertIn("Can I use this tool for free?", prompt)
         self.assertIn("Some plans are free.", prompt)
 
