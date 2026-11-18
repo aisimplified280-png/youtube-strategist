@@ -147,6 +147,29 @@ class FullMetadataResourceTests(unittest.TestCase):
             "కొత్త శీర్షిక",
         )
 
+    def test_brand_partner_and_explicit_paid_placement_declaration_are_supported(self):
+        resource = make_resource()
+        resource["brandPartner"] = {"channelId": "UC" + "A" * 22}
+        resource["paidProductPlacementDetails"] = {"hasPaidProductPlacement": True}
+        youtube = FakeYoutube(resource)
+        before = fetch_video_resource(youtube, "video-123")
+        proposed = copy.deepcopy(before)
+        proposed["brandPartner"] = {"channelId": "UC" + "B" * 22}
+        proposed["paidProductPlacementDetails"] = {"hasPaidProductPlacement": False}
+        digest = connector.metadata_proposal_digest("video-123", before, proposed)
+
+        result = apply_approved_resource_proposal(
+            youtube, "video-123", before, proposed, digest
+        )
+
+        self.assertEqual(
+            set(result["updated_parts"]),
+            {"brandPartner", "paidProductPlacementDetails"},
+        )
+        self.assertFalse(
+            youtube._videos.resource["paidProductPlacementDetails"]["hasPaidProductPlacement"]
+        )
+
     def test_stale_resource_fails_before_write(self):
         youtube = FakeYoutube(make_resource())
         before = fetch_video_resource(youtube, "video-123")
