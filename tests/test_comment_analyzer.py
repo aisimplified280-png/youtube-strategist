@@ -54,7 +54,8 @@ class CommentAnalyzerTests(unittest.TestCase):
             suggested_reply="A reply that should not be sent.",
         )))
         self.assertEqual(result["reply_recommendation"], "verify_first")
-        self.assertEqual(result["suggested_reply"], "")
+        self.assertTrue(result["suggested_reply"])
+        self.assertIn("don't want to guess", result["suggested_reply"].lower())
 
     def test_empty_ai_reply_gets_safe_category_suggestion(self):
         result = _parse_analysis(json.dumps(valid_analysis(suggested_reply="")))
@@ -119,7 +120,7 @@ class CommentAnalyzerTests(unittest.TestCase):
         self.assertIn("Can I use this tool for free?", prompt)
         self.assertIn("Some plans are free.", prompt)
 
-    def test_invalid_ai_output_fails_closed_after_repair(self):
+    def test_invalid_ai_output_returns_safe_fallback_after_repair(self):
         with patch(
             "core.comments.analyzer._generate_groq_first",
             side_effect=[
@@ -127,12 +128,14 @@ class CommentAnalyzerTests(unittest.TestCase):
                 ("still not json", "Groq", "model"),
             ],
         ) as generate:
-            with self.assertRaises(CommentAnalysisError):
-                analyze_comment_thread(
-                    {"groq": {"api_key": "test"}},
-                    {"text": "A question"},
-                )
+            result = analyze_comment_thread(
+                {"groq": {"api_key": "test"}},
+                {"text": "A question?"},
+            )
         self.assertEqual(generate.call_count, 2)
+        self.assertEqual(result["provider"], "rule-based fallback")
+        self.assertTrue(result["suggested_reply"])
+        self.assertTrue(result["safe_fallback"])
 
 
 if __name__ == "__main__":
