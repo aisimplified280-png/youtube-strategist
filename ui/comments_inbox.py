@@ -24,6 +24,38 @@ MODERATION_LABELS = {
 }
 
 
+def _comment_pattern_summary(items: list[dict]) -> dict:
+    """Build transparent, deterministic patterns from the loaded published-comment sample."""
+    comments = [str(item.get("text") or "").strip() for item in items if str(item.get("text") or "").strip()]
+    texts = [value.casefold() for value in comments]
+    if not texts:
+        return {"sample_size": 0, "questions": 0, "unanswered": 0, "positive": 0, "patterns": []}
+
+    def count_terms(terms):
+        return sum(any(term in text for term in terms) for text in texts)
+
+    patterns = [
+        ("How-to and setup", ["how to", "how do", "tutorial", "setup", "install", "start using"]),
+        ("Pricing and free access", ["free", "price", "cost", "subscription", "plan", "paid", "limit"]),
+        ("AI tools and models", ["chatgpt", "gemini", "claude", "llm", "model", "ai agent", "rag"]),
+        ("Errors and troubleshooting", ["error", "not working", "issue", "problem", "bug", "fix", "failed"]),
+        ("Requests for examples", ["example", "demo", "show us", "explain", "cover", "deep dive"]),
+    ]
+    ranked = []
+    for label, terms in patterns:
+        matches = [comments[i] for i, text in enumerate(texts) if any(term in text for term in terms)]
+        if matches:
+            ranked.append({"label": label, "count": len(matches), "example": matches[0][:180]})
+    ranked.sort(key=lambda item: (-item["count"], item["label"]))
+    return {
+        "sample_size": len(texts),
+        "questions": sum("?" in value for value in comments),
+        "unanswered": sum(int(item.get("total_reply_count") or 0) == 0 for item in items),
+        "positive": count_terms(["thanks", "thank you", "great", "awesome", "helpful", "love this", "amazing"]),
+        "patterns": ranked[:4],
+    }
+
+
 def _load_comment_page(youtube, status: str, search_terms: str, page_token: str | None = None):
     return list_channel_comment_threads(
         youtube,
@@ -212,33 +244,42 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
             st.metric("Recommendation", analysis["reply_recommendation"].replace("_", " ").title())
         st.caption(analysis.get("reason") or "")
         if analysis.get("needs_fact_check"):
-            st.warning("This comment requires fact-checking. No reply draft was created.")
-        elif analysis["reply_recommendation"] == "ignore":
+            st.warning(
+                "The comment asks for facts that are not verified from this thread. "
+                "The reply below is a safe clarification, not an answer to the factual claim."
+            )
+        if analysis["reply_recommendation"] == "ignore":
             st.info("Recommended action: do not reply to this comment.")
         elif analysis.get("suggested_reply") and thread.get("can_reply"):
-            draft_key = f"_comment_reply_text_{thread_id}"
+            if analysis.get("safe_fallback"):
+                st.caption("AI providers were unavailable or uncertain; showing a conservative clarification reply.")
+            elif analysis.get("needs_fact_check"):
+                st.caption("Safe clarification draft · no unverified product or pricing claim")
+            else:
+                st.caption(f"Suggested by {analysis.get('provider', 'AI')} · {analysis.get('model', '')}")
             reply_text = st.text_area(
-                "Edit suggested reply",
-                value=st.session_state.get(draft_key, analysis["suggested_reply"]),
+                "Suggested reply (edit before saving)",
+                value=analysis["suggested_reply"],
                 key=f"comment_reply_editor_{thread_id}",
                 height=100,
             )
             if st.button("Save reply draft for approval", key=f"comment_save_reply_{thread_id}"):
+                comment_snapshot = str(thread.get("text") or "")[:5000]
                 digest = compute_comment_reply_digest(
                     store.owner_key,
                     str(thread_id or ""),
                     str(parent_id or ""),
-                    str(thread.get("text") or ""),
+                    comment_snapshot,
                     reply_text,
                 )
                 try:
                     saved = store.create_comment_reply_draft({
-                        "channel_id": "UCS6Sb5rfaEnWTVPGyQlnHFQ",
+                        "channel_id": CHANNEL_ID,
                         "video_id": thread.get("video_id"),
                         "video_title": thread.get("video_title") or st.session_state.get("_comment_video_title_" + str(thread.get("video_id") or ""), ""),
                         "thread_id": thread_id,
                         "parent_comment_id": parent_id,
-                        "comment_text_snapshot": str(thread.get("text") or "")[:5000],
+                        "comment_text_snapshot": comment_snapshot,
                         "comment_author_display_name": thread.get("author_display_name") or "",
                         "can_reply": bool(thread.get("can_reply")),
                         "draft_text": reply_text.strip(),
