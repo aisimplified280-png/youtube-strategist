@@ -89,7 +89,7 @@ class UnifiedMetadataReviewQueueTests(unittest.TestCase):
         root = os.path.join(os.path.dirname(__file__), "..")
         with open(os.path.join(root, "ui", "metadata_editor.py"), encoding="utf-8") as handle:
             source = handle.read()
-        self.assertIn("Draft is saved in the central Review & Publishing queue", source)
+        self.assertIn("Your draft is saved in the central Review & Publishing queue", source)
         self.assertIn('st.session_state["strategy_active_section"] = "Review queue"', source)
 
 
