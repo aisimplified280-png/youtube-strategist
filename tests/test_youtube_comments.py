@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
+from core.oauth import YOUTUBE_SCOPES
 from core.comments.youtube_comments import (
     CommentVerificationUnavailable,
     compute_comment_reply_digest,
@@ -59,6 +60,9 @@ class FakeYoutube:
 
 
 class YouTubeCommentsAPITests(unittest.TestCase):
+    def test_existing_youtube_oauth_scope_covers_comment_read_and_reply(self):
+        self.assertIn("https://www.googleapis.com/auth/youtube.force-ssl", YOUTUBE_SCOPES)
+
     def test_channel_comment_page_uses_channel_wide_filter_and_cursor(self):
         response = {
             "items": [{
