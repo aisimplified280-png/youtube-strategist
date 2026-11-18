@@ -4,7 +4,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from core.llm import LLMRouter, _clean_json_text
+from core.llm import (
+    LLMError,
+    LLMRouter,
+    _clean_json_text,
+    call_gemini_api,
+    call_groq_api,
+)
 
 
 CATEGORIES = {
@@ -59,6 +65,37 @@ def _parse_analysis(raw: str) -> dict | None:
     }
 
 
+def _generate_groq_first(secrets: dict, prompt: str) -> tuple[str, str, str]:
+    """Use Groq first, then Gemini, preserving configured model fallback chains."""
+    router = LLMRouter(secrets or {})
+    errors = []
+    if router.groq_key:
+        models = [router.groq_model] + [
+            model for model in router.groq_fallbacks if model != router.groq_model
+        ]
+        for model in models:
+            try:
+                return call_groq_api(router.groq_key, model, prompt), "Groq", model
+            except LLMError as error:
+                errors.append(f"Groq ({model}): {error}")
+                if not error.recoverable:
+                    break
+    if router.gemini_key:
+        models = [router.gemini_model] + [
+            model for model in router.gemini_fallbacks if model != router.gemini_model
+        ]
+        for model in models:
+            try:
+                return call_gemini_api(router.gemini_key, model, prompt), "Gemini", model
+            except LLMError as error:
+                errors.append(f"Gemini ({model}): {error}")
+                if not error.recoverable:
+                    break
+    raise CommentAnalysisError(
+        "Comment analysis providers are unavailable: " + "; ".join(errors or ["No API keys configured."])
+    )
+
+
 def analyze_comment_thread(
     secrets: dict,
     thread: dict,
@@ -102,8 +139,7 @@ Rules:
 Thread:
 {json.dumps(context, ensure_ascii=False)}
 """
-    router = LLMRouter(secrets or {})
-    raw, provider, model = router.generate(prompt)
+    raw, provider, model = _generate_groq_first(secrets, prompt)
     parsed = _parse_analysis(raw)
     if not parsed:
         repair = (
@@ -111,7 +147,7 @@ Thread:
             + "\nReturn valid JSON only. Repair this response without adding facts:\n"
             + str(raw)[:2000]
         )
-        raw, provider, model = router.generate(repair)
+        raw, provider, model = _generate_groq_first(secrets, repair)
         parsed = _parse_analysis(raw)
     if not parsed:
         raise CommentAnalysisError("AI could not return a valid, policy-compliant comment analysis.")
