@@ -56,7 +56,7 @@ class MetadataInsightsTests(unittest.TestCase):
         analytics = object()
         with patch(
             "core.metadata.insights.connector._query_analytics",
-            side_effect=rows,
+            side_effect=[[rows[0]], [rows[1]]],
         ) as query:
             performance = fetch_video_performance(
                 analytics, "abcdefghijk", today=date(2026, 11, 18)
