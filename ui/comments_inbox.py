@@ -52,7 +52,31 @@ def _render_pending_replies(youtube, store):
             )
             st.write(draft.get("comment_text_snapshot") or "")
             st.markdown("**Proposed reply**")
-            st.write(draft.get("draft_text") or "")
+            edited_reply = st.text_area(
+                "Edit reply before approval",
+                value=draft.get("draft_text") or "",
+                key=f"comment_pending_reply_edit_{draft_id}",
+                height=90,
+            )
+            if edited_reply.strip() != str(draft.get("draft_text") or "").strip():
+                if st.button("Save reply edits", key=f"comment_pending_reply_save_{draft_id}"):
+                    digest = compute_comment_reply_digest(
+                        store.owner_key,
+                        str(draft.get("thread_id") or ""),
+                        str(draft.get("parent_comment_id") or ""),
+                        str(draft.get("comment_text_snapshot") or ""),
+                        edited_reply,
+                    )
+                    store.update_comment_reply_draft(draft_id, {
+                        "draft_text": edited_reply.strip(),
+                        "approval_digest": digest,
+                        "status": "pending_review",
+                        "approved_by": None,
+                        "approved_at": None,
+                        "error": None,
+                    })
+                    st.success("Reply edits saved. Any previous approval has been invalidated.")
+                    st.rerun()
             if not draft.get("can_reply"):
                 st.warning("YouTube no longer reports this thread as replyable.")
                 continue
