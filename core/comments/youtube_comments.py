@@ -89,6 +89,9 @@ def list_channel_comment_threads(
         merged: dict[str, dict] = {}
         next_tokens, totals = {}, 0
         for state in ("published", "heldForReview", "likelySpam"):
+            if state in cursors and cursors[state] is None:
+                next_tokens[state] = None
+                continue
             page = list_channel_comment_threads(
                 youtube, channel_id, moderation_status=state, page_token=cursors.get(state),
                 max_results=size, search_terms=search_terms, order=order,
