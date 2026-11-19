@@ -14,6 +14,8 @@ from core.channel_strategy_agent import (
     generate_strategy_report,
     list_channel_upload_ids,
 )
+import youtube_analytics_connector as connector
+
 from core.strategy_learning import (
     classify_evaluation_outcome,
     compute_metric_deltas,
