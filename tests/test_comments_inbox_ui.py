@@ -17,7 +17,7 @@ class CommentsInboxUITests(unittest.TestCase):
         self.assertIn('"Load thread & generate reply suggestion"', source)
         self.assertIn('"Approve & Publish reply"', source)
         self.assertIn("claim_comment_reply_draft", source)
-        self.assertIn("Show replies needing verification", source)
+        self.assertIn('options=["Inbox", "Reply drafts", "Needs verification"]', source)
         self.assertNotIn("comments().insert(", source)
 
     def test_comment_pattern_summary_identifies_questions_unanswered_and_topics(self):
@@ -87,6 +87,8 @@ class CommentsInboxUITests(unittest.TestCase):
             source = handle.read()
         self.assertIn("Generate replies for latest unanswered comments", source)
         self.assertIn("Only threads with no replies at all", source)
+        self.assertIn("Only comments/replies held by YouTube", source)
+        self.assertIn('"all": "All comments"', source)
         self.assertIn("list_latest_unanswered_comment_threads", source)
 
 
