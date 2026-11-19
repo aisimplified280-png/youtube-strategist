@@ -475,7 +475,7 @@ def render_app():
             subject=subject,
         )
     elif active_workspace == "Metadata Editor":
-        render_metadata_editor(youtube, persistent_store, subject, secrets=secrets)
+        render_metadata_editor(youtube, persistent_store, subject)
     elif active_workspace == "Comments Inbox":
         render_comments_inbox(youtube, persistent_store, subject, secrets)
     elif active_workspace == "Channel Strategist":
