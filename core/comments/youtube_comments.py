@@ -149,7 +149,11 @@ def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_c
             break
         for thread in threads:
             scanned += 1
-            if str(thread.get("author_channel_id") or "").strip() == channel_id:
+            top_level_author_id = str(thread.get("author_channel_id") or "").strip()
+            if not top_level_author_id:
+                unknown += 1
+                continue
+            if top_level_author_id == channel_id:
                 continue
             reply_count = int(thread.get("total_reply_count") or 0)
             if reply_count == 0:
