@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 
 import streamlit as st
 
@@ -22,6 +23,64 @@ MODERATION_LABELS = {
     "heldForReview": "Held for review",
     "likelySpam": "Likely spam",
 }
+
+
+def _comment_pattern_summary(items: list[dict]) -> dict:
+    """Summarize observable patterns in the currently loaded comment sample."""
+    sample = list(items or [])
+    texts = [str(item.get("text") or "").strip() for item in sample]
+    questions = sum(
+        1 for value in texts
+        if "?" in value or re.search(r"^\s*(how|what|why|when|where|which|can|could|does|do|will|would|is it|are you)\b", value.casefold())
+    )
+    unanswered = sum(
+        1 for item in sample
+        if int(item.get("total_reply_count") or 0) == 0
+    )
+    positive_terms = ("thank", "thanks", "great", "awesome", "helpful", "love this", "excellent")
+    positive = sum(
+        1 for value in texts
+        if any(term in value.casefold() for term in positive_terms)
+    )
+
+    topic_rules = [
+        ("AI tools and plans", ("gemini", "chatgpt", "claude", "tool", "free", "plan", "price")),
+        ("AI agents and automation", ("agent", "agents", "automation", "workflow", "multi-agent")),
+        ("Setup and troubleshooting", ("install", "setup", "error", "not working", "issue", "login")),
+        ("Tutorial requests", ("tutorial", "explain", "how to", "step by step", "cover")),
+    ]
+    topic_counts = []
+    for label, keywords in topic_rules:
+        count = sum(
+            1 for value in texts
+            if any(keyword in value.casefold() for keyword in keywords)
+        )
+        if count:
+            topic_counts.append({"topic": label, "count": count})
+    topic_counts.sort(key=lambda item: (-item["count"], item["topic"]))
+
+    patterns = []
+    if questions:
+        patterns.append(f"{questions} of {len(sample)} sampled comments ask a question.")
+    if unanswered:
+        patterns.append(f"{unanswered} comments have no replies yet.")
+    if positive:
+        patterns.append(f"{positive} comments contain positive feedback or thanks.")
+    if topic_counts:
+        top = topic_counts[0]
+        patterns.append(
+            f"The most visible topic in this sample is {top['topic'].lower()} ({top['count']} comments)."
+        )
+    if not patterns and sample:
+        patterns.append("No strong repeated theme is visible in this small sample.")
+    return {
+        "sample_size": len(sample),
+        "questions": questions,
+        "unanswered": unanswered,
+        "positive": positive,
+        "topics": topic_counts,
+        "patterns": patterns,
+    }
 
 
 def _load_comment_page(youtube, status: str, search_terms: str, page_token: str | None = None):
@@ -212,33 +271,37 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
             st.metric("Recommendation", analysis["reply_recommendation"].replace("_", " ").title())
         st.caption(analysis.get("reason") or "")
         if analysis.get("needs_fact_check"):
-            st.warning("This comment requires fact-checking. No reply draft was created.")
-        elif analysis["reply_recommendation"] == "ignore":
+            st.warning(
+                "This comment touches on a fact that must be checked. A safe, non-factual holding reply "
+                "may be shown below; verify the answer before sending it."
+            )
+        if analysis["reply_recommendation"] == "ignore":
             st.info("Recommended action: do not reply to this comment.")
         elif analysis.get("suggested_reply") and thread.get("can_reply"):
             draft_key = f"_comment_reply_text_{thread_id}"
             reply_text = st.text_area(
-                "Edit suggested reply",
+                "Suggested reply (edit before saving)",
                 value=st.session_state.get(draft_key, analysis["suggested_reply"]),
                 key=f"comment_reply_editor_{thread_id}",
                 height=100,
             )
             if st.button("Save reply draft for approval", key=f"comment_save_reply_{thread_id}"):
+                comment_snapshot = str(thread.get("text") or "")[:5000]
                 digest = compute_comment_reply_digest(
                     store.owner_key,
                     str(thread_id or ""),
                     str(parent_id or ""),
-                    str(thread.get("text") or ""),
+                    comment_snapshot,
                     reply_text,
                 )
                 try:
                     saved = store.create_comment_reply_draft({
-                        "channel_id": "UCS6Sb5rfaEnWTVPGyQlnHFQ",
+                        "channel_id": CHANNEL_ID,
                         "video_id": thread.get("video_id"),
                         "video_title": thread.get("video_title") or st.session_state.get("_comment_video_title_" + str(thread.get("video_id") or ""), ""),
                         "thread_id": thread_id,
                         "parent_comment_id": parent_id,
-                        "comment_text_snapshot": str(thread.get("text") or "")[:5000],
+                        "comment_text_snapshot": comment_snapshot,
                         "comment_author_display_name": thread.get("author_display_name") or "",
                         "can_reply": bool(thread.get("can_reply")),
                         "draft_text": reply_text.strip(),
@@ -252,6 +315,10 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
                     st.error(f"Could not save reply draft: {error}")
         elif not thread.get("can_reply"):
             st.warning("YouTube does not allow replies to this thread.")
+        elif analysis["reply_recommendation"] == "verify_first":
+            st.warning(
+                "The analysis confidence is too low to suggest a reply. Check the context manually before drafting one."
+            )
 
 
 def _render_uncertain_replies(store):
@@ -356,6 +423,28 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
 
     page = st.session_state.get(cache_key) or {}
     items = page.get("items") or []
+    summary = _comment_pattern_summary(items)
+    with st.container(border=True):
+        st.subheader("Comment pattern summary")
+        st.caption(
+            f"Recent sample: {summary['sample_size']} comments from the current "
+            f"{MODERATION_LABELS[status].lower()} filter. Patterns describe this loaded sample, not the entire channel."
+        )
+        summary_cols = st.columns(4)
+        summary_cols[0].metric("Questions", summary["questions"])
+        summary_cols[1].metric("Unanswered", summary["unanswered"])
+        summary_cols[2].metric("Positive feedback", summary["positive"])
+        summary_cols[3].metric("Sample size", summary["sample_size"])
+        if summary["patterns"]:
+            for pattern in summary["patterns"]:
+                st.write(f"• {pattern}")
+        else:
+            st.caption("Load comments to identify recurring questions, sentiment and topics.")
+        if summary["topics"]:
+            st.caption("Topics: " + " · ".join(
+                f"{item['topic']} ({item['count']})" for item in summary["topics"][:3]
+            ))
+    st.caption("Select a comment to analyze its thread and prepare a reply suggestion. Every reply requires manual approval.")
     st.caption(f"Showing {len(items)} comments · {MODERATION_LABELS[status]}")
     if not items:
         st.info("No comments were returned for this filter.")

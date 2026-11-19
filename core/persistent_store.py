@@ -61,10 +61,13 @@ class SupabasePersistentStore:
         return rows[0]
 
     def list_conversations(self, limit: int = 15, before: Optional[str] = None) -> list[Dict[str, Any]]:
-        """Return one recent-chat page; use the last row's updated_at as the next-page cursor."""
+        """Return populated conversations only, newest first, one page at a time."""
         params = {
-            "owner_key": f"eq.{self.owner_key}", "archived_at": "is.null",
-            "select": "id,title,created_at,updated_at", "order": "updated_at.desc",
+            "owner_key": f"eq.{self.owner_key}",
+            "archived_at": "is.null",
+            "last_message_at": "not.is.null",
+            "select": "id,title,created_at,updated_at,last_message_at",
+            "order": "updated_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }
         if before:
@@ -114,9 +117,13 @@ class SupabasePersistentStore:
             "conversation_id": conversation_id, "owner_key": self.owner_key,
             "role": role, "content": str(content), "metadata": metadata or {},
         }, prefer="return=representation")
+        message_time = datetime.now(timezone.utc).isoformat()
         self._request("PATCH", "copilot_conversations", params={
             "id": f"eq.{conversation_id}", "owner_key": f"eq.{self.owner_key}",
-        }, payload={"updated_at": datetime.now(timezone.utc).isoformat()}, prefer="return=minimal")
+        }, payload={
+            "updated_at": message_time,
+            "last_message_at": message_time,
+        }, prefer="return=minimal")
         return rows[0] if rows else None
 
     def enqueue_batch(self, conversation_id: Optional[str], instruction: str,
@@ -145,12 +152,17 @@ class SupabasePersistentStore:
             self._request("POST", "batch_job_rows", payload=rows_payload, prefer="return=minimal")
         return job
 
-    def list_jobs(self, limit: int = 30) -> list[Dict[str, Any]]:
-        return self._request("GET", "batch_jobs", params={
+    def list_jobs(self, limit: int = 3, before: Optional[str] = None) -> list[Dict[str, Any]]:
+        """Return a compact page of recent batch runs; older runs load only on request."""
+        params = {
             "owner_key": f"eq.{self.owner_key}",
             "select": "id,conversation_id,created_at,source_type,status,total_count,processed_count,failed_count,last_error,started_at,finished_at,updated_at",
-            "order": "created_at.desc", "limit": str(max(1, min(int(limit), 100))),
-        })
+            "order": "created_at.desc",
+            "limit": str(max(1, min(int(limit), 100))),
+        }
+        if before:
+            params["created_at"] = f"lt.{before}"
+        return self._request("GET", "batch_jobs", params=params)
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         rows = self._request("GET", "batch_jobs", params={
@@ -389,6 +401,26 @@ class SupabasePersistentStore:
         if cadence:
             params["cadence"] = f"eq.{cadence}"
         return self._request("GET", "channel_strategy_actions", params=params)
+
+    def count_pending_strategy_actions(self) -> int:
+        """Count pending strategist proposals with a lightweight ID-only query."""
+        rows = self._request("GET", "channel_strategy_actions", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "status": "eq.pending_review",
+            "select": "id",
+            "limit": "1000",
+        })
+        return len(rows or [])
+
+    def count_pending_metadata_editor_audits(self) -> int:
+        """Count pending full-metadata drafts without downloading their JSON payloads."""
+        rows = self._request("GET", "metadata_editor_audits", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "status": "eq.pending_review",
+            "select": "id",
+            "limit": "1000",
+        })
+        return len(rows or [])
 
     # --- Strategy action evaluations ---------------------------------------------------
 

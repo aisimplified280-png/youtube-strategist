@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
 
+
 import youtube_analytics_connector as connector
 from core.metadata.resource import (
     SUPPORTED_PARTS,
@@ -41,6 +42,65 @@ def _parse_video_id(value: str) -> str | None:
 
 def _changed_parts(before: dict, draft: dict) -> list[str]:
     return [part for part in SUPPORTED_PARTS if before.get(part, {}) != draft.get(part, {})]
+
+
+def _metadata_growth_review(resource: dict) -> dict:
+    """Create grounded field-level recommendations from the video's current metadata."""
+    snippet = resource.get("snippet") or {}
+    title = str(snippet.get("title") or "").strip()
+    description = str(snippet.get("description") or "").strip()
+    tags = [str(item).strip() for item in (snippet.get("tags") or []) if str(item).strip()]
+    hashtags = re.findall(r"(?<!\\w)#([A-Za-z0-9_]+)", description)
+
+    recommendations = []
+    if not title:
+        recommendations.append(("Fix", "Title is missing", "Add a clear title that accurately describes the video's main subject and viewer outcome."))
+    elif len(title) > 100:
+        recommendations.append(("Fix", f"Title is {len(title)} characters", "YouTube titles are limited to 100 characters. Tighten the wording without losing the main topic."))
+    else:
+        recommendations.append(("Good", f"Title length: {len(title)}/100", "Keep the main topic and value clear near the beginning; avoid repeating keywords."))
+
+    if not description:
+        recommendations.append(("Improve", "Description is empty", "Write a unique description that explains the video and gives viewers a useful next step."))
+    elif len(description) > 5000:
+        recommendations.append(("Fix", f"Description is {len(description)} characters", "YouTube descriptions are limited to 5,000 characters. Remove repeated or low-value text."))
+    else:
+        opening = " ".join(description.splitlines()[:2]).strip()
+        title_terms = {
+            token.casefold() for token in re.findall(r"[A-Za-z0-9]+", title)
+            if len(token) > 3 and token.casefold() not in {"with", "from", "your", "this", "that", "what", "when"}
+        }
+        opening_terms = {token.casefold() for token in re.findall(r"[A-Za-z0-9]+", opening)}
+        if len(opening) < 80:
+            recommendations.append(("Improve", "Strengthen the opening lines", "Use the first two lines to state what viewers will learn; this text appears before the description is expanded."))
+        elif title_terms and not (title_terms & opening_terms):
+            recommendations.append(("Improve", "Align the description opening with the title", "Naturally include the video's main topic in the opening lines so the title and description reinforce the same promise."))
+        else:
+            recommendations.append(("Good", f"Description length: {len(description)}/5,000", "Keep the opening specific and unique to this video; put supporting links and context below it."))
+
+    tag_characters = sum(len(tag) for tag in tags) + max(0, len(tags) - 1)
+    if tag_characters > 500:
+        recommendations.append(("Fix", f"Tags use {tag_characters}/500 characters", "Reduce the tag list to relevant terms and common spelling variants."))
+    elif not tags:
+        recommendations.append(("Optional", "No tags are set", "Add only a few highly relevant terms or common misspellings. Tags usually play a smaller discovery role than the title, thumbnail and description."))
+    else:
+        recommendations.append(("Good", f"Tags: {len(tags)} · {tag_characters}/500 characters", "Keep tags tightly related to this video's topic; do not add broad or unrelated terms."))
+
+    if len(hashtags) > 60:
+        recommendations.append(("Fix", f"{len(hashtags)} hashtags found", "YouTube ignores all hashtags when a video has more than 60. Remove excess and unrelated hashtags."))
+    elif len(hashtags) > 3:
+        recommendations.append(("Improve", f"{len(hashtags)} hashtags found", "Keep hashtags relevant and selective. YouTube may show up to three above the title."))
+    elif hashtags:
+        recommendations.append(("Good", f"{len(hashtags)} relevant-looking hashtags found", "Check each hashtag is directly related to the video's subject."))
+    return {
+        "recommendations": recommendations,
+        "title_length": len(title),
+        "description_length": len(description),
+        "tag_characters": tag_characters,
+        "hashtag_count": len(hashtags),
+        "fixes": sum(1 for level, _, _ in recommendations if level == "Fix"),
+        "improvements": sum(1 for level, _, _ in recommendations if level == "Improve"),
+    }
 
 
 def _stage_draft(store, video_id: str, before: dict, draft: dict, audit_id: str | None):
@@ -394,6 +454,29 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
 
     st.markdown(f"**Video:** https://www.youtube.com/watch?v={video_id}")
     st.caption(f"Currently published title: {(before.get('snippet') or {}).get('title', 'Unavailable')}")
+
+    quality = _metadata_growth_review(before)
+    with st.container(border=True):
+        st.markdown("### Metadata health & growth suggestions")
+        st.caption(
+            "Review of the currently published fields. These are recommendations only; "
+            "nothing is changed or staged automatically."
+        )
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Title", f"{quality['title_length']}/100")
+        metric_cols[1].metric("Description", f"{quality['description_length']}/5,000")
+        metric_cols[2].metric("Tag characters", f"{quality['tag_characters']}/500")
+        metric_cols[3].metric("Hashtags", quality["hashtag_count"])
+        for level, heading, detail in quality["recommendations"]:
+            icon = "✓" if level == "Good" else "!" if level == "Fix" else "↗"
+            st.markdown(f"**{icon} {level}: {heading}**")
+            st.caption(detail)
+        st.caption(
+            "Growth focus: make the title, thumbnail and first description lines communicate one clear, "
+            "accurate promise. Tags are secondary; this editor does not have video-level CTR or retention "
+            "for this specific upload, so it will not claim a predicted view or CTR lift."
+        )
+
     section = st.segmented_control(
         "Metadata section",
         options=SECTIONS,
@@ -403,6 +486,7 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
         width="stretch",
     ) or "Core"
     audit_id = st.session_state.get("_metadata_editor_audit_id")
+    st.caption("Review the metadata health notes, then edit and stage any changes you want to review.")
 
     if section == "Core":
         _render_core_form(video_id, before, draft, persistent_store, audit_id)

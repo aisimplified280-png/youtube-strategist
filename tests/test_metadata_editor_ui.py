@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from ui.metadata_editor import _changed_parts, _parse_video_id
+from ui.metadata_editor import _changed_parts, _metadata_growth_review, _parse_video_id
 
 
 class MetadataEditorUITests(unittest.TestCase):
@@ -22,6 +22,19 @@ class MetadataEditorUITests(unittest.TestCase):
         self.assertIsNone(_parse_video_id("not a video"))
         self.assertIsNone(_parse_video_id("https://example.com/watch?v=abcdefghijk"))
         self.assertIsNone(_parse_video_id("https://youtube.com/watch?v=too-short"))
+
+    def test_metadata_growth_review_checks_youtube_limits_and_field_quality(self):
+        resource = {
+            "snippet": {
+                "title": "A" * 105,
+                "description": "A useful opening.\n\nMore detail.",
+                "tags": ["ai", "chatgpt"],
+            }
+        }
+        review = _metadata_growth_review(resource)
+        self.assertEqual(review["title_length"], 105)
+        self.assertTrue(any(level == "Fix" for level, _, _ in review["recommendations"]))
+        self.assertTrue(any("opening" in heading.lower() for _, heading, _ in review["recommendations"]))
 
     def test_changed_parts_returns_only_modified_resource_parts(self):
         before = {
