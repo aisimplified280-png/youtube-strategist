@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import hashlib
 import re
 
 import streamlit as st
@@ -322,64 +321,6 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
             )
 
 
-def _auto_prepare_comment_drafts(youtube, store, secrets: dict, items: list[dict], maximum: int = 5) -> int:
-    """Prepare at most five safe reply drafts; never publish or override an active draft."""
-    active = store.list_active_comment_reply_drafts(limit=100)
-    active_parent_ids = {
-        str(item.get("parent_comment_id") or "")
-        for item in active
-    }
-    created = 0
-    for thread in list(items or []):
-        if created >= maximum:
-            break
-        parent_id = str(thread.get("top_level_comment_id") or "")
-        thread_id = str(thread.get("thread_id") or "")
-        if (
-            not parent_id or not thread_id
-            or int(thread.get("total_reply_count") or 0) > 0
-            or not thread.get("can_reply")
-            or parent_id in active_parent_ids
-        ):
-            continue
-        analysis_thread = dict(thread)
-        video_id = thread.get("video_id")
-        if video_id and not analysis_thread.get("video_title"):
-            title_key = f"_comment_video_title_{video_id}"
-            video_title = st.session_state.get(title_key)
-            if not video_title:
-                try:
-                    video_title = (fetch_video_snippet(youtube, video_id) or {}).get("title") or ""
-                    st.session_state[title_key] = video_title
-                except Exception:
-                    video_title = ""
-            analysis_thread["video_title"] = video_title
-        analysis = analyze_comment_thread(secrets, analysis_thread, [])
-        suggested_reply = str(analysis.get("suggested_reply") or "").strip()
-        if analysis.get("reply_recommendation") == "ignore" or not suggested_reply:
-            continue
-        comment_snapshot = str(thread.get("text") or "")[:5000]
-        digest = compute_comment_reply_digest(
-            store.owner_key, thread_id, parent_id, comment_snapshot, suggested_reply
-        )
-        store.create_comment_reply_draft({
-            "channel_id": CHANNEL_ID,
-            "video_id": video_id,
-            "video_title": analysis_thread.get("video_title") or "",
-            "thread_id": thread_id,
-            "parent_comment_id": parent_id,
-            "comment_text_snapshot": comment_snapshot,
-            "comment_author_display_name": thread.get("author_display_name") or "",
-            "can_reply": bool(thread.get("can_reply")),
-            "draft_text": suggested_reply,
-            "approval_digest": digest,
-            "status": "pending_review",
-        })
-        active_parent_ids.add(parent_id)
-        created += 1
-    return created
-
-
 def _render_uncertain_replies(store):
     st.subheader("Replies needing manual verification")
     drafts = store.list_comment_reply_drafts(status="verification_unavailable", limit=20)
@@ -483,25 +424,6 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
     page = st.session_state.get(cache_key) or {}
     items = page.get("items") or []
     summary = _comment_pattern_summary(items)
-    try:
-        comments_mode = str(persistent_store.get_strategy_settings().get("comments_mode") or "assisted")
-    except Exception:
-        comments_mode = "assisted"
-    auto_drafts_created = 0
-    if comments_mode == "autonomous_drafts" and status == "published" and items:
-        page_fingerprint = hashlib.sha256(
-            "|".join(str(item.get("thread_id") or "") for item in items).encode("utf-8")
-        ).hexdigest()[:12]
-        auto_key = f"_comments_autodraft_done_{page_fingerprint}"
-        if not st.session_state.get(auto_key):
-            st.session_state[auto_key] = True
-            try:
-                with st.spinner("Preparing safe reply drafts for up to five unanswered comments..."):
-                    auto_drafts_created = _auto_prepare_comment_drafts(
-                        youtube, persistent_store, secrets, items, maximum=5
-                    )
-            except Exception as error:
-                st.warning(f"Automatic comment drafting stopped safely: {type(error).__name__}: {str(error)[:400]}")
     with st.container(border=True):
         st.subheader("Comment pattern summary")
         st.caption(
@@ -522,15 +444,7 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             st.caption("Topics: " + " · ".join(
                 f"{item['topic']} ({item['count']})" for item in summary["topics"][:3]
             ))
-    if comments_mode == "autonomous_drafts":
-        st.caption(
-            "Autonomous draft mode: up to five safe reply drafts are prepared for unanswered published comments. "
-            "Every reply still requires your manual approval; nothing is auto-published."
-        )
-        if auto_drafts_created:
-            st.success(f"Prepared {auto_drafts_created} reply draft(s). Open Pending replies to review them.")
-    else:
-        st.caption("Assisted mode: select a comment and choose Analyze comment & draft a reply.")
+    st.caption("Select a comment to analyze its thread and prepare a reply suggestion. Every reply requires manual approval.")
     st.caption(f"Showing {len(items)} comments · {MODERATION_LABELS[status]}")
     if not items:
         st.info("No comments were returned for this filter.")
