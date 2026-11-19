@@ -495,8 +495,38 @@ def _render_uncertain_replies(store):
                     })
                     st.success("Resolved. You can create a new draft for this comment.")
                     st.rerun()
+            elif state in {"held", "spam"}:
+                if st.button(
+                    "I confirmed this reply is now public in YouTube Studio",
+                    key=f"comment_moderated_public_{draft_id}",
+                ):
+                    store.update_comment_reply_draft(draft_id, {
+                        "status": "published",
+                        "result": {
+                            "manual_verification": True,
+                            "verification_note": "Owner confirmed the moderated reply is now publicly visible in YouTube Studio.",
+                        },
+                        "published_at": datetime.now(timezone.utc).isoformat(),
+                        "error": None,
+                    })
+                    st.success("Marked as manually verified.")
+                    st.rerun()
+                if st.button(
+                    "I confirmed this reply is not public",
+                    key=f"comment_moderated_not_public_{draft_id}",
+                ):
+                    store.update_comment_reply_draft(draft_id, {
+                        "status": "failed",
+                        "result": {
+                            "manual_verification": True,
+                            "verification_note": "Owner confirmed the reply is not publicly visible in YouTube Studio.",
+                        },
+                        "error": "Owner confirmed the reply is not public.",
+                    })
+                    st.success("Resolved. You can create a new draft if you still want to reply.")
+                    st.rerun()
             else:
-                st.caption("After resolving moderation in YouTube Studio, verify its final visibility there before treating it as published.")
+                st.caption("Confirm the reply's final visibility in YouTube Studio before resolving it.");
 
 
 def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets: dict):
