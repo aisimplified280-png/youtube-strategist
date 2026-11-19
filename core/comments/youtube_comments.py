@@ -9,7 +9,7 @@ from typing import Any
 from googleapiclient.errors import HttpError
 
 
-MODERATION_STATUSES = {"published", "heldForReview", "likelySpam"}
+MODERATION_STATUSES = {"all", "published", "heldForReview", "likelySpam"}
 MAX_COMMENT_PAGE_SIZE = 100
 MAX_REPLY_LENGTH = 10000
 
@@ -37,38 +37,44 @@ def _normalise_comment(comment: dict) -> dict:
     }
 
 
-def _normalise_thread(thread: dict) -> dict:
+def _normalise_thread(thread: dict, matched_status: str | None = None) -> dict:
     snippet = thread.get("snippet") or {}
     top = snippet.get("topLevelComment") or {}
     comment = _normalise_comment(top)
+    replies = [_normalise_comment(item) for item in ((thread.get("replies") or {}).get("comments") or [])]
+    statuses = {matched_status} if matched_status else set()
+    top_status = comment.get("moderation_status")
+    if top_status in {"published", "heldForReview", "likelySpam"}:
+        statuses.add(top_status)
+    reply_statuses = {item.get("moderation_status") for item in replies if item.get("moderation_status") in {"heldForReview", "likelySpam"}}
+    statuses.update(reply_statuses)
+    review_status = None
+    if top_status in {"heldForReview", "likelySpam"}:
+        review_status = top_status
+    elif "heldForReview" in statuses:
+        review_status = "heldReply"
+    elif "likelySpam" in statuses:
+        review_status = "spamReply"
     return {
-        "thread_id": thread.get("id"),
-        "video_id": snippet.get("videoId"),
-        "channel_id": snippet.get("channelId"),
-        "top_level_comment_id": comment.get("comment_id"),
-        "author_display_name": comment.get("author_display_name"),
-        "author_channel_id": comment.get("author_channel_id"),
-        "text": comment.get("text"),
-        "published_at": comment.get("published_at"),
-        "updated_at": comment.get("updated_at"),
-        "like_count": comment.get("like_count", 0),
-        "moderation_status": comment.get("moderation_status"),
-        "total_reply_count": int(snippet.get("totalReplyCount") or 0),
+        "thread_id": thread.get("id"), "video_id": snippet.get("videoId"),
+        "channel_id": snippet.get("channelId"), "top_level_comment_id": comment.get("comment_id"),
+        "author_display_name": comment.get("author_display_name"), "author_channel_id": comment.get("author_channel_id"),
+        "text": comment.get("text"), "published_at": comment.get("published_at"),
+        "updated_at": comment.get("updated_at"), "like_count": comment.get("like_count", 0),
+        "moderation_status": top_status, "review_status": review_status,
+        "matched_moderation_statuses": sorted(statuses),
+        "has_held_content": bool({"heldForReview", "likelySpam"} & statuses),
+        "replies": replies, "total_reply_count": int(snippet.get("totalReplyCount") or 0),
         "can_reply": bool(snippet.get("canReply", False)),
     }
 
 
 def list_channel_comment_threads(
-    youtube,
-    channel_id: str,
-    *,
-    moderation_status: str = "published",
-    page_token: str | None = None,
-    max_results: int = 25,
-    search_terms: str | None = None,
-    order: str = "time",
+    youtube, channel_id: str, *, moderation_status: str = "published",
+    page_token: str | dict | None = None, max_results: int = 25,
+    search_terms: str | None = None, order: str = "time",
 ) -> dict:
-    """Fetch one channel-wide page; older pages are requested only on user action."""
+    """Fetch channel comments, optionally merging all moderation states."""
     if youtube is None:
         raise CommentAPIError("YouTube API client is not connected.")
     if not channel_id:
@@ -78,23 +84,54 @@ def list_channel_comment_threads(
     size = max(1, min(int(max_results), MAX_COMMENT_PAGE_SIZE))
     if order not in {"time", "relevance"}:
         raise ValueError("Comment order must be time or relevance.")
-
+    if moderation_status == "all":
+        cursors = page_token if isinstance(page_token, dict) else {}
+        merged: dict[str, dict] = {}
+        next_tokens, totals = {}, 0
+        for state in ("published", "heldForReview", "likelySpam"):
+            if state in cursors and cursors[state] is None:
+                next_tokens[state] = None
+                continue
+            page = list_channel_comment_threads(
+                youtube, channel_id, moderation_status=state, page_token=cursors.get(state),
+                max_results=size, search_terms=search_terms, order=order,
+            )
+            totals += int(page.get("total_results") or 0)
+            next_tokens[state] = page.get("next_page_token")
+            for item in page.get("items") or []:
+                key = str(item.get("thread_id") or "")
+                if not key:
+                    continue
+                if key not in merged:
+                    merged[key] = item
+                else:
+                    existing = merged[key]
+                    statuses = set(existing.get("matched_moderation_statuses") or [])
+                    statuses.update(item.get("matched_moderation_statuses") or [])
+                    existing["matched_moderation_statuses"] = sorted(statuses)
+                    existing["has_held_content"] = bool({"heldForReview", "likelySpam"} & statuses)
+                    if item.get("review_status") in {"heldForReview", "likelySpam", "heldReply", "spamReply"}:
+                        existing["review_status"] = item["review_status"]
+                    if item.get("replies"):
+                        by_id = {r.get("comment_id"): r for r in existing.get("replies") or []}
+                        by_id.update({r.get("comment_id"): r for r in item["replies"]})
+                        existing["replies"] = list(by_id.values())
+        items = list(merged.values())
+        items.sort(key=lambda item: str(item.get("published_at") or ""), reverse=True)
+        return {"items": items, "next_page_token": next_tokens if any(next_tokens.values()) else None,
+                "total_results": totals, "moderation_status": "all"}
     params = {
-        "part": "snippet",
-        "allThreadsRelatedToChannelId": channel_id,
-        "moderationStatus": moderation_status,
-        "order": order,
-        "maxResults": size,
+        "part": "snippet,replies", "allThreadsRelatedToChannelId": channel_id,
+        "moderationStatus": moderation_status, "order": order, "maxResults": size,
         "textFormat": "plainText",
     }
     if page_token:
         params["pageToken"] = page_token
     if search_terms and search_terms.strip():
         params["searchTerms"] = search_terms.strip()[:100]
-
     response = youtube.commentThreads().list(**params).execute()
     return {
-        "items": [_normalise_thread(item) for item in response.get("items") or []],
+        "items": [_normalise_thread(item, moderation_status) for item in response.get("items") or []],
         "next_page_token": response.get("nextPageToken"),
         "total_results": (response.get("pageInfo") or {}).get("totalResults"),
         "moderation_status": moderation_status,
