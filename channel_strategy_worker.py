@@ -952,6 +952,7 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
                 fallback_models=fallback_models,
                 cadence=cadence,
                 learning_feedback=learning_feedback,
+                min_confidence_auto_publish=float(settings.get("min_confidence_auto_publish", 0.85)),
             )
         except Exception as error:
             analysis_error = f"{type(error).__name__}: {str(error)[:1200]}"
