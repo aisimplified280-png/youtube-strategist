@@ -36,6 +36,24 @@ class MetadataEditorUITests(unittest.TestCase):
         self.assertTrue(any(level == "Fix" for level, _, _ in review["recommendations"]))
         self.assertTrue(any("opening" in heading.lower() for _, heading, _ in review["recommendations"]))
 
+    def test_growth_review_uses_utf8_byte_and_quoted_tag_budgets(self):
+        description = "తెలుగు" * 300
+        tags = [f"topic {index}" for index in range(60)]
+        review = _metadata_growth_review({
+            "snippet": {
+                "title": "Telugu metadata byte test",
+                "description": description,
+                "tags": tags,
+            }
+        })
+        self.assertLess(review["description_length"], 5000)
+        self.assertGreater(review["description_bytes"], 5000)
+        self.assertGreater(review["tag_characters"], 500)
+        self.assertGreater(review["tag_bytes"], 500)
+        fixes = [heading.lower() for level, heading, _ in review["recommendations"] if level == "Fix"]
+        self.assertTrue(any("utf-8 bytes" in heading or "characters /" in heading for heading in fixes))
+        self.assertTrue(any("tags use" in heading for heading in fixes))
+
     def test_changed_parts_returns_only_modified_resource_parts(self):
         before = {
             "snippet": {"title": "Before"},
