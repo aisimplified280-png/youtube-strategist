@@ -291,7 +291,7 @@ def _render_pending_replies(youtube, store):
                         "status": "verification_unavailable",
                         "error": str(error)[:1000],
                     })
-                    st.error(f"YouTube accepted the request, but the app could not verify its final state. Do not retry blindly. {error}")
+                    st.error(f"The app could not verify the reply's final state. Do not retry blindly. {error}")
                 except Exception as error:
                     store.update_comment_reply_draft(draft_id, {
                         "status": "failed",
