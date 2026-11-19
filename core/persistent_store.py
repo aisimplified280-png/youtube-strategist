@@ -246,7 +246,7 @@ class SupabasePersistentStore:
             raise PersistentStoreError("A verified owner is required for strategy settings.")
         rows = self._request("GET", "owner_strategy_settings", params={
             "owner_key": f"eq.{owner}",
-            "select": "owner_key,auto_minor_enabled,max_daily_minor_publishes,max_metadata_reviews_per_run,automation_mode,emergency_pause,min_confidence_auto_publish,max_weekly_publishes,max_monthly_publishes,updated_at",
+            "select": "owner_key,auto_minor_enabled,max_daily_minor_publishes,max_metadata_reviews_per_run,automation_mode,emergency_pause,min_confidence_auto_publish,max_weekly_publishes,max_monthly_publishes,metadata_editor_mode,comments_mode,updated_at",
             "limit": "1",
         })
         if rows:
@@ -257,6 +257,8 @@ class SupabasePersistentStore:
             row.setdefault("min_confidence_auto_publish", 0.85)
             row.setdefault("max_weekly_publishes", 5)
             row.setdefault("max_monthly_publishes", 10)
+            row.setdefault("metadata_editor_mode", "assisted")
+            row.setdefault("comments_mode", "assisted")
             return row
         # Conservative defaults for new owner
         return {
@@ -269,6 +271,8 @@ class SupabasePersistentStore:
             "max_weekly_publishes": 5,
             "max_monthly_publishes": 10,
             "max_metadata_reviews_per_run": 3,
+            "metadata_editor_mode": "assisted",
+            "comments_mode": "assisted",
         }
 
     def set_strategy_settings(self, values: Dict[str, Any], owner_key: Optional[str] = None):
@@ -288,6 +292,12 @@ class SupabasePersistentStore:
         weekly_cap = max(0, min(int(values.get("max_weekly_publishes", 5)), 20))
         monthly_cap = max(0, min(int(values.get("max_monthly_publishes", 10)), 50))
         review_cap = max(0, min(int(values.get("max_metadata_reviews_per_run", 3)), 10))
+        metadata_editor_mode = str(values.get("metadata_editor_mode", "assisted")).strip().lower()
+        comments_mode = str(values.get("comments_mode", "assisted")).strip().lower()
+        if metadata_editor_mode not in {"assisted", "autonomous_drafts"}:
+            raise ValueError("metadata_editor_mode must be 'assisted' or 'autonomous_drafts'.")
+        if comments_mode not in {"assisted", "autonomous_drafts"}:
+            raise ValueError("comments_mode must be 'assisted' or 'autonomous_drafts'.")
 
         return self._request("POST", "owner_strategy_settings", params={
             "on_conflict": "owner_key",
@@ -301,6 +311,8 @@ class SupabasePersistentStore:
             "max_weekly_publishes": weekly_cap,
             "max_monthly_publishes": monthly_cap,
             "max_metadata_reviews_per_run": review_cap,
+            "metadata_editor_mode": metadata_editor_mode,
+            "comments_mode": comments_mode,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, prefer="resolution=merge-duplicates,return=representation")
 
@@ -672,6 +684,16 @@ class SupabasePersistentStore:
             "select": "*", "limit": "1",
         })
         return rows[0] if rows else None
+
+    def list_active_comment_reply_drafts(self, limit: int = 100) -> list[Dict[str, Any]]:
+        """Fetch lightweight active reply states to prevent duplicate auto-drafts."""
+        return self._request("GET", "comment_reply_drafts", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "status": "in.(pending_review,approved,publishing,verification_unavailable)",
+            "select": "id,parent_comment_id,status,updated_at",
+            "order": "updated_at.desc",
+            "limit": str(max(1, min(int(limit), 100))),
+        })
 
     def list_comment_reply_drafts(
         self, *, status: Optional[str] = None, limit: int = 20
