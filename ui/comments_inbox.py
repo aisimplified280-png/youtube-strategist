@@ -84,6 +84,36 @@ def _comment_pattern_summary(items: list[dict]) -> dict:
     }
 
 
+def _merge_comment_page_items(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    """Deduplicate threads across moderation categories and successive pages."""
+    merged = {}
+    for item in list(existing or []) + list(incoming or []):
+        thread_id = str(item.get("thread_id") or "")
+        if not thread_id:
+            continue
+        if thread_id not in merged:
+            merged[thread_id] = dict(item)
+            continue
+        current = merged[thread_id]
+        statuses = set(current.get("matched_moderation_statuses") or [])
+        statuses.update(item.get("matched_moderation_statuses") or [])
+        current["matched_moderation_statuses"] = sorted(statuses)
+        current["has_held_content"] = bool(
+            current.get("has_held_content") or item.get("has_held_content")
+            or {"heldForReview", "likelySpam"} & statuses
+        )
+        if item.get("review_status") in {"heldForReview", "likelySpam", "heldReply", "spamReply"}:
+            current["review_status"] = item["review_status"]
+        replies = {reply.get("comment_id"): reply for reply in current.get("replies") or []}
+        replies.update({reply.get("comment_id"): reply for reply in item.get("replies") or []})
+        current["replies"] = list(replies.values())
+    return sorted(
+        merged.values(),
+        key=lambda item: str(item.get("published_at") or ""),
+        reverse=True,
+    )
+
+
 def _load_comment_page(youtube, status: str, search_terms: str, page_token: str | dict | None = None):
     return list_channel_comment_threads(
         youtube,
@@ -660,7 +690,7 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
                     youtube, status, search_terms, page_token=page["next_page_token"]
                 )
             st.session_state[cache_key] = {
-                "items": items + next_page["items"],
+                "items": _merge_comment_page_items(items, next_page["items"]),
                 "next_page_token": next_page.get("next_page_token"),
                 "total_results": next_page.get("total_results") or page.get("total_results"),
                 "moderation_status": status,
