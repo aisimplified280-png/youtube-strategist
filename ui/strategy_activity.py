@@ -17,6 +17,43 @@ def _pretty_status(value: str) -> str:
     return str(value or "unknown").replace("_", " ").title()
 
 
+def _automation_policy_summary(settings: dict) -> dict:
+    """Describe the active publishing policy without implying that autonomy bypasses gates."""
+    source = settings or {}
+    mode = str(source.get("automation_mode") or "shadow").strip().lower()
+    if mode not in {"paused", "shadow", "autonomous"}:
+        mode = "shadow"
+    try:
+        threshold = float(source.get("min_confidence_auto_publish", 0.85))
+    except (TypeError, ValueError):
+        threshold = 0.85
+    threshold = max(0.50, min(threshold, 1.00))
+    paused = bool(source.get("emergency_pause", False))
+    if paused:
+        state = "Emergency pause"
+        explanation = "All scheduled publishing is blocked. Proposals remain review-only."
+    elif mode == "paused":
+        state = "Paused"
+        explanation = "The strategist can analyse and record proposals, but cannot publish automatically."
+    elif mode == "shadow":
+        state = "Shadow mode"
+        explanation = "The worker records what it would publish, but does not write metadata to YouTube."
+    else:
+        state = "Autonomous"
+        explanation = (
+            f"Publishing is permitted only when Gemini explicitly chooses auto_publish, confidence is at least "
+            f"{threshold:.2f}, the seven-day cooldown passes, and daily/weekly/monthly caps remain. "
+            "A model decision of review and all metadata-quality audits still require owner approval."
+        )
+    return {
+        "mode": mode,
+        "state": state,
+        "threshold": threshold,
+        "emergency_pause": paused,
+        "explanation": explanation,
+    }
+
+
 def _invalidate_activity_cache(store) -> None:
     prefix = f"_strategy_activity_cache_{store.owner_key}_"
     for key in list(st.session_state.keys()):
@@ -297,6 +334,14 @@ def render_strategy_activity(store, youtube=None):
         st.error(
             "GLOBAL EMERGENCY PAUSE IS ACTIVE — automated publishing is blocked across all monitoring schedules."
         )
+
+    if active_section == "Overview":
+        policy = _automation_policy_summary(settings)
+        with st.container(border=True):
+            policy_cols = st.columns([1, 1, 3])
+            policy_cols[0].metric("Publishing policy", policy["state"])
+            policy_cols[1].metric("Auto confidence floor", f"{policy['threshold']:.2f}")
+            policy_cols[2].caption(policy["explanation"])
 
     if active_section == "Overview":
         # A quick status strip for the three schedules. No cadence filter or dropdown.
