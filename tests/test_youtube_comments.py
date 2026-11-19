@@ -239,8 +239,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         }])
         page = list_thread_replies(FakeYoutube(comments=comments), "comment-1", max_results=25)
         self.assertEqual(page["items"][0]["comment_id"], "reply-1")
-        self.assertEqual(comments.list_calls[0]["id"], "reply-1")
-        self.assertNotIn("parentId", comments.list_calls[0])
+        self.assertEqual(comments.list_calls[0]["parentId"], "comment-1")
         self.assertEqual(comments.list_calls[0]["maxResults"], 25)
 
     def test_reply_requires_can_reply_and_does_not_call_youtube(self):
@@ -250,12 +249,14 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         self.assertEqual(youtube._comments.insert_calls, [])
 
     def test_reply_is_inserted_and_verified_in_parent_thread(self):
-        comments = FakeComments([{
-            "items": [{
-                "id": "reply-1",
-                "snippet": {"parentId": "comment-1", "textOriginal": "Thanks!", "moderationStatus": "published"},
-            }],
-        }], {"id": "reply-1"})
+        comments = FakeComments([
+            {"items": [{"id": "reply-1", "snippet": {
+                "parentId": "comment-1", "textOriginal": "Thanks!",
+            }}]},
+            {"items": [{"id": "reply-1", "snippet": {
+                "parentId": "comment-1", "textOriginal": "Thanks!", "moderationStatus": "published",
+            }}]},
+        ], {"id": "reply-1"})
         youtube = FakeYoutube(comments=comments)
 
         result = publish_comment_reply(youtube, "comment-1", "Thanks!", can_reply=True)
@@ -266,19 +267,22 @@ class YouTubeCommentsAPITests(unittest.TestCase):
             comments.insert_calls[0]["body"]["snippet"],
             {"parentId": "comment-1", "textOriginal": "Thanks!"},
         )
-        self.assertEqual(comments.list_calls[0]["parentId"], "comment-1")
+        self.assertEqual(comments.list_calls[0]["id"], "reply-1")
+        self.assertNotIn("parentId", comments.list_calls[0])
+        self.assertEqual(comments.list_calls[1]["parentId"], "comment-1")
 
 
     def test_reply_verification_reports_held_and_spam_moderation_states(self):
         for moderation_status in ("heldForReview", "likelySpam"):
-            comments = FakeComments([{"items": [{
-                "id": "reply-1",
-                "snippet": {
-                    "parentId": "comment-1",
-                    "textOriginal": "Thanks!",
+            comments = FakeComments([
+                {"items": [{"id": "reply-1", "snippet": {
+                    "parentId": "comment-1", "textOriginal": "Thanks!",
+                }}]},
+                {"items": [{"id": "reply-1", "snippet": {
+                    "parentId": "comment-1", "textOriginal": "Thanks!",
                     "moderationStatus": moderation_status,
-                },
-            }]}], {"id": "reply-1"})
+                }}]},
+            ], {"id": "reply-1"})
             with self.subTest(moderation_status=moderation_status):
                 with self.assertRaises(CommentModerationPending) as caught:
                     publish_comment_reply(
@@ -287,6 +291,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
                 self.assertEqual(caught.exception.comment_id, "reply-1")
                 self.assertEqual(caught.exception.moderation_status, moderation_status)
                 self.assertEqual(comments.list_calls[0]["id"], "reply-1")
+                self.assertEqual(comments.list_calls[1]["parentId"], "comment-1")
 
     def test_reply_verification_rejects_parent_or_text_mismatch(self):
         for snippet in (
