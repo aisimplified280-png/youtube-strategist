@@ -217,22 +217,25 @@ class PersistentStoreBatchQueryTests(unittest.TestCase):
         selected = request.call_args.kwargs["params"]["select"]
         self.assertIn("can_reply", selected)
         self.assertIn("comment_text_snapshot", selected)
+        self.assertIn("published_comment_id", selected)
         self.assertNotIn("result", selected)
         self.assertNotIn("owner_key", selected)
 
-    def test_uncertain_reply_outcome_blocks_duplicate_draft(self):
-        active = {"id": "reply-draft-1", "status": "verification_unavailable"}
-        with patch(
-            "core.persistent_store.requests.request",
-            return_value=self._response([active]),
-        ) as request:
-            with self.assertRaisesRegex(PersistentStoreError, "Verify it in YouTube Studio"):
-                self.store.create_comment_reply_draft({
-                    "parent_comment_id": "comment-1",
-                    "draft_text": "A second reply.",
-                    "approval_digest": "digest-2",
-                })
-        self.assertEqual(request.call_count, 1)
+    def test_uncertain_or_moderated_reply_outcome_blocks_duplicate_draft(self):
+        for status in ("verification_unavailable", "held_for_review", "likely_spam"):
+            active = {"id": "reply-draft-1", "status": status}
+            with self.subTest(status=status):
+                with patch(
+                    "core.persistent_store.requests.request",
+                    return_value=self._response([active]),
+                ) as request:
+                    with self.assertRaisesRegex(PersistentStoreError, "Verify it in YouTube Studio"):
+                        self.store.create_comment_reply_draft({
+                            "parent_comment_id": "comment-1",
+                            "draft_text": "A second reply.",
+                            "approval_digest": "digest-2",
+                        })
+                self.assertEqual(request.call_count, 1)
 
     def test_comment_reply_claim_is_atomic_and_owner_scoped(self):
         with patch(

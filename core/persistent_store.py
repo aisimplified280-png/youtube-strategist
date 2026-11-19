@@ -628,14 +628,14 @@ class SupabasePersistentStore:
         active = self._request("GET", "comment_reply_drafts", params={
             "owner_key": f"eq.{self.owner_key}",
             "parent_comment_id": f"eq.{parent_id}",
-            "status": "in.(pending_review,approved,publishing,verification_unavailable)",
+            "status": "in.(pending_review,approved,publishing,verification_unavailable,held_for_review,likely_spam)",
             "select": "id,status",
             "order": "updated_at.desc",
             "limit": "1",
         })
         if active:
             existing = active[0]
-            if existing.get("status") in {"publishing", "verification_unavailable"}:
+            if existing.get("status") in {"publishing", "verification_unavailable", "held_for_review", "likely_spam"}:
                 raise PersistentStoreError(
                     "A previous reply may already have reached YouTube. Verify it in YouTube Studio before creating another reply."
                 )
@@ -678,7 +678,7 @@ class SupabasePersistentStore:
     ) -> list[Dict[str, Any]]:
         params = {
             "owner_key": f"eq.{self.owner_key}",
-            "select": "id,video_id,video_title,thread_id,parent_comment_id,comment_text_snapshot,comment_author_display_name,can_reply,draft_text,approval_digest,status,approved_at,published_at,error,updated_at",
+            "select": "id,video_id,video_title,thread_id,parent_comment_id,comment_text_snapshot,comment_author_display_name,can_reply,draft_text,approval_digest,status,approved_at,published_comment_id,published_at,error,updated_at",
             "order": "updated_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }

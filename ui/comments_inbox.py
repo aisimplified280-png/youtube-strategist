@@ -11,6 +11,7 @@ from youtube_analytics_connector import CHANNEL_ID, fetch_video_snippet
 
 from core.comments.youtube_comments import (
     CommentVerificationUnavailable,
+    CommentModerationPending,
     compute_comment_reply_digest,
     list_channel_comment_threads,
     list_latest_unanswered_comment_threads,
@@ -134,7 +135,7 @@ def _generate_latest_unanswered_reply_drafts(youtube, store, secrets: dict, *, l
         youtube, CHANNEL_ID, target_count=min(50, requested * 3), scan_limit=scan_limit
     )
     existing = store.list_comment_reply_drafts(limit=100)
-    active = {"pending_review", "approved", "publishing", "verification_unavailable", "published"}
+    active = {"pending_review", "approved", "publishing", "verification_unavailable", "held_for_review", "likely_spam", "published"}
     known = {str(item.get("parent_comment_id") or "") for item in existing if item.get("status") in active}
     staged = skipped_existing = skipped_not_replyable = no_safe_reply = errors = 0
     for thread in scan.get("items") or []:
@@ -271,12 +272,26 @@ def _render_pending_replies(youtube, store):
                     })
                     st.success("Reply published and verified.")
                     st.rerun()
+                except CommentModerationPending as error:
+                    moderation_state = (
+                        "held_for_review" if error.moderation_status == "heldForReview" else "likely_spam"
+                    )
+                    store.update_comment_reply_draft(draft_id, {
+                        "status": moderation_state,
+                        "published_comment_id": error.comment_id,
+                        "error": str(error)[:1000],
+                    })
+                    st.warning(
+                        f"YouTube accepted the reply but placed it in "
+                        f"{'Held for review' if moderation_state == 'held_for_review' else 'Likely spam'}. "
+                        "Check YouTube Studio; this reply will not be submitted again."
+                    )
                 except CommentVerificationUnavailable as error:
                     store.update_comment_reply_draft(draft_id, {
                         "status": "verification_unavailable",
                         "error": str(error)[:1000],
                     })
-                    st.error(f"The reply may have been published, but verification was unavailable. Do not retry blindly. {error}")
+                    st.error(f"The app could not verify the reply's final state. Do not retry blindly. {error}")
                 except Exception as error:
                     store.update_comment_reply_draft(draft_id, {
                         "status": "failed",
@@ -421,51 +436,97 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
 
 def _render_uncertain_replies(store):
     st.subheader("Replies needing manual verification")
-    drafts = store.list_comment_reply_drafts(status="verification_unavailable", limit=20)
+    uncertain = store.list_comment_reply_drafts(status="verification_unavailable", limit=20)
+    held = store.list_comment_reply_drafts(status="held_for_review", limit=20)
+    spam = store.list_comment_reply_drafts(status="likely_spam", limit=20)
+    drafts = [(item, "uncertain") for item in uncertain]
+    drafts += [(item, "held") for item in held]
+    drafts += [(item, "spam") for item in spam]
     if not drafts:
-        st.caption("No replies are awaiting manual verification.")
+        st.caption("No replies are awaiting manual verification or moderation review.")
         return
     st.warning(
-        "These replies had an uncertain API outcome. Check the exact thread in YouTube Studio before resolving one. "
+        "These replies are not eligible for another publish attempt. Check their exact status in YouTube Studio. "
         "The application will not retry them automatically."
     )
-    for draft in drafts:
+    for draft, state in drafts:
         draft_id = draft["id"]
         with st.container(border=True):
             st.caption(draft.get("video_title") or draft.get("video_id") or "Channel comment")
+            if state == "held":
+                st.warning("YouTube found this reply but placed it in Held for review. It is not confirmed publicly visible.")
+            elif state == "spam":
+                st.warning("YouTube found this reply but classified it as likely spam. It is not confirmed publicly visible.")
+            else:
+                st.info("The API accepted the insert request, but the app could not confirm the final state.")
             st.markdown("**Original comment**")
             st.write(draft.get("comment_text_snapshot") or "")
-            st.markdown("**Reply that may have been published**")
+            st.markdown("**Reply**")
             st.write(draft.get("draft_text") or "")
-            if st.button(
-                "I found this reply in YouTube Studio",
-                key=f"comment_uncertain_found_{draft_id}",
-            ):
-                store.update_comment_reply_draft(draft_id, {
-                    "status": "published",
-                    "result": {
-                        "manual_verification": True,
-                        "verification_note": "Owner confirmed the reply is visible in YouTube Studio.",
-                    },
-                    "published_at": datetime.now(timezone.utc).isoformat(),
-                    "error": None,
-                })
-                st.success("Marked as manually verified.")
-                st.rerun()
-            if st.button(
-                "I confirmed this reply was not published",
-                key=f"comment_uncertain_not_found_{draft_id}",
-            ):
-                store.update_comment_reply_draft(draft_id, {
-                    "status": "failed",
-                    "result": {
-                        "manual_verification": True,
-                        "verification_note": "Owner confirmed the reply is not present in YouTube Studio.",
-                    },
-                    "error": "Owner confirmed no reply was published.",
-                })
-                st.success("Resolved. You can create a new draft for this comment.")
-                st.rerun()
+            if draft.get("published_comment_id"):
+                st.caption(f"YouTube reply ID: {draft['published_comment_id']}")
+            if state == "uncertain":
+                if st.button(
+                    "I found this reply in YouTube Studio",
+                    key=f"comment_uncertain_found_{draft_id}",
+                ):
+                    store.update_comment_reply_draft(draft_id, {
+                        "status": "published",
+                        "result": {
+                            "manual_verification": True,
+                            "verification_note": "Owner confirmed the reply is visible in YouTube Studio.",
+                        },
+                        "published_at": datetime.now(timezone.utc).isoformat(),
+                        "error": None,
+                    })
+                    st.success("Marked as manually verified.")
+                    st.rerun()
+                if st.button(
+                    "I confirmed this reply was not published",
+                    key=f"comment_uncertain_not_found_{draft_id}",
+                ):
+                    store.update_comment_reply_draft(draft_id, {
+                        "status": "failed",
+                        "result": {
+                            "manual_verification": True,
+                            "verification_note": "Owner confirmed the reply is not present in YouTube Studio.",
+                        },
+                        "error": "Owner confirmed no reply was published.",
+                    })
+                    st.success("Resolved. You can create a new draft for this comment.")
+                    st.rerun()
+            elif state in {"held", "spam"}:
+                if st.button(
+                    "I confirmed this reply is now public in YouTube Studio",
+                    key=f"comment_moderated_public_{draft_id}",
+                ):
+                    store.update_comment_reply_draft(draft_id, {
+                        "status": "published",
+                        "result": {
+                            "manual_verification": True,
+                            "verification_note": "Owner confirmed the moderated reply is now publicly visible in YouTube Studio.",
+                        },
+                        "published_at": datetime.now(timezone.utc).isoformat(),
+                        "error": None,
+                    })
+                    st.success("Marked as manually verified.")
+                    st.rerun()
+                if st.button(
+                    "I confirmed this reply is not public",
+                    key=f"comment_moderated_not_public_{draft_id}",
+                ):
+                    store.update_comment_reply_draft(draft_id, {
+                        "status": "failed",
+                        "result": {
+                            "manual_verification": True,
+                            "verification_note": "Owner confirmed the reply is not publicly visible in YouTube Studio.",
+                        },
+                        "error": "Owner confirmed the reply is not public.",
+                    })
+                    st.success("Resolved. You can create a new draft if you still want to reply.")
+                    st.rerun()
+            else:
+                st.caption("Confirm the reply's final visibility in YouTube Studio before resolving it.");
 
 
 def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets: dict):
