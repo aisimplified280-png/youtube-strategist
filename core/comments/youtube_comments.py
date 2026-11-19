@@ -28,6 +28,7 @@ def _normalise_comment(comment: dict) -> dict:
         "comment_id": comment.get("id"),
         "parent_id": snippet.get("parentId"),
         "author_display_name": snippet.get("authorDisplayName") or "Unknown viewer",
+        "author_channel_id": (snippet.get("authorChannelId") or {}).get("value") if isinstance(snippet.get("authorChannelId"), dict) else None,
         "text": snippet.get("textDisplay") or snippet.get("textOriginal") or "",
         "published_at": snippet.get("publishedAt"),
         "updated_at": snippet.get("updatedAt"),
@@ -46,6 +47,7 @@ def _normalise_thread(thread: dict) -> dict:
         "channel_id": snippet.get("channelId"),
         "top_level_comment_id": comment.get("comment_id"),
         "author_display_name": comment.get("author_display_name"),
+        "author_channel_id": comment.get("author_channel_id"),
         "text": comment.get("text"),
         "published_at": comment.get("published_at"),
         "updated_at": comment.get("updated_at"),
@@ -124,6 +126,78 @@ def list_thread_replies(
         "items": [_normalise_comment(item) for item in response.get("items") or []],
         "next_page_token": response.get("nextPageToken"),
     }
+
+
+
+def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_count: int = 10, scan_limit: int = 300) -> dict:
+    """Find recent published threads without an owner reply; uncertain identities fail closed."""
+    if youtube is None:
+        raise CommentAPIError("YouTube API client is not connected.")
+    if not channel_id:
+        raise ValueError("A verified channel ID is required.")
+    target = max(1, min(int(target_count), 50))
+    maximum = max(target, min(int(scan_limit), 1000))
+    matches, scanned, unknown, page_token = [], 0, 0, None
+
+    while scanned < maximum and len(matches) < target:
+        page = list_channel_comment_threads(
+            youtube, channel_id, moderation_status="published", page_token=page_token,
+            max_results=min(MAX_COMMENT_PAGE_SIZE, maximum-scanned), order="time",
+        )
+        threads = page.get("items") or []
+        if not threads:
+            break
+        for thread in threads:
+            scanned += 1
+            if str(thread.get("author_channel_id") or "").strip() == channel_id:
+                continue
+            reply_count = int(thread.get("total_reply_count") or 0)
+            if reply_count == 0:
+                thread["replies"] = []
+                thread["owner_unanswered"] = True
+                matches.append(thread)
+            else:
+                replies, reply_token = [], None
+                owner_replied, authors_known, complete = False, True, False
+                for _ in range(10):  # Bounded to 1,000 replies per thread.
+                    reply_page = list_thread_replies(
+                        youtube, str(thread.get("top_level_comment_id") or ""),
+                        page_token=reply_token, max_results=100,
+                    )
+                    current = reply_page.get("items") or []
+                    replies.extend(current)
+                    for reply in current:
+                        author_id = str(reply.get("author_channel_id") or "").strip()
+                        if not author_id:
+                            authors_known = False
+                        elif author_id == channel_id:
+                            owner_replied = True
+                    if owner_replied:
+                        break
+                    reply_token = reply_page.get("next_page_token")
+                    if not reply_token or len(replies) >= reply_count:
+                        complete = True
+                        break
+                if owner_replied:
+                    continue
+                if complete and len(replies) >= reply_count and authors_known:
+                    thread["replies"] = replies
+                    thread["owner_unanswered"] = True
+                    matches.append(thread)
+                else:
+                    unknown += 1
+            if len(matches) >= target or scanned >= maximum:
+                break
+        page_token = page.get("next_page_token")
+        if len(matches) >= target or not page_token:
+            break
+    return {
+        "items": matches, "scanned_count": scanned, "unknown_reply_threads": unknown,
+        "next_page_token": page_token, "scan_limit_reached": scanned >= maximum and len(matches) < target,
+        "moderation_status": "published",
+    }
+
+
 
 
 
