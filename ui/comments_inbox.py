@@ -13,6 +13,7 @@ from core.comments.youtube_comments import (
     CommentVerificationUnavailable,
     compute_comment_reply_digest,
     list_channel_comment_threads,
+    list_latest_unanswered_comment_threads,
     list_thread_replies,
     publish_approved_comment_reply,
 )
@@ -93,6 +94,74 @@ def _load_comment_page(youtube, status: str, search_terms: str, page_token: str 
         search_terms=search_terms or None,
         order="time",
     )
+
+
+
+def _generate_latest_unanswered_reply_drafts(youtube, store, secrets: dict, *, limit: int = 10, scan_limit: int = 300) -> dict:
+    """Generate editable reply drafts for recent threads not yet answered by the channel."""
+    requested = max(1, min(int(limit), 20))
+    scan = list_latest_unanswered_comment_threads(
+        youtube, CHANNEL_ID, target_count=min(50, requested * 3), scan_limit=scan_limit
+    )
+    existing = store.list_comment_reply_drafts(limit=100)
+    active = {"pending_review", "approved", "publishing", "verification_unavailable", "published"}
+    known = {str(item.get("parent_comment_id") or "") for item in existing if item.get("status") in active}
+    staged = skipped_existing = skipped_not_replyable = no_safe_reply = errors = 0
+    for thread in scan.get("items") or []:
+        parent_id = str(thread.get("top_level_comment_id") or "").strip()
+        thread_id = str(thread.get("thread_id") or "").strip()
+        if not parent_id or not thread_id or not str(thread.get("text") or "").strip():
+            errors += 1
+            continue
+        if parent_id in known:
+            skipped_existing += 1
+            continue
+        if not thread.get("can_reply"):
+            skipped_not_replyable += 1
+            continue
+        video_id, video_title = thread.get("video_id"), ""
+        if video_id:
+            title_key = f"_comment_video_title_{video_id}"
+            video_title = st.session_state.get(title_key) or ""
+            if not video_title:
+                try:
+                    video_title = str(fetch_video_snippet(youtube, video_id).get("title") or "")
+                    st.session_state[title_key] = video_title
+                except Exception:
+                    video_title = ""
+        try:
+            analysis = analyze_comment_thread(secrets, {**thread, "video_title": video_title}, thread.get("replies") or [])
+            reply_text = str(analysis.get("suggested_reply") or "").strip()
+            if not reply_text or analysis.get("reply_recommendation") == "ignore" or not thread.get("owner_unanswered"):
+                no_safe_reply += 1
+                continue
+            snapshot = str(thread.get("text") or "")[:5000]
+            digest = compute_comment_reply_digest(store.owner_key, thread_id, parent_id, snapshot, reply_text)
+            store.create_comment_reply_draft({
+                "channel_id": CHANNEL_ID, "video_id": video_id, "video_title": video_title,
+                "thread_id": thread_id, "parent_comment_id": parent_id,
+                "comment_text_snapshot": snapshot,
+                "comment_author_display_name": thread.get("author_display_name") or "",
+                "can_reply": True, "draft_text": reply_text,
+                "approval_digest": digest, "status": "pending_review",
+            })
+            known.add(parent_id)
+            staged += 1
+            if staged >= requested:
+                break
+        except Exception:
+            errors += 1
+    return {
+        "scanned_count": int(scan.get("scanned_count") or 0),
+        "candidate_count": len(scan.get("items") or []),
+        "unknown_reply_threads": int(scan.get("unknown_reply_threads") or 0),
+        "scan_limit_reached": bool(scan.get("scan_limit_reached")),
+        "staged": staged, "skipped_existing": skipped_existing,
+        "skipped_not_replyable": skipped_not_replyable,
+        "no_safe_reply": no_safe_reply, "errors": errors,
+    }
+
+
 
 
 def _render_pending_replies(youtube, store):
@@ -423,6 +492,43 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
 
     page = st.session_state.get(cache_key) or {}
     items = page.get("items") or []
+    with st.container(border=True):
+        st.subheader("Generate replies for latest unanswered comments")
+        st.caption(
+            "Find recent published threads with no reply from AI Simplified Lab, including threads "
+            "where viewers have replied to one another. Replies are saved as drafts for your approval."
+        )
+        reply_limit = st.selectbox(
+            "How many reply drafts to prepare?", options=[5, 10, 15, 20],
+            index=1, key="comments_latest_reply_limit",
+        )
+        if st.button(
+            "Generate replies for latest unanswered comments",
+            type="primary", key="comments_generate_latest_unanswered",
+        ):
+            try:
+                with st.spinner("Checking recent comment threads and preparing reply drafts..."):
+                    result = _generate_latest_unanswered_reply_drafts(
+                        youtube, persistent_store, secrets, limit=reply_limit
+                    )
+                st.session_state["_comments_latest_reply_generation_summary"] = result
+                st.session_state["_comments_show_pending_replies"] = True
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not prepare latest unanswered replies: {error}")
+
+    generation_summary = st.session_state.get("_comments_latest_reply_generation_summary")
+    if generation_summary:
+        st.info(
+            f"Prepared {generation_summary['staged']} reply drafts from {generation_summary['scanned_count']} scanned threads. "
+            f"Skipped {generation_summary['skipped_existing']} with existing drafts/replies, "
+            f"{generation_summary['no_safe_reply']} without a safe suggestion, and "
+            f"{generation_summary['unknown_reply_threads']} with incomplete reply-author data. "
+            f"{generation_summary['errors']} errors."
+        )
+        if generation_summary["scan_limit_reached"]:
+            st.caption("The scan limit was reached before the requested number of new drafts was found.")
+
     summary = _comment_pattern_summary(items)
     with st.container(border=True):
         st.subheader("Comment pattern summary")
@@ -432,7 +538,7 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
         )
         summary_cols = st.columns(4)
         summary_cols[0].metric("Questions", summary["questions"])
-        summary_cols[1].metric("Unanswered", summary["unanswered"])
+        summary_cols[1].metric("No replies", summary["unanswered"])
         summary_cols[2].metric("Positive feedback", summary["positive"])
         summary_cols[3].metric("Sample size", summary["sample_size"])
         if summary["patterns"]:
@@ -458,7 +564,7 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             key=f"comments_video_filter_{status}_{search_terms.strip().casefold()}",
         )
         only_unanswered = st.checkbox(
-            "Only unanswered comments",
+            "Only threads with no replies at all",
             key=f"comments_unanswered_{status}_{search_terms.strip().casefold()}",
         )
         visible = items if selected_video == "All loaded videos" else [
@@ -466,7 +572,7 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             if (item.get("video_id") or "Channel comment") == selected_video
         ]
         if only_unanswered:
-            visible = [item for item in visible if item.get("total_reply_count", 0) == 0]
+            visible = [item for item in visible if int(item.get("total_reply_count") or 0) == 0]
         for thread in visible:
             with st.container(border=True):
                 st.caption(

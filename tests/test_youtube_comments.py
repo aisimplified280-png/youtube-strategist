@@ -6,6 +6,7 @@ from core.comments.youtube_comments import (
     CommentVerificationUnavailable,
     compute_comment_reply_digest,
     list_channel_comment_threads,
+    list_latest_unanswered_comment_threads,
     list_thread_replies,
     publish_approved_comment_reply,
     publish_comment_reply,
@@ -109,6 +110,60 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         self.assertEqual(call["maxResults"], 25)
         self.assertEqual(call["searchTerms"], "free")
         self.assertNotIn("videoId", call)
+
+
+    def test_latest_unanswered_checks_reply_authors_not_total_reply_count(self):
+        def thread(thread_id, comment_id, reply_count):
+            return {
+                "id": thread_id,
+                "snippet": {
+                    "videoId": "abcdefghijk",
+                    "topLevelComment": {"id": comment_id, "snippet": {
+                        "authorDisplayName": "Viewer", "textDisplay": "Question?",
+                    }},
+                    "totalReplyCount": reply_count, "canReply": True,
+                },
+            }
+        threads = FakeCommentThreads({"items": [
+            thread("owner-replied", "comment-owner", 1),
+            thread("viewer-replied", "comment-viewer", 1),
+            thread("no-replies", "comment-none", 0),
+        ]})
+        comments = FakeComments([
+            {"items": [{"id": "reply-owner", "snippet": {
+                "authorDisplayName": "AI Simplified Lab", "authorChannelId": {"value": "UC_OWNER"},
+            }}]},
+            {"items": [{"id": "reply-viewer", "snippet": {
+                "authorDisplayName": "Another viewer", "authorChannelId": {"value": "UC_VIEWER"},
+            }}]},
+        ])
+        result = list_latest_unanswered_comment_threads(
+            FakeYoutube(threads=threads, comments=comments), "UC_OWNER", target_count=10, scan_limit=10,
+        )
+        self.assertEqual([item["thread_id"] for item in result["items"]], ["viewer-replied", "no-replies"])
+        self.assertEqual(result["scanned_count"], 3)
+        self.assertEqual(result["unknown_reply_threads"], 0)
+        self.assertTrue(result["items"][0]["owner_unanswered"])
+        self.assertEqual(result["items"][0]["replies"][0]["author_channel_id"], "UC_VIEWER")
+        self.assertEqual(threads.calls[0]["order"], "time")
+
+    def test_latest_unanswered_treats_missing_reply_author_as_unknown(self):
+        threads = FakeCommentThreads({"items": [{
+            "id": "thread-unknown", "snippet": {
+                "videoId": "abcdefghijk",
+                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?"}},
+                "totalReplyCount": 1, "canReply": True,
+            },
+        }]})
+        comments = FakeComments([{"items": [{
+            "id": "reply-unknown", "snippet": {"textDisplay": "No author channel identity"},
+        }]}])
+        result = list_latest_unanswered_comment_threads(
+            FakeYoutube(threads=threads, comments=comments), "UC_OWNER", target_count=1, scan_limit=10,
+        )
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["unknown_reply_threads"], 1)
+
 
     def test_invalid_moderation_status_is_rejected(self):
         with self.assertRaises(ValueError):

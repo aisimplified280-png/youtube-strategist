@@ -74,6 +74,17 @@ class MetadataEditorUITests(unittest.TestCase):
         self.assertIn("central Review & Publishing queue", source)
         self.assertNotIn("_render_pending_review(", source)
 
+
+    def test_metadata_health_has_generate_and_stage_optimization_flow(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "ui", "metadata_editor.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn('"Generate optimizations"', source)
+        self.assertIn('"Stage optimization for review"', source)
+        self.assertIn("generate_metadata_optimization", source)
+        self.assertIn("Nothing has been published", source)
+
+
     def test_empty_advanced_parts_do_not_create_unrelated_updates(self):
         before = {"snippet": {"title": "Title"}, "status": {"privacyStatus": "public"}}
         draft = {

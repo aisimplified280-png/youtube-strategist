@@ -1,7 +1,9 @@
 import os
 import unittest
 
-from ui.comments_inbox import _comment_pattern_summary
+from unittest.mock import patch
+
+from ui.comments_inbox import _comment_pattern_summary, _generate_latest_unanswered_reply_drafts
 
 
 class CommentsInboxUITests(unittest.TestCase):
@@ -50,6 +52,43 @@ class CommentsInboxUITests(unittest.TestCase):
         self.assertIn("comment_snapshot = str(thread.get(\"text\") or \"\")[:5000]", source)
         self.assertIn('"channel_id": CHANNEL_ID', source)
         self.assertNotIn('"channel_id": "UCS6Sb5rfaEnWTVPGyQlnHFQ"', source)
+
+
+    def test_latest_unanswered_bulk_action_stages_drafts_without_publishing(self):
+        thread = {
+            "thread_id": "thread-1", "top_level_comment_id": "comment-1", "video_id": None,
+            "text": "Can you explain this?", "author_display_name": "Viewer",
+            "can_reply": True, "owner_unanswered": True, "replies": [],
+        }
+        class Store:
+            owner_key = "owner-key"
+            def __init__(self): self.created = []
+            def list_comment_reply_drafts(self, limit=100): return []
+            def create_comment_reply_draft(self, values):
+                self.created.append(values)
+                return {"id": "draft-1"}
+        store = Store()
+        with patch(
+            "ui.comments_inbox.list_latest_unanswered_comment_threads",
+            return_value={"items": [thread], "scanned_count": 1, "unknown_reply_threads": 0},
+        ), patch(
+            "ui.comments_inbox.analyze_comment_thread",
+            return_value={"suggested_reply": "Thanks for asking! Which part should I explain?", "reply_recommendation": "reply"},
+        ):
+            result = _generate_latest_unanswered_reply_drafts(object(), store, {}, limit=1)
+        self.assertEqual(result["staged"], 1)
+        self.assertEqual(store.created[0]["status"], "pending_review")
+        self.assertEqual(store.created[0]["parent_comment_id"], "comment-1")
+        self.assertEqual(len(store.created), 1)
+
+    def test_comments_inbox_has_latest_unanswered_generation_control(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "ui", "comments_inbox.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("Generate replies for latest unanswered comments", source)
+        self.assertIn("Only threads with no replies at all", source)
+        self.assertIn("list_latest_unanswered_comment_threads", source)
+
 
     def test_comment_reply_publish_gate_is_in_backend_not_only_the_ui(self):
         root = os.path.join(os.path.dirname(__file__), "..")

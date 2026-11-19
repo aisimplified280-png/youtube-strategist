@@ -184,6 +184,52 @@ class StrategistChatTests(unittest.TestCase):
         self.assertIn("NEVER claim that you watched video visuals", prompt)
         self.assertIn("Never guarantee CTR, views, virality", prompt)
 
+
+    def test_metadata_optimization_helper_prefers_groq_and_returns_validated_angles(self):
+        angle_data = [
+            {"angle": "curiosity", "title": "The AI Workflow Mistake to Avoid"},
+            {"angle": "direct_value", "title": "Build a Better AI Workflow"},
+            {"angle": "search", "title": "AI Workflow Automation Explained"},
+        ]
+        response = {
+            "assistant_message": "The proposal makes the promise more specific.",
+            "title": angle_data[0]["title"],
+            "description": "Learn how this AI workflow works.\\n\\n#AI #Automation",
+            "tags": ["AI workflow", "automation"],
+            "title_angles": angle_data,
+            "rationale": ["The title states the outcome more clearly."],
+        }
+        resource = {"snippet": {
+            "title": "AI Workflow", "description": "An old description.",
+            "tags": ["AI"], "categoryId": "28",
+        }}
+        live = {**resource["snippet"], "channelId": strategist_chat.connector.CHANNEL_ID}
+        with patch("strategist_chat.connector.fetch_video_snippet", return_value=live), patch(
+            "strategist_chat._transcript_text", return_value=("Transcript cue", "Available")
+        ), patch(
+            "strategist_chat._generate_with_fallbacks", return_value=(response, "Groq", "test-model")
+        ) as generate:
+            output = strategist_chat.generate_metadata_optimization(
+                object(), {"groq": {"api_key": "key"}}, "abcdefghijk", resource
+            )
+        self.assertEqual(output["provider"], "Groq")
+        self.assertEqual(len(output["title_angles"]), 3)
+        self.assertEqual(output["proposed"]["title"], angle_data[0]["title"])
+        self.assertEqual(generate.call_args.kwargs["primary_provider"], "groq")
+        self.assertIn("Transcript cue", generate.call_args.args[6])
+
+    def test_metadata_optimization_rejects_non_owner_video(self):
+        resource = {"snippet": {
+            "title": "External video", "description": "", "tags": [], "categoryId": "28",
+        }}
+        with patch(
+            "strategist_chat.connector.fetch_video_snippet",
+            return_value={**resource["snippet"], "channelId": "UC_NOT_THE_OWNER"},
+        ):
+            with self.assertRaises(PermissionError):
+                strategist_chat.generate_metadata_optimization(object(), {}, "abcdefghijk", resource)
+
+
     def test_apply_error_message_explains_stale_metadata_without_hiding_reason(self):
         message = strategist_chat._apply_error_message(
             RuntimeError("Video metadata changed after review. Reload the video and approve a new proposal.")
