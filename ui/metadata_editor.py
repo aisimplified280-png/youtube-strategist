@@ -11,6 +11,7 @@ import streamlit as st
 
 
 import youtube_analytics_connector as connector
+from strategist_chat import generate_metadata_optimization
 from core.metadata.resource import (
     SUPPORTED_PARTS,
     apply_approved_resource_proposal,
@@ -399,7 +400,7 @@ def _render_advanced_form(video_id: str, before: dict, draft: dict, store, audit
             st.error(f"Could not stage advanced metadata: {error}")
 
 
-def render_metadata_editor(youtube, persistent_store, owner_subject: str):
+def render_metadata_editor(youtube, persistent_store, owner_subject: str, secrets: dict | None = None):
     st.header("Full Metadata Editor")
     st.caption("Edit supported YouTube metadata fields independently. Only explicitly approved changes are published.")
     if youtube is None:
@@ -419,6 +420,7 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
                 st.session_state["_metadata_editor_before"] = current
                 st.session_state["_metadata_editor_draft"] = copy.deepcopy(current)
                 st.session_state["_metadata_editor_audit_id"] = None
+                st.session_state.pop("_metadata_editor_ai_proposal", None)
                 pending = _resume_pending_draft(persistent_store, video_id, current)
                 if pending:
                     st.session_state["_metadata_editor_draft"] = pending["proposed_metadata"]
@@ -447,6 +449,7 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
                 st.session_state["_metadata_editor_before"] = current
                 st.session_state["_metadata_editor_draft"] = copy.deepcopy(current)
                 st.session_state["_metadata_editor_audit_id"] = None
+                st.session_state.pop("_metadata_editor_ai_proposal", None)
                 pending = _resume_pending_draft(persistent_store, video_id, current)
                 if pending:
                     st.session_state["_metadata_editor_draft"] = pending["proposed_metadata"]
@@ -492,6 +495,68 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
             "accurate promise. Tags are secondary; this editor does not have video-level CTR or retention "
             "for this specific upload, so it will not claim a predicted view or CTR lift."
         )
+        if st.button(
+            "Generate optimizations", type="primary",
+            key=f"metadata_generate_optimizations_{video_id}",
+            help="Generate three title angles, a revised description and relevant tags using current metadata and available captions.",
+        ):
+            try:
+                with st.spinner("Generating and validating metadata options..."):
+                    generated = generate_metadata_optimization(youtube, secrets or {}, video_id, before)
+                st.session_state["_metadata_editor_ai_proposal"] = {"video_id": video_id, **generated}
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not generate metadata optimizations: {error}")
+
+    ai_proposal = st.session_state.get("_metadata_editor_ai_proposal")
+    if ai_proposal and str(ai_proposal.get("video_id")) == str(video_id):
+        with st.container(border=True):
+            st.markdown("### AI optimization proposal")
+            st.caption(
+                f"{ai_proposal.get('provider', 'AI')} · {ai_proposal.get('model', 'model')} · "
+                f"{ai_proposal.get('transcript_status', 'Transcript status unavailable')}"
+            )
+            st.write(ai_proposal.get("assistant_message") or "")
+            angles = ai_proposal.get("title_angles") or []
+            labels = [f"{item.get('label') or 'Option'}: {item.get('title') or ''}" for item in angles]
+            title_by_label = {label: str(item.get("title") or "") for label, item in zip(labels, angles)}
+            recommended = str((ai_proposal.get("proposed") or {}).get("title") or "")
+            default_index = next((i for i, label in enumerate(labels) if title_by_label[label] == recommended), 0)
+            with st.form(f"metadata_ai_proposal_form_{video_id}"):
+                selected_label = st.radio("Choose the title to stage", options=labels, index=default_index)
+                edited_description = st.text_area(
+                    "Optimized description (including hashtags)",
+                    value=str((ai_proposal.get("proposed") or {}).get("description") or ""), height=220,
+                )
+                edited_tags = st.text_area(
+                    "Separate YouTube tags (comma-separated)",
+                    value=", ".join((ai_proposal.get("proposed") or {}).get("tags") or []), height=90,
+                )
+                stage_optimization = st.form_submit_button("Stage optimization for review", type="primary")
+            if ai_proposal.get("rationale"):
+                with st.expander("Why these optimizations were recommended", expanded=False):
+                    for item in ai_proposal["rationale"]:
+                        st.write(f"• {item}")
+            if stage_optimization:
+                updated = copy.deepcopy(before)
+                updated.setdefault("snippet", {})
+                updated["snippet"].update({
+                    "title": title_by_label.get(selected_label, recommended),
+                    "description": edited_description,
+                    "tags": [tag.strip() for tag in re.split(r"[,\n]", edited_tags) if tag.strip()],
+                })
+                try:
+                    staged_id = _stage_draft(
+                        persistent_store, video_id, before, updated,
+                        st.session_state.get("_metadata_editor_audit_id"),
+                    )
+                    st.session_state["_metadata_editor_draft"] = updated
+                    st.session_state["_metadata_editor_audit_id"] = staged_id
+                    st.session_state.pop("_metadata_editor_ai_proposal", None)
+                    st.success("Optimization staged in the central Review & Publishing queue. Nothing has been published.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"Could not stage this optimization: {error}")
 
     section = st.segmented_control(
         "Metadata section",
