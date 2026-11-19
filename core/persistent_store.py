@@ -402,6 +402,26 @@ class SupabasePersistentStore:
             params["cadence"] = f"eq.{cadence}"
         return self._request("GET", "channel_strategy_actions", params=params)
 
+    def count_pending_strategy_actions(self) -> int:
+        """Count pending strategist proposals with a lightweight ID-only query."""
+        rows = self._request("GET", "channel_strategy_actions", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "status": "eq.pending_review",
+            "select": "id",
+            "limit": "1000",
+        })
+        return len(rows or [])
+
+    def count_pending_metadata_editor_audits(self) -> int:
+        """Count pending full-metadata drafts without downloading their JSON payloads."""
+        rows = self._request("GET", "metadata_editor_audits", params={
+            "owner_key": f"eq.{self.owner_key}",
+            "status": "eq.pending_review",
+            "select": "id",
+            "limit": "1000",
+        })
+        return len(rows or [])
+
     # --- Strategy action evaluations ---------------------------------------------------
 
     def create_action_evaluation(self, owner_key: str, values: Dict[str, Any]) -> Dict[str, Any]:
