@@ -923,6 +923,17 @@ def _validate_hashtags(title, description):
         )
 
 
+def calculate_youtube_tag_usage(tags: List[str]) -> Tuple[int, int]:
+    """Return the YouTube Data API tag budget in characters and UTF-8 bytes.
+
+    Multi-word tags are treated as quoted by the API; the wrapping quotes and
+    comma separators count toward the 500-character/byte aggregate limit.
+    """
+    formatted_tags = [f'"{str(tag)}"' if " " in str(tag) else str(tag) for tag in (tags or [])]
+    combined_tags = ",".join(formatted_tags)
+    return len(combined_tags), len(combined_tags.encode("utf-8"))
+
+
 def _validate_metadata(snippet):
     title = snippet.get("title")
     description = snippet.get("description", "")
@@ -960,15 +971,11 @@ def _validate_metadata(snippet):
             raise MetadataValidationError(f"Tag '{tag}' must not contain commas; commas are used by YouTube to separate tags.")
     if len({tag.casefold() for tag in tags}) != len(tags):
         raise MetadataValidationError("Tags must not contain duplicates.")
-    # YouTube Data API tag length calculation:
-    # Multi-word tags containing spaces are enclosed in quotation marks by YouTube,
-    # which adds 2 characters per multi-word tag to the 500-character / byte limit.
-    formatted_tags = [f'"{tag}"' if " " in tag else tag for tag in tags]
-    combined_tags = ",".join(formatted_tags)
-    combined_bytes = len(combined_tags.encode("utf-8"))
-    if len(combined_tags) > 500 or combined_bytes > 500:
+    # Match the exact YouTube Data API budget, including quoted multi-word tags.
+    tag_characters, tag_bytes = calculate_youtube_tag_usage(tags)
+    if tag_characters > 500 or tag_bytes > 500:
         raise MetadataValidationError(
-            f"Combined tags must be no longer than 500 characters and 500 UTF-8 bytes accounting for quotation marks on multi-word tags (currently {len(combined_tags)} chars, {combined_bytes} bytes)."
+            f"Combined tags must be no longer than 500 characters and 500 UTF-8 bytes accounting for quotation marks on multi-word tags (currently {tag_characters} chars, {tag_bytes} bytes)."
         )
 
     _validate_hashtags(title, description)
