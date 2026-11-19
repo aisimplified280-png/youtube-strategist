@@ -250,6 +250,14 @@ def render_strategy_activity(store, youtube=None):
         width="stretch",
     ) or "Overview"
 
+    refresh_col, note_col = st.columns([1, 3])
+    with refresh_col:
+        if st.button("Refresh strategist data", key="strategy_refresh_data"):
+            _invalidate_activity_cache(store)
+            st.rerun()
+    with note_col:
+        st.caption("The latest scan is a saved run snapshot. Refresh to fetch the newest run and live queue state.")
+
     try:
         snapshot = _load_activity_snapshot(store, active_section)
         settings = snapshot.get("settings") or {}
@@ -265,6 +273,10 @@ def render_strategy_activity(store, youtube=None):
                 status="pending_review", limit=100, include_metadata=True
             )
             if active_section == "Review queue" else []
+        )
+        live_pending_count = (
+            store.count_pending_strategy_actions() + store.count_pending_metadata_editor_audits()
+            if active_section == "Overview" else None
         )
         recent_actions = snapshot.get("recent_actions") or []
         evaluations = snapshot.get("evaluations") or []
@@ -355,7 +367,11 @@ def render_strategy_activity(store, youtube=None):
             top_cols[0].metric("Run status", _pretty_status(latest.get("status")))
             top_cols[1].metric("Proposals", int(result.get("proposals") or 0))
             top_cols[2].metric("Shadow-tested", int(result.get("shadow_published") or 0))
-            top_cols[3].metric("Needs review", int(result.get("pending_review") or 0))
+            top_cols[3].metric("Pending now", int(live_pending_count or 0))
+            st.caption(
+                f"Review candidates recorded when this scan ran: {int(result.get('pending_review') or 0)}. "
+                "The Pending now metric above is read from the live approval tables."
+            )
 
             model_used = str(latest.get("model_name") or "Not recorded")
             st.caption(
@@ -374,6 +390,18 @@ def render_strategy_activity(store, youtube=None):
             channel_metrics = snapshot.get("channel_metrics") or {}
             deltas = snapshot.get("period_deltas_percent") or {}
             st.markdown("### Channel performance")
+            previous_start = metrics_period.get("previous_start")
+            previous_end = metrics_period.get("previous_end")
+            comparison_note = (
+                f"compared with {previous_start} to {previous_end}"
+                if previous_start and previous_end else "compared with the previous equivalent reporting period"
+            )
+            st.caption(
+                "Source: YouTube Analytics API metrics_snapshot saved by this strategist run. "
+                f"Current reporting window: {metrics_period.get('current_start', '?')} to "
+                f"{metrics_period.get('current_end', '?')}; {comparison_note}. "
+                "This is the latest saved scan snapshot, not a live real-time counter or lifetime total."
+            )
             metric_cols = st.columns(4)
             metric_items = [
                 ("Period views", channel_metrics.get("views"), deltas.get("views")),
