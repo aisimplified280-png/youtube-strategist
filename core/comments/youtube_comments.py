@@ -334,8 +334,9 @@ def publish_comment_reply(
             "YouTube did not return a reply ID. Do not retry automatically."
         )
 
-    # Look up the exact resource returned by insert; scanning parent reply pages can
-    # miss newly-created replies and cannot reliably expose their moderation state.
+    # First confirm the exact resource returned by insert. The YouTube API omits
+    # moderationStatus when comments.list is filtered by id, so read that field
+    # separately from the parent's reply list.
     try:
         response = youtube.comments().list(
             part="snippet",
@@ -368,7 +369,28 @@ def publish_comment_reply(
             f"YouTube returned reply {created_id}, but its text did not match the approved reply. Do not retry blindly."
         )
 
-    moderation_status = snippet.get("moderationStatus")
+    moderation_status = None
+    try:
+        page_token = None
+        for _ in range(5):
+            page = list_thread_replies(
+                youtube, parent_comment_id, page_token=page_token, max_results=100
+            )
+            reply = next(
+                (item for item in page["items"] if item.get("comment_id") == created_id),
+                None,
+            )
+            if reply is not None:
+                moderation_status = reply.get("moderation_status")
+                break
+            page_token = page.get("next_page_token")
+            if not page_token:
+                break
+    except Exception as error:
+        raise CommentVerificationUnavailable(
+            f"YouTube returned reply {created_id}, but its moderation status could not be read: {error}. Do not retry blindly."
+        ) from error
+
     if moderation_status == "heldForReview":
         raise CommentModerationPending(created_id, moderation_status)
     if moderation_status == "likelySpam":
