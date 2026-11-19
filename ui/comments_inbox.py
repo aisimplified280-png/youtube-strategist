@@ -31,7 +31,7 @@ def _comment_pattern_summary(items: list[dict]) -> dict:
     texts = [str(item.get("text") or "").strip() for item in sample]
     questions = sum(
         1 for value in texts
-        if "?" in value or re.search(r"\\b(how|what|why|when|where|which|can|does|is|are)\\b", value.casefold())
+        if "?" in value or re.search(r"^\\s*(how|what|why|when|where|which|can|could|does|do|will|would|is it|are you)\\b", value.casefold())
     )
     unanswered = sum(
         1 for item in sample
