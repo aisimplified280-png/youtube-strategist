@@ -537,7 +537,10 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str, secret
         width="stretch",
     ) or "Core"
     audit_id = st.session_state.get("_metadata_editor_audit_id")
-    settings = persistent_store.get_strategy_settings()
+    try:
+        settings = persistent_store.get_strategy_settings()
+    except Exception:
+        settings = {}
     editor_mode = str(settings.get("metadata_editor_mode") or "assisted")
     if editor_mode == "autonomous_drafts" and not audit_id:
         auto_key = f"_metadata_editor_autodraft_attempted_{video_id}"
@@ -555,6 +558,7 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str, secret
                     st.session_state["_metadata_editor_draft"] = proposed
                     st.session_state["_metadata_editor_audit_id"] = new_audit_id
                     st.session_state["_metadata_editor_autodraft_provider"] = f"{provider} · {model}"
+                    draft = proposed
                     audit_id = new_audit_id
                     st.success(
                         "Autonomous draft prepared and sent to Review & Publishing. "
