@@ -640,6 +640,7 @@ def generate_strategy_report(
     timeout_seconds: int = 90,
     cadence: str = "daily",
     learning_feedback: str = "",
+    min_confidence_auto_publish: float = 0.85,
 ) -> Tuple[Dict[str, Any], str]:
     """Use Gemini as the central decision maker interpreting channel performance evidence."""
     if not api_key:
@@ -651,6 +652,11 @@ def generate_strategy_report(
     benchmarks = snapshot.get("benchmarks") or {}
 
     learning_section = f"\n{learning_feedback}\n" if learning_feedback else ""
+    try:
+        configured_auto_threshold = float(min_confidence_auto_publish)
+    except (TypeError, ValueError):
+        configured_auto_threshold = 0.85
+    configured_auto_threshold = max(0.50, min(configured_auto_threshold, 1.00))
 
     prompt = f"""You are the autonomous YouTube growth strategist and decision-making engine for AI Simplified Lab.
 Analyze the supplied channel evidence for the {cadence.upper()} monitoring cycle.
@@ -691,10 +697,13 @@ DIAGNOSIS CATEGORIES:
 - conversion: high views/watch time but low subscribers gained per 1,000 views. Indicates weak call-to-action or non-subscriber interest.
 
 DECISION & CONFIDENCE POLICY:
+The owner's configured autonomous-publish confidence threshold is {configured_auto_threshold:.2f}.
 For each metadata candidate, assign a confidence score (0.00 to 1.00) and explicit decision:
-- auto_publish (confidence >= 0.85): Clear, evidence-backed packaging issue (low CTR, sufficient impressions), factual claims verified against existing title/description, high expected impact.
-- review (confidence 0.65 to 0.84): Substantial changes or structural reframing requiring creator approval.
-- no_change (confidence < 0.65): Low confidence, ambiguous performance data, or retention/distribution issue where metadata won't help.
+- auto_publish (confidence >= {configured_auto_threshold:.2f}): Use only for a clear, evidence-backed packaging issue with sufficient impressions, a strictly grounded proposed change, and strong evidence that the change is safe and appropriate.
+- review (confidence >= 0.65 but below {configured_auto_threshold:.2f}, or whenever creator judgment is needed): Hold for explicit owner approval.
+- no_change (confidence < 0.65): Low confidence, ambiguous performance data, or retention/distribution issue where metadata will not help.
+Do not inflate confidence, upgrade a review decision, or change a decision merely to meet the numeric threshold. If uncertain, choose review or no_change.
+Metadata-quality audits always remain review-only regardless of confidence or automation mode..
 
 Return JSON ONLY with keys:
 executive_summary (string),
