@@ -532,9 +532,13 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
                 "fake-gemini-key",
                 model="gemini-test-model",
                 fallback_models=[],
+                min_confidence_auto_publish=0.88,
             )
 
         prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("configured autonomous-publish confidence threshold is 0.88", prompt)
+        self.assertIn("auto_publish (confidence >= 0.88)", prompt)
+        self.assertIn("Do not inflate confidence", prompt)
         self.assertIn(source_metadata["description"], prompt)
         self.assertIn("retrieval augmented generation", prompt)
         self.assertIn("Do not add factual claims", prompt)
