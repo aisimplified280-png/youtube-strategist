@@ -1114,11 +1114,27 @@ def _render_persistent_batch_jobs(youtube, subject=None):
     if not store:
         return
     try:
-        jobs = store.list_jobs(limit=20)
+        recent_jobs = store.list_jobs(limit=3)
     except Exception as error:
         st.warning(f"Could not load background batch jobs: {error}")
         return
+
+    # Poll only the newest three jobs. Older runs are retained in session memory
+    # and fetched in three-row pages only when the owner asks to see them.
+    older_jobs = st.session_state.get("_copilot_batch_older_jobs") or []
+    older_ids = {str(item.get("id")) for item in older_jobs}
+    jobs = list(recent_jobs) + [
+        item for item in older_jobs if str(item.get("id")) not in {
+            str(row.get("id")) for row in recent_jobs
+        }
+    ]
+    if "_copilot_batch_runs_cursor" not in st.session_state:
+        st.session_state["_copilot_batch_runs_cursor"] = (
+            recent_jobs[-1].get("created_at") if len(recent_jobs) == 3 else None
+        )
+        st.session_state["_copilot_batch_runs_has_more"] = len(recent_jobs) == 3
     if not jobs:
+        st.caption("No batch runs have been queued yet.")
         return
 
     active_id = st.session_state.get("_copilot_active_job_id")
@@ -1166,6 +1182,30 @@ def _render_persistent_batch_jobs(youtube, subject=None):
             index=list(labels).index(default_label) if default_label in labels else 0,
             key="persistent_batch_job_selector",
         )
+        if st.session_state.get("_copilot_batch_runs_has_more") and st.button(
+            "Load older runs", key="copilot_batch_load_older_runs"
+        ):
+            cursor = st.session_state.get("_copilot_batch_runs_cursor")
+            if cursor:
+                try:
+                    older_page = store.list_jobs(limit=3, before=cursor)
+                    known = {
+                        str(item.get("id"))
+                        for item in st.session_state.get("_copilot_batch_older_jobs", [])
+                    } | {str(item.get("id")) for item in recent_jobs}
+                    combined_older = list(st.session_state.get("_copilot_batch_older_jobs", []))
+                    combined_older.extend(
+                        item for item in older_page if str(item.get("id")) not in known
+                    )
+                    st.session_state["_copilot_batch_older_jobs"] = combined_older
+                    st.session_state["_copilot_batch_runs_cursor"] = (
+                        older_page[-1].get("created_at") if len(older_page) == 3 else None
+                    )
+                    st.session_state["_copilot_batch_runs_has_more"] = len(older_page) == 3
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"Could not load older batch runs: {error}")
+        st.caption(f"Showing {len(jobs)} recent and previously loaded runs")
         job_id = labels[selected_label]
         st.session_state["_copilot_active_job_id"] = job_id
         job = next((item for item in jobs if str(item.get("id")) == str(job_id)), None)
