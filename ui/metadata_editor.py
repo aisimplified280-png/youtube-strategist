@@ -9,7 +9,6 @@ from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
 
-from core.llm import LLMError, LLMRouter
 
 import youtube_analytics_connector as connector
 from core.metadata.resource import (
@@ -43,56 +42,6 @@ def _parse_video_id(value: str) -> str | None:
 
 def _changed_parts(before: dict, draft: dict) -> list[str]:
     return [part for part in SUPPORTED_PARTS if before.get(part, {}) != draft.get(part, {})]
-
-
-def _generate_metadata_autodraft(secrets: dict, resource: dict) -> tuple[dict, str, str]:
-    """Create a conservative metadata proposal from supplied metadata only."""
-    snippet = resource.get("snippet") or {}
-    current = {
-        "title": str(snippet.get("title") or ""),
-        "description": str(snippet.get("description") or ""),
-        "tags": list(snippet.get("tags") or []),
-        "categoryId": str(snippet.get("categoryId") or ""),
-    }
-    prompt = f"""You are the metadata editor for AI Simplified Lab, a channel about AI tools, tutorials and news.
-Improve the supplied YouTube metadata only when a clear improvement is supported by the text provided.
-
-CURRENT PUBLISHED METADATA (the only source of truth):
-{json.dumps(current, ensure_ascii=False, indent=2)}
-
-Return one JSON object with title, description, tags (array of strings), and rationale.
-Rules:
-- You have NOT watched the video and have no transcript. Never invent video content, tool capabilities,
-  prices, free plans, dates, benchmarks, results, offers, links or claims.
-- Preserve the meaning and factual claims already present. Do not add specifics that are not in the input.
-- Make the title clear and compelling, no more than 100 characters, without keyword stuffing or misleading clickbait.
-- Keep the description accurate and useful. Strengthen its first two lines with the topic and viewer value,
-  but do not add chapters, links or claims unless they already exist in the input.
-- Keep existing relevant tags; remove only obvious duplicates or unrelated entries. Tags are secondary to
-  the title, thumbnail and description. Stay within 500 characters across tags.
-- If the current field is already good, keep it unchanged.
-- Respond with valid JSON only.
-"""
-    router = LLMRouter(secrets or {})
-    proposal, provider, model = router.generate_structured_proposal(prompt)
-    title = str(proposal.get("title") or "").strip()
-    description = str(proposal.get("description") or "").strip()
-    tags = [str(item).strip() for item in proposal.get("tags") or [] if str(item).strip()]
-    tag_characters = sum(len(item) for item in tags) + max(0, len(tags) - 1)
-    if not title or len(title) > 100:
-        raise ValueError("The proposed title is empty or exceeds YouTube's 100-character limit.")
-    if len(description) > 5000:
-        raise ValueError("The proposed description exceeds YouTube's 5,000-character limit.")
-    if tag_characters > 500:
-        raise ValueError("The proposed tags exceed the 500-character tag limit.")
-    updated = copy.deepcopy(resource)
-    updated.setdefault("snippet", {})
-    updated["snippet"].update({
-        "title": title,
-        "description": description,
-        "tags": tags,
-    })
-    return updated, provider, model
 
 
 def _metadata_growth_review(resource: dict) -> dict:
@@ -439,7 +388,7 @@ def _render_advanced_form(video_id: str, before: dict, draft: dict, store, audit
             st.error(f"Could not stage advanced metadata: {error}")
 
 
-def render_metadata_editor(youtube, persistent_store, owner_subject: str, secrets: dict | None = None):
+def render_metadata_editor(youtube, persistent_store, owner_subject: str):
     st.header("Full Metadata Editor")
     st.caption("Edit supported YouTube metadata fields independently. Only explicitly approved changes are published.")
     if youtube is None:
@@ -537,48 +486,7 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str, secret
         width="stretch",
     ) or "Core"
     audit_id = st.session_state.get("_metadata_editor_audit_id")
-    try:
-        settings = persistent_store.get_strategy_settings()
-    except Exception:
-        settings = {}
-    editor_mode = str(settings.get("metadata_editor_mode") or "assisted")
-    if editor_mode == "autonomous_drafts" and not audit_id:
-        auto_key = f"_metadata_editor_autodraft_attempted_{video_id}"
-        if not st.session_state.get(auto_key):
-            # Mark before calling the provider so a rerun or transient UI error
-            # cannot silently enqueue duplicate proposals.
-            st.session_state[auto_key] = True
-            try:
-                with st.spinner("Preparing a conservative metadata draft from the existing fields..."):
-                    proposed, provider, model = _generate_metadata_autodraft(secrets or {}, before)
-                    new_audit_id = _stage_draft(
-                        persistent_store, video_id, before, proposed, None
-                    )
-                if new_audit_id:
-                    st.session_state["_metadata_editor_draft"] = proposed
-                    st.session_state["_metadata_editor_audit_id"] = new_audit_id
-                    st.session_state["_metadata_editor_autodraft_provider"] = f"{provider} · {model}"
-                    draft = proposed
-                    audit_id = new_audit_id
-                    st.success(
-                        "Autonomous draft prepared and sent to Review & Publishing. "
-                        "Nothing has been published."
-                    )
-                else:
-                    st.info("The metadata already looks consistent; no draft was staged.")
-            except (LLMError, ValueError, RuntimeError) as error:
-                st.warning(f"Automatic metadata drafting could not complete: {str(error)[:500]}")
-            except Exception as error:
-                st.warning(f"Automatic metadata drafting failed safely: {type(error).__name__}: {str(error)[:500]}")
-    if editor_mode == "autonomous_drafts":
-        provider_label = st.session_state.get("_metadata_editor_autodraft_provider")
-        st.caption(
-            "Autonomous draft mode is enabled. A proposed title, description and tags may be staged "
-            "automatically; every change still requires owner approval in Review & Publishing."
-            + (f" Last provider: {provider_label}." if provider_label else "")
-        )
-    else:
-        st.caption("Assisted mode: use the standards review above, then edit and stage fields when ready.")
+    st.caption("Review the metadata health notes, then edit and stage any changes you want to review.")
 
     if section == "Core":
         _render_core_form(video_id, before, draft, persistent_store, audit_id)
