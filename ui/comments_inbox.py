@@ -84,7 +84,7 @@ def _comment_pattern_summary(items: list[dict]) -> dict:
     }
 
 
-def _load_comment_page(youtube, status: str, search_terms: str, page_token: str | None = None):
+def _load_comment_page(youtube, status: str, search_terms: str, page_token: str | dict | None = None):
     return list_channel_comment_threads(
         youtube,
         CHANNEL_ID,
