@@ -704,7 +704,7 @@ class MetadataConnectorTests(unittest.TestCase):
             })
 
     def test_mult_word_tags_quote_overhead_counts_toward_api_budget(self):
-        tags = [f"topic {index}" for index in range(60)]
+        tags = [f"topic {index}" for index in range(54)]
         raw_characters = sum(len(tag) for tag in tags) + len(tags) - 1
         quoted_characters, quoted_bytes = connector.calculate_youtube_tag_usage(tags)
         self.assertLessEqual(raw_characters, 500)
