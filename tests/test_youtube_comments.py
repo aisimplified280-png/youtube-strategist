@@ -332,12 +332,14 @@ class YouTubeCommentsAPITests(unittest.TestCase):
             publish_comment_reply(FakeYoutube(comments=comments), "comment-1", "Thanks!", can_reply=True)
 
     def test_reply_publish_requires_persisted_owner_approval_and_exact_digest(self):
-        youtube = FakeYoutube(comments=FakeComments([{
-            "items": [{
-                "id": "reply-1",
-                "snippet": {"parentId": "comment-1", "textDisplay": "Thanks!"},
-            }],
-        }], {"id": "reply-1"}))
+        youtube = FakeYoutube(comments=FakeComments([
+            {"items": [{"id": "reply-1", "snippet": {
+                "parentId": "comment-1", "textOriginal": "Thanks!",
+            }}]},
+            {"items": [{"id": "reply-1", "snippet": {
+                "parentId": "comment-1", "textOriginal": "Thanks!", "moderationStatus": "published",
+            }}]},
+        ], {"id": "reply-1"}))
         owner_key = "hashed-owner"
         draft = {
             "status": "publishing",
