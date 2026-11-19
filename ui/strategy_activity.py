@@ -890,6 +890,49 @@ def render_strategy_activity(store, youtube=None):
             )
 
         st.divider()
+        st.markdown("### Workspace automation modes")
+        st.caption(
+            "These modes are separate from Channel Strategist scheduled publishing. "
+            "Autonomous draft modes can prepare proposals, but they do not publish them."
+        )
+        workspace_cols = st.columns(2)
+        with workspace_cols[0]:
+            metadata_mode_label = st.radio(
+                "Full Metadata Editor",
+                options=["Assisted", "Autonomous draft mode"],
+                index=1 if settings.get("metadata_editor_mode") == "autonomous_drafts" else 0,
+                key="metadata_editor_automation_mode",
+                help=(
+                    "Assisted: show field standards and let you edit manually. "
+                    "Autonomous draft mode: prepare a conservative title, description and tags proposal "
+                    "when a video is loaded, then send it to Review & Publishing."
+                ),
+            )
+        with workspace_cols[1]:
+            comments_mode_label = st.radio(
+                "Comments Inbox",
+                options=["Assisted", "Autonomous draft mode"],
+                index=1 if settings.get("comments_mode") == "autonomous_drafts" else 0,
+                key="comments_automation_mode",
+                help=(
+                    "Assisted: analyze comments when selected. Autonomous draft mode: analyze up to five "
+                    "unanswered published comments per loaded page and save reply drafts. Replies always "
+                    "require your manual approval."
+                ),
+            )
+        selected_metadata_mode = (
+            "autonomous_drafts" if metadata_mode_label == "Autonomous draft mode" else "assisted"
+        )
+        selected_comments_mode = (
+            "autonomous_drafts" if comments_mode_label == "Autonomous draft mode" else "assisted"
+        )
+        st.info(
+            "Batch Queue already processes submitted jobs automatically in the background. "
+            "Its metadata proposals still wait in Review & Publishing; batch jobs do not auto-publish. "
+            "Comments Inbox replies are always manual-approval only."
+        )
+
+        st.divider()
         st.markdown("### Gemini model routing")
         st.markdown("**Primary:** Gemini 3.6 Flash")
         st.markdown(
@@ -913,6 +956,8 @@ def render_strategy_activity(store, youtube=None):
                     "max_weekly_publishes": max_weekly,
                     "max_monthly_publishes": max_monthly,
                     "max_metadata_reviews_per_run": max_review,
+                    "metadata_editor_mode": selected_metadata_mode,
+                    "comments_mode": selected_comments_mode,
                 })
                 _invalidate_activity_cache(store)
                 st.success("Strategist settings saved.")
