@@ -106,6 +106,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         call = threads.calls[0]
         self.assertEqual(call["allThreadsRelatedToChannelId"], "UC123")
         self.assertEqual(call["moderationStatus"], "heldForReview")
+        self.assertEqual(call["part"], "snippet,replies")
         self.assertEqual(call["pageToken"], "previous-page")
         self.assertEqual(call["maxResults"], 25)
         self.assertEqual(call["searchTerms"], "free")
@@ -182,6 +183,42 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         self.assertEqual(result["items"], [])
         self.assertEqual(result["unknown_reply_threads"], 1)
 
+
+    def test_all_moderation_states_merge_threads_and_keep_independent_page_cursors(self):
+        def make_thread(thread_id, top_status, reply_status=None):
+            replies = {"comments": []}
+            if reply_status:
+                replies["comments"].append({"id": "reply-" + thread_id, "snippet": {
+                    "authorDisplayName": "Viewer reply", "textDisplay": "Reply",
+                    "moderationStatus": reply_status,
+                }})
+            return {"id": thread_id, "snippet": {
+                "topLevelComment": {"id": "comment-" + thread_id, "snippet": {
+                    "authorDisplayName": "Viewer", "textDisplay": "Comment",
+                    "moderationStatus": top_status,
+                }},
+                "totalReplyCount": len(replies["comments"]), "canReply": True,
+            }, "replies": replies}
+        class SequencedThreads:
+            def __init__(self):
+                self.calls = []
+                self.responses = [
+                    {"items": [make_thread("same", "published")], "nextPageToken": "p2", "pageInfo": {"totalResults": 8}},
+                    {"items": [make_thread("same", "published", "heldForReview"), make_thread("held", "heldForReview")], "nextPageToken": "h2", "pageInfo": {"totalResults": 2}},
+                    {"items": [make_thread("spam", "likelySpam")], "nextPageToken": None, "pageInfo": {"totalResults": 1}},
+                ]
+            def list(self, **kwargs):
+                self.calls.append(kwargs)
+                return FakeRequest(self.responses.pop(0))
+        threads = SequencedThreads()
+        page = list_channel_comment_threads(FakeYoutube(threads=threads), "UC123", moderation_status="all")
+        self.assertEqual({item["thread_id"] for item in page["items"]}, {"same", "held", "spam"})
+        same = next(item for item in page["items"] if item["thread_id"] == "same")
+        self.assertTrue(same["has_held_content"])
+        self.assertEqual(same["review_status"], "heldReply")
+        self.assertEqual(page["next_page_token"], {"published": "p2", "heldForReview": "h2", "likelySpam": None})
+        self.assertEqual([call["moderationStatus"] for call in threads.calls], ["published", "heldForReview", "likelySpam"])
+        self.assertTrue(all(call["part"] == "snippet,replies" for call in threads.calls))
 
     def test_invalid_moderation_status_is_rejected(self):
         with self.assertRaises(ValueError):
