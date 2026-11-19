@@ -447,6 +447,28 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
         st.error("Persistent storage is unavailable. Reply drafts cannot be saved safely.")
         return
 
+    workspace_view = st.radio(
+        "Comments workspace",
+        options=["Inbox", "Reply drafts", "Needs verification"],
+        horizontal=True,
+        key="comments_workspace_view",
+        label_visibility="collapsed",
+    )
+    if workspace_view == "Reply drafts":
+        generation_summary = st.session_state.get("_comments_latest_reply_generation_summary")
+        if generation_summary:
+            st.info(
+                f"Latest scan: {generation_summary['staged']} drafts prepared from "
+                f"{generation_summary['scanned_count']} scanned threads · "
+                f"{generation_summary['skipped_existing']} existing drafts skipped · "
+                f"{generation_summary['no_safe_reply']} without a safe suggestion."
+            )
+        _render_pending_replies(youtube, persistent_store)
+        return
+    if workspace_view == "Needs verification":
+        _render_uncertain_replies(persistent_store)
+        return
+
     col_status, col_search = st.columns([1, 2])
     with col_status:
         status = st.selectbox(
@@ -617,12 +639,3 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             st.error(f"Could not load more comments: {error}")
 
 
-    st.divider()
-    if st.button("Show pending replies", key="comments_show_pending_replies"):
-        st.session_state["_comments_show_pending_replies"] = True
-    if st.session_state.get("_comments_show_pending_replies"):
-        _render_pending_replies(youtube, persistent_store)
-    if st.button("Show replies needing verification", key="comments_show_uncertain_replies"):
-        st.session_state["_comments_show_uncertain_replies"] = True
-    if st.session_state.get("_comments_show_uncertain_replies"):
-        _render_uncertain_replies(persistent_store)
