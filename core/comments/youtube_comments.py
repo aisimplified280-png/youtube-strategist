@@ -373,17 +373,23 @@ def publish_comment_reply(
     try:
         page_token = None
         for _ in range(5):
-            page = list_thread_replies(
-                youtube, parent_comment_id, page_token=page_token, max_results=100
-            )
+            params = {
+                "part": "snippet",
+                "parentId": parent_comment_id,
+                "maxResults": MAX_COMMENT_PAGE_SIZE,
+                "textFormat": "plainText",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            page = youtube.comments().list(**params).execute()
             reply = next(
-                (item for item in page["items"] if item.get("comment_id") == created_id),
+                (item for item in (page.get("items") or []) if item.get("id") == created_id),
                 None,
             )
             if reply is not None:
-                moderation_status = reply.get("moderation_status")
+                moderation_status = (reply.get("snippet") or {}).get("moderationStatus")
                 break
-            page_token = page.get("next_page_token")
+            page_token = page.get("nextPageToken")
             if not page_token:
                 break
     except Exception as error:
