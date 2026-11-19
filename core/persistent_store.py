@@ -678,7 +678,7 @@ class SupabasePersistentStore:
     ) -> list[Dict[str, Any]]:
         params = {
             "owner_key": f"eq.{self.owner_key}",
-            "select": "id,video_id,video_title,thread_id,parent_comment_id,comment_text_snapshot,comment_author_display_name,can_reply,draft_text,approval_digest,status,approved_at,published_at,error,updated_at",
+            "select": "id,video_id,video_title,thread_id,parent_comment_id,comment_text_snapshot,comment_author_display_name,can_reply,draft_text,approval_digest,status,approved_at,published_comment_id,published_at,error,updated_at",
             "order": "updated_at.desc",
             "limit": str(max(1, min(int(limit), 100))),
         }
