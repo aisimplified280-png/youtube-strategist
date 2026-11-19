@@ -81,6 +81,31 @@ class CommentsInboxUITests(unittest.TestCase):
         self.assertEqual(store.created[0]["parent_comment_id"], "comment-1")
         self.assertEqual(len(store.created), 1)
 
+    def test_comment_page_merge_deduplicates_overlapping_moderation_threads(self):
+        from ui.comments_inbox import _merge_comment_page_items
+        existing = [{
+            "thread_id": "thread-1", "text": "Question?", "published_at": "2026-11-18",
+            "matched_moderation_statuses": ["published"], "has_held_content": False,
+            "replies": [{"comment_id": "reply-1", "text": "First"}],
+        }]
+        incoming = [
+            {
+                "thread_id": "thread-1", "text": "Question?", "published_at": "2026-11-18",
+                "matched_moderation_statuses": ["heldForReview"], "has_held_content": True,
+                "review_status": "heldReply",
+                "replies": [{"comment_id": "reply-2", "text": "Held reply"}],
+            },
+            {"thread_id": "thread-2", "text": "Another", "published_at": "2026-11-19"},
+        ]
+        merged = _merge_comment_page_items(existing, incoming)
+        self.assertEqual([item["thread_id"] for item in merged], ["thread-2", "thread-1"])
+        self.assertTrue(merged[1]["has_held_content"])
+        self.assertEqual(merged[1]["review_status"], "heldReply")
+        self.assertEqual(
+            {reply["comment_id"] for reply in merged[1]["replies"]},
+            {"reply-1", "reply-2"},
+        )
+
     def test_comments_inbox_has_latest_unanswered_generation_control(self):
         root = os.path.join(os.path.dirname(__file__), "..")
         with open(os.path.join(root, "ui", "comments_inbox.py"), encoding="utf-8") as handle:
