@@ -820,6 +820,75 @@ def _extract_title_angles(structured_angles: Any) -> List[Dict[str, str]]:
     ]
 
 
+
+def generate_metadata_optimization(
+    youtube, secrets: Optional[Dict[str, Any]], video_id: str, current_resource: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Generate a grounded, validated owner-channel metadata proposal for manual review."""
+    if youtube is None:
+        raise ConnectionError("Connect the channel owner's YouTube account before generating optimizations.")
+    current_snippet = (current_resource or {}).get("snippet") or {}
+    # The editor snapshot strips read-only channelId; verify ownership against a fresh API read.
+    live_snippet = connector.fetch_video_snippet(youtube, video_id)
+    is_owner, ownership = _check_ownership(live_snippet)
+    if not is_owner:
+        raise PermissionError(f"Metadata optimization is read-only: {ownership}.")
+    if connector._metadata_snapshot(live_snippet) != connector._metadata_snapshot(current_snippet):
+        raise RuntimeError("This video's metadata changed after it was loaded. Reload the video before generating optimizations.")
+    title = str(live_snippet.get("title") or "").strip()
+    if not title:
+        raise ValueError("The video has no published title to ground an optimization.")
+    transcript, transcript_status = _transcript_text(video_id)
+    target = {
+        "video_id": video_id, "title": title,
+        "description": str(live_snippet.get("description") or ""),
+        "tags": [str(tag).strip() for tag in (live_snippet.get("tags") or []) if str(tag).strip()],
+    }
+    prompt = _build_prompt(
+        target, {}, "", "No reference video supplied; reference comparison is disabled.", [],
+        "Review the complete current metadata and formulate the strongest supported optimization. "
+        "Return three distinct title angles, a complete improved description with relevant hashtags, "
+        "and separate YouTube tags. Explain the highest-impact changes.",
+        target_transcript=transcript, target_transcript_status=transcript_status,
+    )
+    config = secrets or {}
+    groq = config.get("groq", {}) if hasattr(config, "get") else {}
+    gemini = config.get("gemini", {}) if hasattr(config, "get") else {}
+    gf, mf = groq.get("fallback_models", []) or [], gemini.get("fallback_models", []) or []
+    if isinstance(gf, str):
+        gf = [item.strip() for item in gf.split(",") if item.strip()]
+    if isinstance(mf, str):
+        mf = [item.strip() for item in mf.split(",") if item.strip()]
+    result, provider, model = _generate_with_fallbacks(
+        groq.get("api_key"), groq.get("model", DEFAULT_GROQ_MODEL), gf,
+        gemini.get("api_key"), gemini.get("model", DEFAULT_MODEL), mf, prompt,
+        validator=lambda payload: _validate_proposal_payload(payload),
+        primary_provider="groq",
+    )
+    angles = _extract_title_angles(result.get("title_angles"))
+    if len(angles) != 3:
+        raise ValueError("The AI response did not provide three distinct, valid title options.")
+    proposed = {
+        "title": str(result.get("title") or "").strip(),
+        "description": str(result.get("description") or ""),
+        "tags": [str(tag).strip() for tag in (result.get("tags") or []) if str(tag).strip()],
+    }
+    connector._validate_metadata(proposed)
+    if not any(item.get("title") == proposed["title"] for item in angles):
+        raise ValueError("The recommended title does not match one of the validated title options.")
+    rationale = result.get("rationale") or []
+    if not isinstance(rationale, list):
+        rationale = []
+    return {
+        "proposed": proposed, "title_angles": angles,
+        "assistant_message": str(result.get("assistant_message") or "A metadata optimization proposal is ready for your review."),
+        "rationale": [str(item) for item in rationale if str(item).strip()][:8],
+        "provider": provider, "model": model, "transcript_status": transcript_status,
+    }
+
+
+
+
 def _clear_single_video_editor_state():
     """Clear single-video target and proposal state to prevent collision with batch views."""
     for k in (
@@ -1176,8 +1245,8 @@ def _render_persistent_batch_jobs(youtube, subject=None):
         (item for item in jobs if str(item.get("id")) == str(selected_default_id)),
         None,
     )
-    expanded = bool(default_job and default_job.get("status") in {"queued", "running", "review"})
-    with st.expander("Background batch jobs", expanded=expanded):
+    # Keep the panel compact; expand it on demand.
+    with st.expander("Background batch jobs", expanded=False):
         selected_label = st.selectbox(
             "Choose a saved batch",
             list(labels),
@@ -2375,8 +2444,9 @@ def render_copilot_chat(
                     except Exception as error:
                         st.error(_apply_error_message(error))
 
-    # Durable jobs survive browser sessions and are reloaded from Supabase on every visit.
-    _render_persistent_batch_jobs(youtube, subject)
+    # Place background jobs below conversation history in the sidebar.
+    with st.sidebar:
+        _render_persistent_batch_jobs(youtube, subject)
 
     # Legacy in-session batch review remains available for batches created by older app versions.
     if batch_active:
