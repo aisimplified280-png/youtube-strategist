@@ -274,10 +274,18 @@ def render_strategy_activity(store, youtube=None):
             )
             if active_section == "Review queue" else []
         )
-        live_pending_count = (
-            store.count_pending_strategy_actions() + store.count_pending_metadata_editor_audits()
-            if active_section == "Overview" else None
-        )
+        live_pending_count = None
+        if active_section == "Overview":
+            try:
+                live_pending_count = (
+                    store.count_pending_strategy_actions()
+                    + store.count_pending_metadata_editor_audits()
+                )
+            except Exception as count_error:
+                # Keep the overview usable when a count-only read is temporarily unavailable.
+                st.session_state["_strategy_pending_count_warning"] = (
+                    f"Live review count unavailable: {type(count_error).__name__}"
+                )
         recent_actions = snapshot.get("recent_actions") or []
         evaluations = snapshot.get("evaluations") or []
     except Exception as error:
@@ -367,10 +375,20 @@ def render_strategy_activity(store, youtube=None):
             top_cols[0].metric("Run status", _pretty_status(latest.get("status")))
             top_cols[1].metric("Proposals", int(result.get("proposals") or 0))
             top_cols[2].metric("Shadow-tested", int(result.get("shadow_published") or 0))
-            top_cols[3].metric("Pending now", int(live_pending_count or 0))
+            if live_pending_count is None:
+                top_cols[3].metric("Pending now", "Unavailable")
+                warning = st.session_state.get("_strategy_pending_count_warning")
+                if warning:
+                    st.caption(warning)
+            else:
+                top_cols[3].metric("Pending now", int(live_pending_count))
             st.caption(
                 f"Review candidates recorded when this scan ran: {int(result.get('pending_review') or 0)}. "
-                "The Pending now metric above is read from the live approval tables."
+                + (
+                    "The Pending now metric above is read from the live approval tables."
+                    if live_pending_count is not None
+                    else "The live approval-table count could not be read during this refresh."
+                )
             )
 
             model_used = str(latest.get("model_name") or "Not recorded")
