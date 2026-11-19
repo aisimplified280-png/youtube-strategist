@@ -38,7 +38,7 @@ class MetadataEditorUITests(unittest.TestCase):
 
     def test_growth_review_uses_utf8_byte_and_quoted_tag_budgets(self):
         description = "తెలుగు" * 300
-        tags = [f"topic {index}" for index in range(60)]
+        tags = [f"topic {index}" for index in range(54)]
         review = _metadata_growth_review({
             "snippet": {
                 "title": "Telugu metadata byte test",
