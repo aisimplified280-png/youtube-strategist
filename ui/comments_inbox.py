@@ -20,9 +20,9 @@ from core.comments.youtube_comments import (
 
 
 MODERATION_LABELS = {
-    "published": "Published",
-    "heldForReview": "Held for review",
-    "likelySpam": "Likely spam",
+    "all": "All comments", "published": "Published",
+    "heldForReview": "Held for review", "likelySpam": "Likely spam",
+    "heldReply": "Contains held reply", "spamReply": "Contains likely-spam reply",
 }
 
 
@@ -303,7 +303,11 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
         if replies:
             for reply in replies:
                 with st.container(border=True):
-                    st.caption(reply.get("author_display_name") or "Viewer")
+                    reply_status = reply.get("moderation_status") or "published"
+                    st.caption(
+                        f"{reply.get('author_display_name') or 'Viewer'} · "
+                        f"{MODERATION_LABELS.get(reply_status, 'Status unavailable')}"
+                    )
                     st.write(reply.get("text") or "")
         else:
             st.caption("No replies yet. This is an unanswered thread.")
@@ -473,7 +477,7 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
     with col_status:
         status = st.selectbox(
             "Comment status",
-            options=list(MODERATION_LABELS),
+            options=["all", "published", "heldForReview", "likelySpam"],
             format_func=lambda value: MODERATION_LABELS[value],
             key="comments_moderation_status",
         )
@@ -568,7 +572,14 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
                 f"{item['topic']} ({item['count']})" for item in summary["topics"][:3]
             ))
     st.caption("Select a comment to analyze its thread and prepare a reply suggestion. Every reply requires manual approval.")
-    st.caption(f"Showing {len(items)} comments · {MODERATION_LABELS[status]}")
+    if status == "all":
+        held_count = sum(1 for item in items if item.get("has_held_content"))
+        st.info(
+            f"All moderation states are included in this view. {held_count} of the loaded threads "
+            "contain a comment or reply held by YouTube. YouTube Studio groups held-for-review "
+            "and likely-spam comments in its Held tab."
+        )
+    st.caption(f"Showing {len(items)} unique threads · {MODERATION_LABELS[status]}")
     if not items:
         st.info("No comments were returned for this filter.")
     else:
@@ -580,24 +591,44 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
             options=video_options,
             key=f"comments_video_filter_{status}_{search_terms.strip().casefold()}",
         )
-        only_unanswered = st.checkbox(
-            "Only threads with no replies at all",
-            key=f"comments_unanswered_{status}_{search_terms.strip().casefold()}",
-        )
+        filter_col1, filter_col2 = st.columns(2)
+        with filter_col1:
+            only_unanswered = st.checkbox(
+                "Only threads with no replies at all",
+                key=f"comments_unanswered_{status}_{search_terms.strip().casefold()}",
+            )
+        with filter_col2:
+            only_held = st.checkbox(
+                "Only comments/replies held by YouTube",
+                key=f"comments_held_{status}_{search_terms.strip().casefold()}",
+                disabled=status != "all",
+            )
         visible = items if selected_video == "All loaded videos" else [
             item for item in items
             if (item.get("video_id") or "Channel comment") == selected_video
         ]
         if only_unanswered:
             visible = [item for item in visible if int(item.get("total_reply_count") or 0) == 0]
+        if only_held and status == "all":
+            visible = [item for item in visible if item.get("has_held_content")]
         for thread in visible:
             thread_id = str(thread.get("thread_id") or "")
             is_open = st.session_state.get("_selected_comment_thread_id") == thread_id
             with st.container(border=True):
+                moderation_label = MODERATION_LABELS.get(
+                    thread.get("review_status") or thread.get("moderation_status") or "published",
+                    "Status unavailable",
+                )
                 st.caption(
                     f"{thread.get('author_display_name') or 'Viewer'} · "
-                    f"{thread.get('published_at') or 'Date unavailable'}"
+                    f"{thread.get('published_at') or 'Date unavailable'} · "
+                    f"Moderation: {moderation_label}"
                 )
+                if thread.get("has_held_content"):
+                    st.warning(
+                        "YouTube has held this comment thread or at least one reply. "
+                        "Review it in YouTube Studio; this app will not approve or reject it automatically."
+                    )
                 st.write(thread.get("text") or "")
                 video_id = thread.get("video_id")
                 if video_id:
