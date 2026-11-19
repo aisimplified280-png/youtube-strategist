@@ -22,6 +22,16 @@ class CommentVerificationUnavailable(CommentAPIError):
     pass
 
 
+class CommentModerationPending(CommentAPIError):
+    """YouTube accepted a reply but placed it in a moderation queue."""
+
+    def __init__(self, comment_id: str, moderation_status: str):
+        self.comment_id = comment_id
+        self.moderation_status = moderation_status
+        label = "held for review" if moderation_status == "heldForReview" else "classified as likely spam"
+        super().__init__(f"YouTube accepted reply {comment_id}, but it is {label}. Review it in YouTube Studio; do not retry.")
+
+
 def _normalise_comment(comment: dict) -> dict:
     snippet = comment.get("snippet") or {}
     return {
@@ -324,28 +334,54 @@ def publish_comment_reply(
             "YouTube did not return a reply ID. Do not retry automatically."
         )
 
-    # A successful insert response is retained, then checked against the parent thread.
+    # Look up the exact resource returned by insert; scanning parent reply pages can
+    # miss newly-created replies and cannot reliably expose their moderation state.
     try:
-        page_token = None
-        for _ in range(5):
-            page = list_thread_replies(
-                youtube, parent_comment_id, page_token=page_token, max_results=100
-            )
-            if any(item.get("comment_id") == created_id for item in page["items"]):
-                return {
-                    "status": "published",
-                    "comment_id": created_id,
-                    "parent_comment_id": parent_comment_id,
-                    "reply_text": text,
-                }
-            page_token = page.get("next_page_token")
-            if not page_token:
-                break
+        response = youtube.comments().list(
+            part="snippet",
+            id=created_id,
+            textFormat="plainText",
+        ).execute()
     except Exception as error:
         raise CommentVerificationUnavailable(
-            f"YouTube accepted reply {created_id}, but read-back verification failed: {error}"
+            f"YouTube accepted reply {created_id}, but exact-ID verification failed: {error}. Do not retry blindly."
         ) from error
 
-    raise CommentVerificationUnavailable(
-        f"YouTube accepted reply {created_id}, but it was not visible in the verification read. Do not retry blindly."
-    )
+    matches = [
+        item for item in (response.get("items") or [])
+        if item.get("id") == created_id
+    ]
+    if not matches:
+        raise CommentVerificationUnavailable(
+            f"YouTube accepted reply {created_id}, but the exact-ID lookup returned no comment. Do not retry blindly."
+        )
+
+    verified = matches[0]
+    snippet = verified.get("snippet") or {}
+    if snippet.get("parentId") != parent_comment_id:
+        raise CommentVerificationUnavailable(
+            f"YouTube returned reply {created_id}, but its parent did not match the approved thread. Do not retry blindly."
+        )
+    returned_text = snippet.get("textOriginal") or snippet.get("textDisplay") or ""
+    if returned_text.strip() != text:
+        raise CommentVerificationUnavailable(
+            f"YouTube returned reply {created_id}, but its text did not match the approved reply. Do not retry blindly."
+        )
+
+    moderation_status = snippet.get("moderationStatus")
+    if moderation_status == "heldForReview":
+        raise CommentModerationPending(created_id, moderation_status)
+    if moderation_status == "likelySpam":
+        raise CommentModerationPending(created_id, moderation_status)
+    if moderation_status != "published":
+        raise CommentVerificationUnavailable(
+            f"YouTube returned reply {created_id}, but its moderation status was unavailable or unexpected. Do not retry blindly."
+        )
+
+    return {
+        "status": "published",
+        "comment_id": created_id,
+        "parent_comment_id": parent_comment_id,
+        "reply_text": text,
+        "moderation_status": moderation_status,
+    }
