@@ -95,9 +95,14 @@ def _parse_analysis(raw: str) -> dict | None:
     if category in {"spam", "abuse_or_bait"} or recommendation == "ignore":
         recommendation = "ignore"
         reply = ""
-    elif needs_fact_check or confidence < 0.65:
+    elif needs_fact_check:
         recommendation = "verify_first"
         reply = _safe_reply_for_category(category, fact_check=True)
+    elif confidence < 0.65:
+        # Do not invent confidence in a draft. A low-confidence classification
+        # should leave the owner with no suggested text until they inspect it.
+        recommendation = "verify_first"
+        reply = ""
     elif not reply:
         reply = _safe_reply_for_category(category)
     if len(reply.split()) > 35:
@@ -211,10 +216,10 @@ Thread:
             return fallback
         parsed = _parse_analysis(raw)
     if not parsed:
-        fallback = _fallback_comment_analysis(text)
-        fallback["provider"] = "rule-based fallback"
-        fallback["model"] = "safe-clarification"
-        return fallback
+        raise CommentAnalysisError(
+            "The AI provider returned invalid comment-analysis JSON after one repair attempt. "
+            "No reply suggestion was created."
+        )
     parsed["provider"] = provider
     parsed["model"] = model
     return parsed
