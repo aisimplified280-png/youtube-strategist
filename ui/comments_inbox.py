@@ -258,10 +258,6 @@ def _render_pending_replies(youtube, store):
 def _render_selected_thread(youtube, store, secrets, thread: dict):
     thread_id = thread.get("thread_id")
     parent_id = thread.get("top_level_comment_id")
-    st.divider()
-    st.subheader("Selected comment thread")
-    st.caption(f"Video ID: {thread.get('video_id') or 'Channel comment'}")
-    st.write(thread.get("text") or "")
     st.caption(
         f"{thread.get('author_display_name') or 'Viewer'} · "
         f"{thread.get('published_at') or 'Date unavailable'} · "
@@ -272,25 +268,45 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
         return
 
     replies_key = f"_comment_replies_{thread_id}"
-    if st.button("Load replies", key=f"comment_load_replies_{thread_id}"):
+    analysis_key = f"_comment_analysis_{thread_id}"
+    if st.button(
+        "Load thread & generate reply suggestion",
+        type="primary",
+        key=f"comment_load_analyze_{thread_id}",
+    ):
         try:
-            page = list_thread_replies(youtube, parent_id, max_results=25)
-            st.session_state[replies_key] = page
-            st.rerun()
+            with st.spinner("Loading the conversation and preparing a reply suggestion..."):
+                page = list_thread_replies(youtube, parent_id, max_results=25)
+                st.session_state[replies_key] = page
+                replies = (page or {}).get("items") or []
+                analysis_thread = dict(thread)
+                video_id = thread.get("video_id")
+                if video_id:
+                    title_key = f"_comment_video_title_{video_id}"
+                    video_title = st.session_state.get(title_key)
+                    if not video_title:
+                        try:
+                            video_title = fetch_video_snippet(youtube, video_id).get("title") or ""
+                            st.session_state[title_key] = video_title
+                        except Exception:
+                            video_title = ""
+                    analysis_thread["video_title"] = video_title
+                analysis = analyze_comment_thread(secrets, analysis_thread, replies)
+                st.session_state[analysis_key] = analysis
         except Exception as error:
-            st.error(f"Could not load replies: {error}")
+            st.error(f"Could not load and analyze this thread: {error}")
 
     replies_page = st.session_state.get(replies_key)
     replies = (replies_page or {}).get("items") or []
     if replies_page:
-        st.markdown("**Replies**")
+        st.markdown("**Conversation**")
         if replies:
             for reply in replies:
                 with st.container(border=True):
                     st.caption(reply.get("author_display_name") or "Viewer")
                     st.write(reply.get("text") or "")
         else:
-            st.caption("No replies were returned for this thread.")
+            st.caption("No replies yet. This is an unanswered thread.")
         next_reply_token = replies_page.get("next_page_token")
         if next_reply_token and st.button(
             "Load older replies", key=f"comment_load_older_replies_{thread_id}"
@@ -308,28 +324,7 @@ def _render_selected_thread(youtube, store, secrets, thread: dict):
             except Exception as error:
                 st.error(f"Could not load older replies: {error}")
 
-    if st.button("Analyze comment & draft a reply", type="primary", key=f"comment_analyze_{thread_id}"):
-        try:
-            with st.spinner("Analyzing this comment thread..."):
-                analysis_thread = dict(thread)
-                video_id = thread.get("video_id")
-                if video_id:
-                    title_key = f"_comment_video_title_{video_id}"
-                    video_title = st.session_state.get(title_key)
-                    if not video_title:
-                        try:
-                            snippet = fetch_video_snippet(youtube, video_id)
-                            video_title = snippet.get("title") or ""
-                            st.session_state[title_key] = video_title
-                        except Exception:
-                            video_title = ""
-                    analysis_thread["video_title"] = video_title
-                analysis = analyze_comment_thread(secrets, analysis_thread, replies)
-            st.session_state[f"_comment_analysis_{thread_id}"] = analysis
-        except Exception as error:
-            st.error(f"Comment analysis failed: {error}")
-
-    analysis = st.session_state.get(f"_comment_analysis_{thread_id}")
+    analysis = st.session_state.get(analysis_key)
     if analysis:
         left, right = st.columns(2)
         with left:
@@ -574,6 +569,8 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
         if only_unanswered:
             visible = [item for item in visible if int(item.get("total_reply_count") or 0) == 0]
         for thread in visible:
+            thread_id = str(thread.get("thread_id") or "")
+            is_open = st.session_state.get("_selected_comment_thread_id") == thread_id
             with st.container(border=True):
                 st.caption(
                     f"{thread.get('author_display_name') or 'Viewer'} · "
@@ -588,9 +585,18 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
                     f"{thread.get('like_count', 0)} likes · "
                     f"{'Reply enabled' if thread.get('can_reply') else 'Replies disabled'}"
                 )
-                if st.button("Open thread", key=f"comments_open_{thread.get('thread_id')}"):
-                    st.session_state["_selected_comment_thread"] = thread
+                if st.button(
+                    "Close thread" if is_open else "Open thread",
+                    key=f"comments_open_{thread_id}",
+                ):
+                    if is_open:
+                        st.session_state.pop("_selected_comment_thread_id", None)
+                    else:
+                        st.session_state["_selected_comment_thread_id"] = thread_id
+                        st.session_state["_selected_comment_thread"] = thread
                     st.rerun()
+                if is_open:
+                    _render_selected_thread(youtube, persistent_store, secrets, thread)
 
     if page.get("next_page_token") and st.button(
         "Load more comments", key=f"comments_load_more_{status}_{search_terms.strip().casefold()}"
@@ -610,9 +616,6 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
         except Exception as error:
             st.error(f"Could not load more comments: {error}")
 
-    selected_thread = st.session_state.get("_selected_comment_thread")
-    if selected_thread:
-        _render_selected_thread(youtube, persistent_store, secrets, selected_thread)
 
     st.divider()
     if st.button("Show pending replies", key="comments_show_pending_replies"):
