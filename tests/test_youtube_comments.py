@@ -119,7 +119,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
                 "snippet": {
                     "videoId": "abcdefghijk",
                     "topLevelComment": {"id": comment_id, "snippet": {
-                        "authorDisplayName": "Viewer", "textDisplay": "Question?",
+                        "authorDisplayName": "Viewer", "textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"},
                     }},
                     "totalReplyCount": reply_count, "canReply": True,
                 },
@@ -151,7 +151,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         threads = FakeCommentThreads({"items": [{
             "id": "thread-unknown", "snippet": {
                 "videoId": "abcdefghijk",
-                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?"}},
+                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"}}},
                 "totalReplyCount": 1, "canReply": True,
             },
         }]})
@@ -160,6 +160,24 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         }]}])
         result = list_latest_unanswered_comment_threads(
             FakeYoutube(threads=threads, comments=comments), "UC_OWNER", target_count=1, scan_limit=10,
+        )
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["unknown_reply_threads"], 1)
+
+
+
+    def test_latest_unanswered_skips_threads_without_top_level_author_identity(self):
+        threads = FakeCommentThreads({"items": [{
+            "id": "thread-author-unknown",
+            "snippet": {
+                "videoId": "abcdefghijk",
+                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?"}},
+                "totalReplyCount": 0,
+                "canReply": True,
+            },
+        }]})
+        result = list_latest_unanswered_comment_threads(
+            FakeYoutube(threads=threads), "UC_OWNER", target_count=1, scan_limit=10,
         )
         self.assertEqual(result["items"], [])
         self.assertEqual(result["unknown_reply_threads"], 1)
