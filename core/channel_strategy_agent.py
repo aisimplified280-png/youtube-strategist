@@ -955,7 +955,7 @@ def evaluate_autonomous_policy(
 
     Policy:
     - Meaningful multi-field improvements (title, description, tags) are permitted.
-    - Deterministic checks validate length limits, angle brackets, and identicalness.
+    - Deterministic checks validate character/UTF-8-byte limits, quoted multi-word tag budgets, angle brackets, and identicalness.
     - When emergency_pause is True: all actions hold for review.
     - When automation_mode is 'paused': all actions hold for review.
     - When automation_mode is 'shadow': records shadow_published without calling YouTube API.
