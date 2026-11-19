@@ -14,6 +14,8 @@ from core.channel_strategy_agent import (
     generate_strategy_report,
     list_channel_upload_ids,
 )
+import youtube_analytics_connector as connector
+
 from core.strategy_learning import (
     classify_evaluation_outcome,
     compute_metric_deltas,
@@ -285,6 +287,33 @@ class TestAutonomousPolicy(TestCase):
             cooldown_allows_publish=True,
         )
         self.assertEqual(status, "no_change")
+
+    def test_telugu_description_utf8_byte_overflow_is_rejected_before_publish(self):
+        proposed = dict(self.proposed)
+        proposed["description"] = "వీడియో" * 300
+        self.assertLess(len(proposed["description"]), 5000)
+        self.assertGreater(len(proposed["description"].encode("utf-8")), 5000)
+        status, reason, changed = evaluate_autonomous_policy(
+            self.settings, self.decision, self.before, proposed,
+            cooldown_allows_publish=True,
+        )
+        self.assertEqual(status, "rejected")
+        self.assertIn("UTF-8-byte limit", reason)
+        self.assertIn("bytes", reason)
+
+    def test_multi_word_tag_quotes_and_separators_count_toward_publish_budget(self):
+        proposed = dict(self.proposed)
+        proposed["tags"] = [f"topic {index}" for index in range(54)]
+        raw_characters = sum(len(tag) for tag in proposed["tags"]) + len(proposed["tags"]) - 1
+        quoted_characters, _ = connector.calculate_youtube_tag_usage(proposed["tags"])
+        self.assertLessEqual(raw_characters, 500)
+        self.assertGreater(quoted_characters, 500)
+        status, reason, changed = evaluate_autonomous_policy(
+            self.settings, self.decision, self.before, proposed,
+            cooldown_allows_publish=True,
+        )
+        self.assertEqual(status, "rejected")
+        self.assertIn("multi-word tag quotes", reason)
 
     def test_angle_brackets_rejected(self):
         self.proposed["title"] = "Why <RAG> Fails in Production"

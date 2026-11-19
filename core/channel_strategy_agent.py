@@ -955,7 +955,7 @@ def evaluate_autonomous_policy(
 
     Policy:
     - Meaningful multi-field improvements (title, description, tags) are permitted.
-    - Deterministic checks validate length limits, angle brackets, and identicalness.
+    - Deterministic checks validate character/UTF-8-byte limits, quoted multi-word tag budgets, angle brackets, and identicalness.
     - When emergency_pause is True: all actions hold for review.
     - When automation_mode is 'paused': all actions hold for review.
     - When automation_mode is 'shadow': records shadow_published without calling YouTube API.
@@ -983,11 +983,22 @@ def evaluate_autonomous_policy(
         return "rejected", "Description contains invalid '<' or '>' angle bracket characters rejected by YouTube.", changed
     if len(prop_title) > 100:
         return "rejected", f"Proposed title exceeds 100 character limit ({len(prop_title)} chars).", changed
-    if len(prop_desc) > 5000:
-        return "rejected", f"Proposed description exceeds 5,000 character limit ({len(prop_desc)} chars).", changed
-    tags_chars = sum(len(t) for t in prop_tags) + max(0, len(prop_tags) - 1)
-    if tags_chars > 500:
-        return "rejected", f"Proposed tags total length exceeds 500 character limit ({tags_chars} chars).", changed
+    description_bytes = len(prop_desc.encode("utf-8"))
+    if len(prop_desc) > 5000 or description_bytes > 5000:
+        return (
+            "rejected",
+            "Proposed description exceeds YouTube's 5,000-character/5,000 UTF-8-byte limit "
+            f"({len(prop_desc)} chars, {description_bytes} bytes).",
+            changed,
+        )
+    tags_chars, tags_bytes = connector.calculate_youtube_tag_usage(prop_tags)
+    if tags_chars > 500 or tags_bytes > 500:
+        return (
+            "rejected",
+            "Proposed tags exceed YouTube's 500-character/500 UTF-8-byte budget "
+            f"after multi-word tag quotes ({tags_chars} chars, {tags_bytes} bytes).",
+            changed,
+        )
 
     # Emergency pause gate
     if settings.get("emergency_pause") is True:

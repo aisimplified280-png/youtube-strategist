@@ -60,10 +60,15 @@ def _metadata_growth_review(resource: dict) -> dict:
     else:
         recommendations.append(("Good", f"Title length: {len(title)}/100", "Keep the main topic and value clear near the beginning; avoid repeating keywords."))
 
+    description_bytes = len(description.encode("utf-8"))
     if not description:
         recommendations.append(("Improve", "Description is empty", "Write a unique description that explains the video and gives viewers a useful next step."))
-    elif len(description) > 5000:
-        recommendations.append(("Fix", f"Description is {len(description)} characters", "YouTube descriptions are limited to 5,000 characters. Remove repeated or low-value text."))
+    elif len(description) > 5000 or description_bytes > 5000:
+        recommendations.append((
+            "Fix",
+            f"Description uses {len(description)} characters / {description_bytes} UTF-8 bytes",
+            "The YouTube Data API accepts at most 5,000 UTF-8 bytes for the description. Telugu and other multi-byte scripts can reach this byte limit before reaching 5,000 characters.",
+        ))
     else:
         opening = " ".join(description.splitlines()[:2]).strip()
         title_terms = {
@@ -78,13 +83,17 @@ def _metadata_growth_review(resource: dict) -> dict:
         else:
             recommendations.append(("Good", f"Description length: {len(description)}/5,000", "Keep the opening specific and unique to this video; put supporting links and context below it."))
 
-    tag_characters = sum(len(tag) for tag in tags) + max(0, len(tags) - 1)
-    if tag_characters > 500:
-        recommendations.append(("Fix", f"Tags use {tag_characters}/500 characters", "Reduce the tag list to relevant terms and common spelling variants."))
+    tag_characters, tag_bytes = connector.calculate_youtube_tag_usage(tags)
+    if tag_characters > 500 or tag_bytes > 500:
+        recommendations.append((
+            "Fix",
+            f"Tags use {tag_characters} characters / {tag_bytes} UTF-8 bytes",
+            "The Data API budget is 500 characters and 500 UTF-8 bytes. Commas and quotation marks around multi-word tags count toward the limit.",
+        ))
     elif not tags:
         recommendations.append(("Optional", "No tags are set", "Add only a few highly relevant terms or common misspellings. Tags usually play a smaller discovery role than the title, thumbnail and description."))
     else:
-        recommendations.append(("Good", f"Tags: {len(tags)} · {tag_characters}/500 characters", "Keep tags tightly related to this video's topic; do not add broad or unrelated terms."))
+        recommendations.append(("Good", f"Tags: {len(tags)} · {tag_characters} chars / {tag_bytes} bytes", "Keep tags tightly related to this video's topic; do not add broad or unrelated terms."))
 
     if len(hashtags) > 60:
         recommendations.append(("Fix", f"{len(hashtags)} hashtags found", "YouTube ignores all hashtags when a video has more than 60. Remove excess and unrelated hashtags."))
@@ -96,7 +105,9 @@ def _metadata_growth_review(resource: dict) -> dict:
         "recommendations": recommendations,
         "title_length": len(title),
         "description_length": len(description),
+        "description_bytes": description_bytes,
         "tag_characters": tag_characters,
+        "tag_bytes": tag_bytes,
         "hashtag_count": len(hashtags),
         "fixes": sum(1 for level, _, _ in recommendations if level == "Fix"),
         "improvements": sum(1 for level, _, _ in recommendations if level == "Improve"),
@@ -464,9 +475,14 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str):
         )
         metric_cols = st.columns(4)
         metric_cols[0].metric("Title", f"{quality['title_length']}/100")
-        metric_cols[1].metric("Description", f"{quality['description_length']}/5,000")
-        metric_cols[2].metric("Tag characters", f"{quality['tag_characters']}/500")
+        metric_cols[1].metric("Description bytes", f"{quality['description_bytes']:,}/5,000")
+        metric_cols[2].metric("Tag budget", f"{quality['tag_bytes']:,}/500 bytes")
         metric_cols[3].metric("Hashtags", quality["hashtag_count"])
+        st.caption(
+            f"Description: {quality['description_length']:,} characters · "
+            f"{quality['description_bytes']:,} UTF-8 bytes. "
+            f"Tags: {quality['tag_characters']:,} characters · {quality['tag_bytes']:,} UTF-8 bytes."
+        )
         for level, heading, detail in quality["recommendations"]:
             icon = "✓" if level == "Good" else "!" if level == "Fix" else "↗"
             st.markdown(f"**{icon} {level}: {heading}**")

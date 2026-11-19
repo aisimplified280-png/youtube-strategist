@@ -689,6 +689,37 @@ class MetadataConnectorTests(unittest.TestCase):
                         youtube, {"id": "video-1", **change}
                     )
 
+    def test_description_utf8_byte_limit_rejects_telugu_before_character_limit(self):
+        description = "తెలుగు" * 300
+        self.assertLess(len(description), 5000)
+        self.assertGreater(len(description.encode("utf-8")), 5000)
+        with self.assertRaisesRegex(
+            connector.MetadataValidationError,
+            "5000 UTF-8 bytes",
+        ):
+            connector._validate_metadata({
+                "title": "Telugu description byte test",
+                "description": description,
+                "tags": [],
+            })
+
+    def test_mult_word_tags_quote_overhead_counts_toward_api_budget(self):
+        tags = [f"topic {index}" for index in range(54)]
+        raw_characters = sum(len(tag) for tag in tags) + len(tags) - 1
+        quoted_characters, quoted_bytes = connector.calculate_youtube_tag_usage(tags)
+        self.assertLessEqual(raw_characters, 500)
+        self.assertGreater(quoted_characters, 500)
+        self.assertEqual(quoted_bytes, quoted_characters)
+        with self.assertRaisesRegex(
+            connector.MetadataValidationError,
+            "quotation marks on multi-word tags",
+        ):
+            connector._validate_metadata({
+                "title": "Multi-word tag budget test",
+                "description": "Short description.",
+                "tags": tags,
+            })
+
 
 if __name__ == "__main__":
     unittest.main()
