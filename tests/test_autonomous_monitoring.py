@@ -303,7 +303,7 @@ class TestAutonomousPolicy(TestCase):
 
     def test_multi_word_tag_quotes_and_separators_count_toward_publish_budget(self):
         proposed = dict(self.proposed)
-        proposed["tags"] = [f"topic {index}" for index in range(60)]
+        proposed["tags"] = [f"topic {index}" for index in range(54)]
         raw_characters = sum(len(tag) for tag in proposed["tags"]) + len(proposed["tags"]) - 1
         quoted_characters, _ = connector.calculate_youtube_tag_usage(proposed["tags"])
         self.assertLessEqual(raw_characters, 500)
