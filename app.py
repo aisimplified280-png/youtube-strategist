@@ -199,8 +199,8 @@ def render_app():
     if subject and token_store:
         _handle_oauth_callback(secrets, subject, token_store)
 
-    # Restore chat state with a short session cache. Streamlit reruns on every widget
-    # interaction; avoid repeating Supabase list queries on every rerun.
+    # Restore only populated conversations. Empty drafts remain active in the current
+    # session but are excluded from the persisted history list.
     if persistent_store:
         try:
             now = time.monotonic()
@@ -216,25 +216,36 @@ def render_app():
             else:
                 conversations = cache.get("items") or []
 
-            selected_id = st.session_state.get("_copilot_conversation_id")
-            conversation_by_id = {item["id"]: item for item in conversations if item.get("id")}
-            if selected_id and selected_id not in conversation_by_id:
-                # A selected older conversation may not be in the first recent page.
-                # Fetch only that record instead of silently creating a new chat.
+            previous_selected_id = st.session_state.get("_copilot_conversation_id")
+            selected_id = previous_selected_id
+            conversation_by_id = {
+                str(item["id"]): item for item in conversations if item.get("id")
+            }
+
+            selected_conversation = None
+            if selected_id and str(selected_id) not in conversation_by_id:
                 selected_conversation = persistent_store.get_conversation(selected_id)
                 if selected_conversation and not selected_conversation.get("archived_at"):
-                    conversations = [selected_conversation, *conversations]
-                    conversation_by_id[selected_id] = selected_conversation
+                    # Retain the active empty chat in the selector, but never add
+                    # unrelated empty drafts to the recent-history list.
+                    if selected_conversation.get("last_message_at"):
+                        conversations = [selected_conversation, *conversations]
+                    conversation_by_id[str(selected_id)] = selected_conversation
+                else:
+                    selected_id = None
+
             if not selected_id:
-                created = persistent_store.create_conversation()
-                selected_id = created["id"]
-                conversations = [created, *conversations]
-                st.session_state["_copilot_conversations_cache"] = {
-                    "loaded_at": now, "items": conversations[:15],
-                    "has_more": len(conversations) >= 15,
-                    "next_cursor": conversations[14].get("updated_at") if len(conversations) >= 15 else None,
-                }
+                if conversations:
+                    selected_id = str(conversations[0]["id"])
+                else:
+                    created = persistent_store.create_conversation()
+                    selected_id = str(created["id"])
+                    selected_conversation = created
                 st.session_state["_copilot_conversation_id"] = selected_id
+                st.session_state["_copilot_history_loaded"] = False
+                st.session_state["strategist_chat_history"] = []
+
+            if str(previous_selected_id or "") != str(selected_id or ""):
                 st.session_state["_copilot_history_loaded"] = False
                 st.session_state["strategist_chat_history"] = []
 
@@ -245,26 +256,41 @@ def render_app():
                 ]
                 st.session_state["_copilot_history_loaded"] = True
 
-            if conversations:
+            # Keep the current empty chat selectable without listing old empty drafts.
+            if selected_id and str(selected_id) not in conversation_by_id:
+                selected_conversation = persistent_store.get_conversation(selected_id)
+                if selected_conversation:
+                    conversation_by_id[str(selected_id)] = selected_conversation
+
+            if conversation_by_id:
                 with st.sidebar:
                     st.markdown("### Conversations")
-                    st.caption("Recent chats")
-                    conversation_by_id = {item["id"]: item for item in conversations if item.get("id")}
+                    st.caption("Recent chats · empty drafts are hidden")
                     conversation_ids = list(conversation_by_id)
                     selected_from_sidebar = st.selectbox(
                         "Open conversation",
                         options=conversation_ids,
-                        index=(conversation_ids.index(selected_id)
-                               if selected_id in conversation_ids else 0),
+                        index=(
+                            conversation_ids.index(str(selected_id))
+                            if str(selected_id) in conversation_ids else 0
+                        ),
                         format_func=lambda conversation_id: (
-                            str(conversation_by_id[conversation_id].get("title") or "Untitled chat")[:48]
+                            (
+                                "New chat"
+                                if not conversation_by_id[conversation_id].get("last_message_at")
+                                else str(conversation_by_id[conversation_id].get("title") or "Untitled chat")[:48]
+                            )
                             + "  ·  "
-                            + str(conversation_by_id[conversation_id].get("updated_at") or "")[:10]
+                            + str(
+                                conversation_by_id[conversation_id].get("updated_at")
+                                or conversation_by_id[conversation_id].get("created_at")
+                                or ""
+                            )[:10]
                         ),
                         label_visibility="collapsed",
                         key=f"_copilot_history_selector_{selected_id}",
                     )
-                    if selected_from_sidebar and selected_from_sidebar != selected_id:
+                    if selected_from_sidebar and str(selected_from_sidebar) != str(selected_id):
                         st.session_state["_copilot_conversation_id"] = selected_from_sidebar
                         st.session_state["_copilot_history_loaded"] = False
                         st.session_state["strategist_chat_history"] = []
@@ -275,6 +301,7 @@ def render_app():
                         ):
                             st.session_state.pop(key, None)
                         st.rerun()
+
                     current_cache = st.session_state.get("_copilot_conversations_cache") or {}
                     if current_cache.get("has_more") and st.button(
                         "Load more chats", key="copilot_load_more_chats", use_container_width=True
@@ -284,9 +311,12 @@ def render_app():
                         )
                         if cursor:
                             next_page = persistent_store.list_conversations(limit=15, before=cursor)
-                            existing = {str(item.get("id")) for item in conversations}
-                            merged = conversations + [
-                                item for item in next_page if str(item.get("id")) not in existing
+                            existing = {
+                                str(item.get("id")) for item in current_cache.get("items", [])
+                            }
+                            merged = list(current_cache.get("items", [])) + [
+                                item for item in next_page
+                                if str(item.get("id")) not in existing
                             ]
                             st.session_state["_copilot_conversations_cache"] = {
                                 "loaded_at": time.monotonic(),
@@ -295,7 +325,11 @@ def render_app():
                                 "next_cursor": next_page[-1].get("updated_at") if next_page else None,
                             }
                             st.rerun()
-                    st.caption(f"Showing {len(conversations)} recent conversations")
+                    populated_count = len([
+                        item for item in conversation_by_id.values()
+                        if item.get("last_message_at")
+                    ])
+                    st.caption(f"Showing {populated_count} saved conversations")
         except Exception as error:
             st.session_state["_copilot_persistence_warning"] = (
                 "Could not load saved chat history. Your current session remains available."
