@@ -200,7 +200,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         threads = FakeCommentThreads({"items": [{
             "id": "thread-unknown", "snippet": {
                 "videoId": "abcdefghijk",
-                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"}}},
+                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"}, "publishedAt": datetime.now(timezone.utc).isoformat()}},
                 "totalReplyCount": 1, "canReply": True,
                 "publishedAt": datetime.now(timezone.utc).isoformat(),
             },
