@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 from core.oauth import YOUTUBE_SCOPES
@@ -122,8 +123,10 @@ class YouTubeCommentsAPITests(unittest.TestCase):
                     "videoId": "abcdefghijk",
                     "topLevelComment": {"id": comment_id, "snippet": {
                         "authorDisplayName": "Viewer", "textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"},
+                        "publishedAt": datetime.now(timezone.utc).isoformat(),
                     }},
                     "totalReplyCount": reply_count, "canReply": True,
+                    "publishedAt": datetime.now(timezone.utc).isoformat(),
                 },
             }
         threads = FakeCommentThreads({"items": [
@@ -149,12 +152,56 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         self.assertEqual(result["items"][0]["replies"][0]["author_channel_id"], "UC_VIEWER")
         self.assertEqual(threads.calls[0]["order"], "time")
 
+
+    def test_latest_unanswered_excludes_comments_older_than_seven_days(self):
+        now = datetime.now(timezone.utc)
+
+        def make_thread(thread_id, comment_id, published_at):
+            return {"id": thread_id, "snippet": {
+                "videoId": "abcdefghijk",
+                "topLevelComment": {"id": comment_id, "snippet": {
+                    "authorDisplayName": "Viewer", "textDisplay": "Question?",
+                    "authorChannelId": {"value": "UC_VIEWER"},
+                    "publishedAt": published_at.isoformat(),
+                }},
+                "totalReplyCount": 0, "canReply": True,
+                "publishedAt": published_at.isoformat(),
+            }}
+
+        threads = FakeCommentThreads({"items": [
+            make_thread("recent", "comment-recent", now - timedelta(days=2)),
+            make_thread("old", "comment-old", now - timedelta(days=8)),
+        ]})
+        result = list_latest_unanswered_comment_threads(
+            FakeYoutube(threads=threads), "UC_OWNER", target_count=10, scan_limit=10,
+        )
+        self.assertEqual([item["thread_id"] for item in result["items"]], ["recent"])
+        self.assertTrue(result["age_cutoff_reached"])
+        self.assertEqual(result["max_age_days"], 7)
+        self.assertEqual(result["scanned_count"], 2)
+
+    def test_latest_unanswered_excludes_threads_with_unknown_publish_dates(self):
+        threads = FakeCommentThreads({"items": [{
+            "id": "undated", "snippet": {
+                "topLevelComment": {"id": "comment-undated", "snippet": {
+                    "textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"},
+                }},
+                "totalReplyCount": 0, "canReply": True,
+            },
+        }]})
+        result = list_latest_unanswered_comment_threads(
+            FakeYoutube(threads=threads), "UC_OWNER", target_count=1, scan_limit=10,
+        )
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["unknown_date_threads"], 1)
+
     def test_latest_unanswered_treats_missing_reply_author_as_unknown(self):
         threads = FakeCommentThreads({"items": [{
             "id": "thread-unknown", "snippet": {
                 "videoId": "abcdefghijk",
-                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"}}},
+                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"}, "publishedAt": datetime.now(timezone.utc).isoformat()}},
                 "totalReplyCount": 1, "canReply": True,
+                "publishedAt": datetime.now(timezone.utc).isoformat(),
             },
         }]})
         comments = FakeComments([{"items": [{
@@ -173,9 +220,10 @@ class YouTubeCommentsAPITests(unittest.TestCase):
             "id": "thread-author-unknown",
             "snippet": {
                 "videoId": "abcdefghijk",
-                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?"}},
+                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?", "publishedAt": datetime.now(timezone.utc).isoformat()}},
                 "totalReplyCount": 0,
                 "canReply": True,
+                "publishedAt": datetime.now(timezone.utc).isoformat(),
             },
         }]})
         result = list_latest_unanswered_comment_threads(
