@@ -128,11 +128,12 @@ def _load_comment_page(youtube, status: str, search_terms: str, page_token: str 
 
 
 
-def _generate_latest_unanswered_reply_drafts(youtube, store, secrets: dict, *, limit: int = 10, scan_limit: int = 300) -> dict:
+def _generate_latest_unanswered_reply_drafts(youtube, store, secrets: dict, *, limit: int = 10, scan_limit: int = 300, max_age_days: int = 7) -> dict:
     """Generate editable reply drafts for recent threads not yet answered by the channel."""
     requested = max(1, min(int(limit), 20))
     scan = list_latest_unanswered_comment_threads(
-        youtube, CHANNEL_ID, target_count=min(50, requested * 3), scan_limit=scan_limit
+        youtube, CHANNEL_ID, target_count=min(50, requested * 3), scan_limit=scan_limit,
+        max_age_days=max_age_days,
     )
     existing = store.list_comment_reply_drafts(limit=100)
     active = {"pending_review", "approved", "publishing", "verification_unavailable", "held_for_review", "likely_spam", "published"}
@@ -186,6 +187,9 @@ def _generate_latest_unanswered_reply_drafts(youtube, store, secrets: dict, *, l
         "scanned_count": int(scan.get("scanned_count") or 0),
         "candidate_count": len(scan.get("items") or []),
         "unknown_reply_threads": int(scan.get("unknown_reply_threads") or 0),
+        "unknown_date_threads": int(scan.get("unknown_date_threads") or 0),
+        "age_cutoff_reached": bool(scan.get("age_cutoff_reached")),
+        "max_age_days": int(scan.get("max_age_days") or max_age_days),
         "scan_limit_reached": bool(scan.get("scan_limit_reached")),
         "staged": staged, "skipped_existing": skipped_existing,
         "skipped_not_replyable": skipped_not_replyable,
@@ -556,7 +560,8 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
                 f"Latest scan: {generation_summary['staged']} drafts prepared from "
                 f"{generation_summary['scanned_count']} scanned threads · "
                 f"{generation_summary['skipped_existing']} existing drafts skipped · "
-                f"{generation_summary['no_safe_reply']} without a safe suggestion."
+                f"{generation_summary['no_safe_reply']} without a safe suggestion · "
+                f"{generation_summary.get('unknown_date_threads', 0)} with unknown dates excluded."
             )
         _render_pending_replies(youtube, persistent_store)
         return
@@ -607,8 +612,8 @@ def render_comments_inbox(youtube, persistent_store, owner_subject: str, secrets
     with st.container(border=True):
         st.subheader("Generate replies for latest unanswered comments")
         st.caption(
-            "Find recent published threads with no reply from AI Simplified Lab, including threads "
-            "where viewers have replied to one another. Replies are saved as drafts for your approval."
+            "Only published comments from the last 7 days are eligible. Older comments stay in the Inbox "
+            "but are excluded from reply generation. Replies are saved as drafts for your approval."
         )
         reply_limit = st.selectbox(
             "How many reply drafts to prepare?", options=[5, 10, 15, 20],
