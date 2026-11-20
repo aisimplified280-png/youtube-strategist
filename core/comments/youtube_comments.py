@@ -199,6 +199,7 @@ def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_c
         if not threads:
             break
         for thread in threads:
+            scanned += 1
             published_at = str(thread.get("published_at") or "").strip()
             try:
                 published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
@@ -212,7 +213,6 @@ def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_c
             if published_dt < cutoff:
                 age_cutoff_reached = True
                 break
-            scanned += 1
             top_level_author_id = str(thread.get("author_channel_id") or "").strip()
             if not top_level_author_id:
                 unknown += 1
