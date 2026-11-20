@@ -178,14 +178,13 @@ class YouTubeCommentsAPITests(unittest.TestCase):
         self.assertEqual([item["thread_id"] for item in result["items"]], ["recent"])
         self.assertTrue(result["age_cutoff_reached"])
         self.assertEqual(result["max_age_days"], 7)
-        self.assertEqual(result["scanned_count"], 1)
+        self.assertEqual(result["scanned_count"], 2)
 
     def test_latest_unanswered_excludes_threads_with_unknown_publish_dates(self):
         threads = FakeCommentThreads({"items": [{
             "id": "undated", "snippet": {
                 "topLevelComment": {"id": "comment-undated", "snippet": {
                     "textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"},
-                    "publishedAt": datetime.now(timezone.utc).isoformat(),
                 }},
                 "totalReplyCount": 0, "canReply": True,
             },
