@@ -123,6 +123,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
                     "videoId": "abcdefghijk",
                     "topLevelComment": {"id": comment_id, "snippet": {
                         "authorDisplayName": "Viewer", "textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"},
+                        "publishedAt": datetime.now(timezone.utc).isoformat(),
                     }},
                     "totalReplyCount": reply_count, "canReply": True,
                     "publishedAt": datetime.now(timezone.utc).isoformat(),
@@ -161,6 +162,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
                 "topLevelComment": {"id": comment_id, "snippet": {
                     "authorDisplayName": "Viewer", "textDisplay": "Question?",
                     "authorChannelId": {"value": "UC_VIEWER"},
+                    "publishedAt": published_at.isoformat(),
                 }},
                 "totalReplyCount": 0, "canReply": True,
                 "publishedAt": published_at.isoformat(),
@@ -183,6 +185,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
             "id": "undated", "snippet": {
                 "topLevelComment": {"id": "comment-undated", "snippet": {
                     "textDisplay": "Question?", "authorChannelId": {"value": "UC_VIEWER"},
+                    "publishedAt": datetime.now(timezone.utc).isoformat(),
                 }},
                 "totalReplyCount": 0, "canReply": True,
             },
@@ -218,7 +221,7 @@ class YouTubeCommentsAPITests(unittest.TestCase):
             "id": "thread-author-unknown",
             "snippet": {
                 "videoId": "abcdefghijk",
-                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?"}},
+                "topLevelComment": {"id": "comment-unknown", "snippet": {"textDisplay": "Question?", "publishedAt": datetime.now(timezone.utc).isoformat()}},
                 "totalReplyCount": 0,
                 "canReply": True,
                 "publishedAt": datetime.now(timezone.utc).isoformat(),
