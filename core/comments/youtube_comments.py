@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from googleapiclient.errors import HttpError
@@ -176,17 +177,20 @@ def list_thread_replies(
 
 
 
-def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_count: int = 10, scan_limit: int = 300) -> dict:
-    """Find recent published threads without an owner reply; uncertain identities fail closed."""
+def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_count: int = 10, scan_limit: int = 300, max_age_days: int = 7) -> dict:
+    """Find unanswered published threads from the last N days; older/undated threads are excluded."""
     if youtube is None:
         raise CommentAPIError("YouTube API client is not connected.")
     if not channel_id:
         raise ValueError("A verified channel ID is required.")
     target = max(1, min(int(target_count), 50))
     maximum = max(target, min(int(scan_limit), 1000))
-    matches, scanned, unknown, page_token = [], 0, 0, None
+    age_days = max(1, min(int(max_age_days), 30))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=age_days)
+    matches, scanned, unknown, unknown_dates, page_token = [], 0, 0, 0, None
+    age_cutoff_reached = False
 
-    while scanned < maximum and len(matches) < target:
+    while scanned < maximum and len(matches) < target and not age_cutoff_reached:
         page = list_channel_comment_threads(
             youtube, channel_id, moderation_status="published", page_token=page_token,
             max_results=min(MAX_COMMENT_PAGE_SIZE, maximum-scanned), order="time",
@@ -195,6 +199,19 @@ def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_c
         if not threads:
             break
         for thread in threads:
+            published_at = str(thread.get("published_at") or "").strip()
+            try:
+                published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                if published_dt.tzinfo is None:
+                    published_dt = published_dt.replace(tzinfo=timezone.utc)
+                else:
+                    published_dt = published_dt.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                unknown_dates += 1
+                continue
+            if published_dt < cutoff:
+                age_cutoff_reached = True
+                break
             scanned += 1
             top_level_author_id = str(thread.get("author_channel_id") or "").strip()
             if not top_level_author_id:
@@ -239,12 +256,16 @@ def list_latest_unanswered_comment_threads(youtube, channel_id: str, *, target_c
                     unknown += 1
             if len(matches) >= target or scanned >= maximum:
                 break
+        if age_cutoff_reached:
+            break
         page_token = page.get("next_page_token")
         if len(matches) >= target or not page_token:
             break
     return {
         "items": matches, "scanned_count": scanned, "unknown_reply_threads": unknown,
-        "next_page_token": page_token, "scan_limit_reached": scanned >= maximum and len(matches) < target,
+        "unknown_date_threads": unknown_dates, "age_cutoff_reached": age_cutoff_reached,
+        "max_age_days": age_days, "next_page_token": page_token,
+        "scan_limit_reached": scanned >= maximum and len(matches) < target and not age_cutoff_reached,
         "moderation_status": "published",
     }
 
