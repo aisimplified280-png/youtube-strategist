@@ -11,6 +11,11 @@ import streamlit as st
 
 
 import youtube_analytics_connector as connector
+from core.metadata.insights import (
+    fetch_video_performance,
+    generate_metadata_insights,
+    resource_fingerprint,
+)
 from strategist_chat import generate_metadata_optimization
 from core.metadata.resource import (
     SUPPORTED_PARTS,
@@ -400,7 +405,126 @@ def _render_advanced_form(video_id: str, before: dict, draft: dict, store, audit
             st.error(f"Could not stage advanced metadata: {error}")
 
 
-def render_metadata_editor(youtube, persistent_store, owner_subject: str, secrets: dict | None = None):
+def _render_metadata_insight_summary(
+    youtube, analytics, secrets: dict, persistent_store, video_id: str,
+    before: dict, draft: dict, audit_id: str | None,
+):
+    """Show current compliance and growth findings before the editable fields."""
+    cache_key = f"_metadata_insights_{video_id}_{resource_fingerprint(before)}"
+    if st.button("Refresh metadata health analysis", key=f"metadata_insight_refresh_{video_id}"):
+        st.session_state.pop(cache_key, None)
+    insight = st.session_state.get(cache_key)
+    if insight is None:
+        with st.spinner("Checking YouTube metadata standards and recent video performance..."):
+            performance = fetch_video_performance(analytics, video_id)
+            insight = generate_metadata_insights(secrets, before, performance)
+            st.session_state[cache_key] = insight
+
+    with st.container(border=True):
+        st.subheader("Metadata health & channel-growth insights")
+        st.write(insight.get("summary") or "Metadata analysis completed.")
+        source_perf = insight.get("performance") or {}
+        if source_perf.get("current_period"):
+            start, end = source_perf["current_period"]
+            prior = source_perf.get("previous_period") or ["?", "?"]
+            st.caption(
+                f"Video Analytics comparison: {start} to {end} vs {prior[0]} to {prior[1]}. "
+                "The latest three calendar days are excluded because YouTube Analytics is delayed."
+            )
+        elif source_perf.get("reason"):
+            st.caption(f"Video Analytics unavailable: {source_perf['reason']}")
+
+        metrics = source_perf.get("metrics") or {}
+        if metrics:
+            columns = st.columns(4)
+            for col, metric, label, suffix in (
+                (columns[0], "views", "Views", ""),
+                (columns[1], "estimatedMinutesWatched", "Watch time", " min"),
+                (columns[2], "averageViewPercentage", "Avg. viewed", "%"),
+                (columns[3], "subscribersGained", "Subscribers gained", ""),
+            ):
+                value = (metrics.get(metric) or {}).get("current")
+                delta = (metrics.get(metric) or {}).get("delta_percent")
+                shown = f"{value:,.1f}{suffix}" if isinstance(value, (int, float)) else "Unavailable"
+                delta_label = f"{delta:+.1f}% vs prior period" if isinstance(delta, (int, float)) else None
+                col.metric(label, shown, delta=delta_label)
+
+        if source_perf.get("reach_metrics_note"):
+            st.caption(source_perf["reach_metrics_note"])
+
+        checks = insight.get("standard_checks") or []
+        if checks:
+            st.markdown("**YouTube metadata standards**")
+            for item in checks:
+                marker = {"error": "❌", "warning": "⚠️", "pass": "✓", "info": "ℹ️"}.get(item.get("status"), "•")
+                st.caption(f"{marker} **{item.get('field', 'Field').title()}** — {item.get('detail', '')}")
+
+        findings = insight.get("findings") or []
+        if findings:
+            st.markdown("**Growth and packaging observations**")
+            for item in findings:
+                st.markdown(f"**{str(item.get('field') or 'Metadata').title()} · {str(item.get('severity') or 'info').title()}**")
+                st.write(item.get("issue") or item.get("recommendation") or "")
+                if item.get("evidence"):
+                    st.caption(f"Evidence: {item['evidence']}")
+
+        recommendations = insight.get("recommendations") or []
+        if recommendations:
+            st.markdown("**Suggested improvements**")
+            for index, item in enumerate(recommendations, 1):
+                field = item["field"]
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{index}. {field.title()}** · "
+                        f"confidence {float(item.get('confidence') or 0):.0%}"
+                    )
+                    if item.get("issue"):
+                        st.write(item["issue"])
+                    if item.get("evidence"):
+                        st.caption(f"Evidence: {item['evidence']}")
+                    if item.get("recommendation"):
+                        st.write(item["recommendation"])
+                    proposed_value = item.get("suggested_value")
+                    st.markdown("**Suggested value**")
+                    st.code(
+                        "\n".join(proposed_value) if isinstance(proposed_value, list)
+                        else str(proposed_value),
+                        language="text",
+                    )
+                    if st.button(
+                        f"Stage this {field} suggestion",
+                        key=f"metadata_stage_insight_{video_id}_{index}",
+                    ):
+                        updated = copy.deepcopy(draft)
+                        updated.setdefault("snippet", {})[field] = copy.deepcopy(proposed_value)
+                        try:
+                            saved_id = _stage_draft(
+                                persistent_store, video_id, before, updated, audit_id
+                            )
+                            st.session_state["_metadata_editor_draft"] = updated
+                            st.session_state["_metadata_editor_audit_id"] = saved_id
+                            st.success("Suggestion staged in Review & Publishing. YouTube has not been changed.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"Could not stage this suggestion: {error}")
+        elif insight.get("analysis_status") == "ai_and_rules":
+            st.success("No additional evidence-backed text changes were recommended.")
+        elif insight.get("analysis_status") == "rules_only":
+            st.info(
+                "Only deterministic compliance checks are available right now. "
+                "AI suggestions will appear when a configured provider is available."
+            )
+        if insight.get("provider"):
+            st.caption(f"Analysis: {insight['provider']} · {insight.get('model') or ''}")
+        st.caption(
+            "This is decision support, not a promise of growth. YouTube says titles and descriptions matter more for discovery than tags; tags mainly help with common misspellings. "
+            "[YouTube metadata limits](https://developers.google.com/youtube/data/reference/rest/v3/videos) · "
+            "[YouTube tags guidance](https://support.google.com/youtube/answer/146402)"
+        )
+    return insight
+
+
+def render_metadata_editor(youtube, persistent_store, owner_subject: str, secrets: dict | None = None, analytics=None):
     st.header("Full Metadata Editor")
     st.caption("Edit supported YouTube metadata fields independently. Only explicitly approved changes are published.")
     if youtube is None:
@@ -468,6 +592,10 @@ def render_metadata_editor(youtube, persistent_store, owner_subject: str, secret
 
     st.markdown(f"**Video:** https://www.youtube.com/watch?v={video_id}")
     st.caption(f"Currently published title: {(before.get('snippet') or {}).get('title', 'Unavailable')}")
+    _render_metadata_insight_summary(
+        youtube, analytics, secrets or {}, persistent_store, video_id,
+        before, draft, st.session_state.get("_metadata_editor_audit_id"),
+    )
 
     quality = _metadata_growth_review(before)
     with st.container(border=True):
