@@ -41,6 +41,25 @@ This repository uses one owner-authenticated Streamlit application as the contro
 
 The strategy workflow can also be started manually with GitHub Actions **workflow_dispatch**. Scheduled execution requires these GitHub Actions repository secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `YOUTUBE_STRATEGIST_STATE_SECRET`, and `GEMINI_API_KEY`. `GROQ_API_KEY` is optional for the daily strategist but preferred for metadata batches. The background-worker workflow sets the batch model via `GEMINI_MODEL` and `GEMINI_FALLBACK_MODELS`; the channel-strategy workflow remains on Gemini 3.1 Pro Preview.
 
+## Android push notifications (ntfy)
+
+The scheduled GitHub Actions worker can send mobile alerts through the free ntfy.sh hosted service. Install the ntfy Android app, subscribe to a private random topic, and add the same topic name as the GitHub Actions repository secret `NTFY_TOPIC`. Optional secrets: `NTFY_TOKEN` (only if you later protect the topic with an ntfy account/token). The workflow uses HTTPS and sends review-required, successful auto-publish, verification/failure, and partial-run alerts. Successful no-change runs remain silent. Notification delivery errors never change the worker's publishing result.
+
+**One-time Android setup**
+1. Install ntfy from Google Play or F-Droid: https://ntfy.sh/
+2. Create a long random topic name (at least 16 characters; 32+ random characters recommended) and subscribe to that exact topic in the Android app.
+3. In GitHub, open repository **Settings → Secrets and variables → Actions → New repository secret**.
+4. Add `NTFY_TOPIC` with the exact topic name. Optionally add `NTFY_TOKEN` if using authenticated ntfy publishing.
+5. Run the **AI Simplified Lab daily channel strategist** workflow manually once to test delivery.
+
+**Autonomous metadata gatekeeper**
+- A second, independent Gemini critic evaluates eligible high-confidence packaging proposals, including proposals the strategist initially labels `review`.
+- Promotion to automatic publishing requires exact source-quote grounding, measured CTR/impressions, deterministic metadata limits, an independent critic PASS with its own confidence floor, and all existing emergency-pause, cooldown, quota, and read-back verification gates.
+- Metadata-quality audits remain owner-review-only. Gatekeeper API errors, malformed responses, ambiguous decisions, or failed checks always HOLD for owner review.
+- The configured strategist confidence threshold remains the owner-controlled value in Supabase; the gatekeeper does not change production settings.
+
+The ntfy.sh hosted service has a free tier subject to rate limits. Topic names are public, so use a long random topic name and treat it as a secret. The ntfy software is open source and can be self-hosted later if the hosted service's terms or limits stop fitting the workspace.
+
 ## Owner controls in Streamlit
 
 The **Channel Strategist** panel provides an enable/disable switch for low-risk automatic publishing, a daily auto-publish cap, a per-run metadata proposal cap, a major-change approval queue, and recent audit records. Changes are written only to the owner-scoped Supabase records. The default minor auto-publish cap is three per day; the seven-day per-video cooldown remains a separate safeguard.
