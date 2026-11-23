@@ -50,7 +50,7 @@ The scheduled GitHub Actions worker can send mobile alerts through the free ntfy
 2. Create a long random topic name (at least 16 characters; 32+ random characters recommended) and subscribe to that exact topic in the Android app.
 3. In GitHub, open repository **Settings → Secrets and variables → Actions → New repository secret**.
 4. Add `NTFY_TOPIC` with the exact topic name. Optionally add `NTFY_TOKEN` if using authenticated ntfy publishing.
-5. Run the **AI Simplified Lab daily channel strategist** workflow manually once to test delivery.
+5. Open **Actions → Test Android ntfy notification → Run workflow**. This sends a test push without running the strategist or touching YouTube metadata.
 
 **Autonomous metadata gatekeeper**
 - A second, independent Gemini critic evaluates eligible high-confidence packaging proposals, including proposals the strategist initially labels `review`.
