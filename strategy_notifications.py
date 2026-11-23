@@ -136,6 +136,20 @@ def main() -> int:
     if not topic:
         log.info("NTFY_TOPIC is not configured; skipping mobile notifications.")
         return 0
+    if os.getenv("NTFY_TEST_NOTIFICATION", "").strip() == "1":
+        try:
+            send_ntfy_message({
+                "title": "AI Simplified Lab ntfy test",
+                "message": "Success! Your Android notification channel is connected. Strategy review alerts, publish summaries, and worker failures can now reach this device.",
+                "priority": "3",
+                "tags": "white_check_mark",
+                "click": os.getenv("STRATEGIST_APP_URL", DEFAULT_APP_URL),
+            }, topic=topic, server=os.getenv("NTFY_SERVER", "https://ntfy.sh"), token=os.getenv("NTFY_TOKEN", ""))
+            log.info("Sent the requested ntfy test notification.")
+        except Exception:
+            log.exception("Could not send the requested ntfy test notification.")
+            return 1
+        return 0
     base_url = os.getenv("SUPABASE_URL", "").strip()
     service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     started_at = os.getenv("STRATEGY_RUN_STARTED_AT", "").strip()
