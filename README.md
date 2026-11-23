@@ -1,7 +1,7 @@
 # YouTube Strategist
 
 > **A private, owner-only YouTube Metadata Copilot for AI Simplified Lab.**  
-> One conversational interface to scan recent channel performance, find videos worth optimizing, formulate evidence-based title options, improve descriptions and tags, and publish only after explicit approval of the exact proposal.
+> One conversational interface to scan channel performance, find videos worth optimizing, formulate evidence-based metadata proposals, and publish either exact owner-approved proposals or eligible high-confidence proposals that pass the autonomous gatekeeper.
 
 ---
 
@@ -71,7 +71,7 @@ The old external ChatGPT/monitor publisher workflow is not part of this Streamli
 
 1. **Owner-Only Gate:** Strict Google OpenID Connect email and verified-email check against `secrets.access.owner_email` occurs *before* any API client is instantiated or private channel data is shown.
 2. **Strictly Decoupled OAuth Flows:** Google rejects combined YouTube and Google Drive requests. YouTube channel discovery (`youtube.readonly`), Analytics (`yt-analytics.readonly`), and approved metadata writes (`youtube.force-ssl`) use a YouTube grant; private Sheets memory (`drive.file`) remains a separate grant and encrypted vault.
-3. **Exact Approval Gate:** Nothing is written to YouTube without explicit user approval of the exact title, full description, and tags shown. Editing a proposal invalidates prior approvals. Stale metadata checks re-fetch live data before saving, and post-write verification checks the result.
+3. **Exact Proposal Integrity & Autonomous Gate:** Manual publication requires explicit owner approval of the exact title, full description, and tags shown; editing a proposal invalidates prior approvals. Autonomous publication is limited to eligible measured packaging proposals that meet the owner confidence threshold and pass deterministic validation plus an independent Gemini critic. Metadata-quality audits always require owner review. Every write retains emergency-pause, cooldown, quota, stale-metadata, and YouTube read-back verification safeguards.
 4. **Zero Metric Hallucination:** If impressions, CTR, or transcripts are unavailable, the app clearly displays "Unavailable" with the reason. No guessed CTR, no causal claims, and videos $\le$180s are labelled as *Short candidates*, not confirmed Shorts.
 5. **No Secrets or Tokens in Git:** Secrets are loaded only via Streamlit Secrets. Tokens are encrypted at rest with Fernet.
 
