@@ -156,12 +156,19 @@ def main() -> int:
     run = None
     actions = []
     try:
-        run_rows = _supabase_get(base_url, service_key, "channel_strategy_runs", {
+        run_params = {
             "select": "id,status,cadence,started_at,finished_at,result,error,trigger_source",
-            "started_at": f"gte.{started_at}" if started_at else "gte.now()-2h",
             "order": "started_at.desc",
             "limit": "1",
-        })
+        }
+        if started_at:
+            run_params["started_at"] = f"gte.{started_at}"
+        else:
+            log.warning("Workflow start marker missing; skipping run lookup to avoid alerting on stale activity.")
+        run_rows = (
+            _supabase_get(base_url, service_key, "channel_strategy_runs", run_params)
+            if started_at else []
+        )
         run = run_rows[0] if run_rows else None
         if run and run.get("id"):
             actions = _supabase_get(base_url, service_key, "channel_strategy_actions", {
