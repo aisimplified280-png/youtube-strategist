@@ -79,6 +79,7 @@ class TestStrategyNotifications(unittest.TestCase):
         candidate = {
             "diagnosis": "packaging", "decision": "auto_publish", "confidence": 0.9,
             "impressions": 1000, "ctr_percent": 1.8,
+            "reasons": ["Thumbnail CTR is 1.8%, below the same-format median of 4.0%."],
             "current_metadata": {"title": "RAG", "description": "RAG production guide", "tags": ["RAG"]},
             "factual_evidence": "RAG production guide",
             "fields_to_modify": ["title"],
