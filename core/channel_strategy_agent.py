@@ -700,10 +700,11 @@ DECISION & CONFIDENCE POLICY:
 The owner's configured autonomous-publish confidence threshold is {configured_auto_threshold:.2f}.
 For each metadata candidate, assign a confidence score (0.00 to 1.00) and explicit decision:
 - auto_publish (confidence >= {configured_auto_threshold:.2f}): Use only for a clear, evidence-backed packaging issue with sufficient impressions, a strictly grounded proposed change, and strong evidence that the change is safe and appropriate.
-- review (confidence >= 0.65 but below {configured_auto_threshold:.2f}, or whenever creator judgment is needed): Hold for explicit owner approval.
+- review (confidence >= 0.65 but below {configured_auto_threshold:.2f}, or when you can name a specific unresolved issue that genuinely requires creator judgment): Hold for explicit owner approval.
 - no_change (confidence < 0.65): Low confidence, ambiguous performance data, or retention/distribution issue where metadata will not help.
-Do not inflate confidence, upgrade a review decision, or change a decision merely to meet the numeric threshold. If uncertain, choose review or no_change.
-Metadata-quality audits always remain review-only regardless of confidence or automation mode..
+Do not use review as a generic caution label. When a measured packaging problem is clear, the proposed change is grounded in the exact source metadata, confidence meets the configured threshold, and no creator-specific judgment is needed, choose auto_publish.
+Do not inflate confidence or change a decision merely to meet the numeric threshold. The independent second-pass gatekeeper will separately assess eligible auto_publish AND review candidates; it may approve a review candidate only when its own deterministic checks and independent critic both pass. A gatekeeper HOLD or unavailable result always returns the proposal to owner review.
+Metadata-quality audits always remain review-only regardless of confidence or automation mode.
 
 Return JSON ONLY with keys:
 executive_summary (string),
