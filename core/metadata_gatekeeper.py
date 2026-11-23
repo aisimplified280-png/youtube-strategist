@@ -50,6 +50,9 @@ def _deterministic_precheck(
         return False, "Measured impressions are missing or below the 50-impression minimum."
     if not isinstance(ctr, (int, float)) or isinstance(ctr, bool):
         return False, "Measured thumbnail CTR is unavailable."
+    reasons = candidate.get("reasons") or []
+    if not any(isinstance(reason, str) and reason.startswith("Thumbnail CTR is ") for reason in reasons):
+        return False, "The source analytics evidence does not confirm a measured thumbnail-CTR packaging issue."
     source = candidate.get("current_metadata")
     if not isinstance(source, dict):
         return False, "Exact live source metadata is unavailable."
