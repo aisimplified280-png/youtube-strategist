@@ -312,6 +312,64 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
             applied_args = mock_apply.call_args[0]
             self.assertEqual(applied_args[3]["title"], "Validated High Quality Title")
 
+    def test_gatekeeper_can_promote_high_confidence_review_when_all_checks_pass(self):
+        candidate = {
+            "video_id": "test_vid_gatekeeper",
+            "title": "Old Safe Video Title",
+            "confidence": 0.82,
+            "decision": "review",
+            "diagnosis": "packaging",
+            "fields_to_modify": ["title"],
+            "proposed_title": "A Clearer AI Tutorial Title",
+            "factual_evidence": "Old Safe Video Title",
+            "rationale": "Strategist was conservative despite sufficient measured evidence.",
+            "impressions": 800,
+            "ctr_percent": 1.8,
+            "reasons": ["Thumbnail CTR is 1.8%, below the same-format median of 4.2%."],
+            "current_metadata": {
+                "title": "Old Safe Video Title",
+                "description": "Safe description about AI models.",
+                "tags": ["AI", "Tutorial"],
+            },
+        }
+        proposed_meta = {**self.before_metadata, "title": "A Clearer AI Tutorial Title"}
+        row = {
+            "video_id": "test_vid_gatekeeper",
+            "status": "ready",
+            "before": self.before_metadata,
+            "proposed": proposed_meta,
+            "fields_to_modify": ["title"],
+            "errors": [],
+        }
+        settings = {
+            "automation_mode": "autonomous",
+            "emergency_pause": False,
+            "min_confidence_auto_publish": 0.78,
+            "max_daily_minor_publishes": 5,
+            "max_weekly_publishes": 5,
+            "max_monthly_publishes": 10,
+        }
+
+        with patch("channel_strategy_worker.evaluate_metadata_gatekeeper", return_value={
+            "decision": "PASS", "confidence": 0.94, "reason": "Independent critic found no human judgment required."
+        }) as mock_gatekeeper, \
+             patch("channel_strategy_worker._record_live_metadata_snapshot", return_value={"days_since_modification": 14}), \
+             patch("channel_strategy_worker._snapshot_allows_publish", return_value=True), \
+             patch.object(connector, "apply_approved_dashboard_proposal", return_value={
+                 "result": "success", "url": "https://youtu.be/test_vid_gatekeeper"
+             }) as mock_apply, \
+             patch.object(connector, "fetch_video_snippet", return_value=proposed_meta):
+            result, daily_count, cadence_count = _process_candidate(
+                self.mock_store, self.mock_youtube, "owner_123", "run_123",
+                candidate, row, settings, cadence="daily", daily_count=0, cadence_count=0
+            )
+
+        self.assertEqual(result, "auto_published")
+        self.assertEqual(daily_count, 1)
+        self.assertEqual(cadence_count, 1)
+        mock_gatekeeper.assert_called_once()
+        mock_apply.assert_called_once()
+
     def test_prepare_gemini_metadata_proposals_honors_fields_to_modify(self):
         current_one = {
             "title": "Current Title",
