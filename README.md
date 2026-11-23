@@ -34,12 +34,12 @@ This repository uses one owner-authenticated Streamlit application as the contro
 | Job | UTC schedule | India time | Purpose |
 |---|---:|---:|---|
 | Daily metadata snapshots | 02:15 | 07:45 | Maintain seven-day change ledger for owner uploads |
-| Daily channel strategist | 02:30 | 08:00 | Emerging underperformance scan, mature 28d comparison |
+| Daily channel strategist | 04:45 | 10:15 | Emerging underperformance scan, mature 28d comparison |
 | Weekly channel strategist | 03:30 (Sun) | 09:00 (Sun) | Cross-video pattern recognition, weekly upload optimization sweep |
 | Monthly channel strategist | 04:30 (Day 5) | 10:00 (Day 5)| Strategic macro review, subscriber conversion compounding, catalogue refresh |
 | Batch metadata worker | Every 5 min | Every 5 min | Process manually submitted batch instructions and save proposals |
 
-The strategy workflow can also be started manually with GitHub Actions **workflow_dispatch**. Scheduled execution requires these GitHub Actions repository secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `YOUTUBE_STRATEGIST_STATE_SECRET`, and `GEMINI_API_KEY`. `DISCORD_WEBHOOK_URL` enables Discord alerts. `GROQ_API_KEY` is optional for the daily strategist but preferred for metadata batches. The background-worker workflow sets the batch model via `GEMINI_MODEL` and `GEMINI_FALLBACK_MODELS`; the channel-strategy workflow remains on Gemini 3.1 Pro Preview.
+The strategy workflow can also be started manually with GitHub Actions **workflow_dispatch**. Scheduled execution requires these GitHub Actions repository secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `YOUTUBE_STRATEGIST_STATE_SECRET`, and `GEMINI_API_KEY`. `DISCORD_WEBHOOK_URL` enables Discord alerts. `GROQ_API_KEY` is optional for the daily strategist but preferred for metadata batches. The background-worker workflow sets the batch model via `GEMINI_MODEL` and `GEMINI_FALLBACK_MODELS`; the channel-strategy workflow uses `gemini-3.6-flash` with the configured fallback sequence.
 
 ## Discord notifications
 
