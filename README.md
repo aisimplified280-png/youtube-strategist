@@ -46,7 +46,7 @@ The strategy workflow can also be started manually with GitHub Actions **workflo
 The scheduled GitHub Actions worker can send mobile alerts through the free ntfy.sh hosted service. Install the ntfy Android app, subscribe to an unguessable random topic, and add the same topic name as the GitHub Actions repository secret `NTFY_TOPIC`. Optional secrets: `NTFY_TOKEN` (only if you later protect the topic with an ntfy account/token). The workflow uses HTTPS and sends review-required, successful auto-publish, verification/failure, and partial-run alerts. Successful no-change runs remain silent. Notification delivery errors never change the worker's publishing result.
 
 **One-time Android setup**
-1. Install ntfy from Google Play or F-Droid: https://ntfy.sh/
+1. Install the ntfy Android app from [Google Play](https://play.google.com/store/apps/details?id=io.heckel.ntfy) or [F-Droid](https://f-droid.org/packages/io.heckel.ntfy/).
 2. Create a long random topic name (at least 16 characters; 32+ random characters recommended) and subscribe to that exact topic in the Android app.
 3. In GitHub, open repository **Settings → Secrets and variables → Actions → New repository secret**.
 4. Add `NTFY_TOPIC` with the exact topic name. Optionally add `NTFY_TOKEN` if using authenticated ntfy publishing.
