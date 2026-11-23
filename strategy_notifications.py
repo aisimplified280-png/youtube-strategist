@@ -59,7 +59,7 @@ def build_notifications(run: dict | None, actions: list[dict], workflow_conclusi
             lines.append(f"• {str(item.get('video_title') or item.get('video_id') or 'Video')[:100]}")
         messages.append({
             "title": "Metadata proposals ready (shadow mode)",
-            "message": "\\n".join(lines),
+            "message": "\n".join(lines),
             "priority": "3",
             "tags": "eyes",
             "click": app_url,
