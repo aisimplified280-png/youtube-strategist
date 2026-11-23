@@ -23,6 +23,16 @@ class TestStrategyNotifications(unittest.TestCase):
     def test_successful_noop_run_is_silent(self):
         self.assertEqual(build_notifications({"status": "completed"}, [], "success"), [])
 
+    def test_shadow_notification_uses_real_newline_separators(self):
+        messages = build_notifications(
+            {"status": "completed"},
+            [{"status": "shadow_published", "video_title": "Video A"}],
+            "success",
+        )
+        self.assertEqual(len(messages), 1)
+        self.assertIn("\n• Video A", messages[0]["message"])
+        self.assertNotIn("\\n• Video A", messages[0]["message"])
+
     def test_failed_run_always_alerts(self):
         messages = build_notifications({"status": "failed", "error": "Worker exception"}, [], "failure")
         self.assertEqual(len(messages), 1)
