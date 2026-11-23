@@ -487,7 +487,7 @@ def _render_metadata_insight_summary(
                     proposed_value = item.get("suggested_value")
                     st.markdown("**Suggested value**")
                     st.code(
-                        "\\n".join(proposed_value) if isinstance(proposed_value, list)
+                        "\n".join(proposed_value) if isinstance(proposed_value, list)
                         else str(proposed_value),
                         language="text",
                     )
