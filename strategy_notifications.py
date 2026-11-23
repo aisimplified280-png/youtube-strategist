@@ -19,6 +19,7 @@ def build_notifications(run: dict | None, actions: list[dict], workflow_conclusi
     messages = []
     pending = [item for item in actions if item.get("status") == "pending_review"]
     published = [item for item in actions if item.get("status") == "auto_published"]
+    shadow = [item for item in actions if item.get("status") == "shadow_published"]
     failed = [item for item in actions if item.get("status") in {"failed", "verification_unavailable"}]
 
     for item in pending:
@@ -49,6 +50,18 @@ def build_notifications(run: dict | None, actions: list[dict], workflow_conclusi
             "message": "\n".join(lines),
             "priority": "3",
             "tags": "white_check_mark",
+            "click": app_url,
+        })
+
+    if shadow:
+        lines = [f"Shadow mode generated {len(shadow)} proposal(s). Nothing was published to YouTube."]
+        for item in shadow[:5]:
+            lines.append(f"• {str(item.get('video_title') or item.get('video_id') or 'Video')[:100]}")
+        messages.append({
+            "title": "Metadata proposals ready (shadow mode)",
+            "message": "\\n".join(lines),
+            "priority": "3",
+            "tags": "eyes",
             "click": app_url,
         })
 
