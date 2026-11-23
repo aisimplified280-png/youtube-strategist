@@ -56,8 +56,11 @@ def _deterministic_precheck(
     source = candidate.get("current_metadata")
     if not isinstance(source, dict):
         return False, "Exact live source metadata is unavailable."
+    source_tags = source.get("tags") or []
+    if not isinstance(source_tags, list):
+        return False, "Exact live source tags are malformed."
     quote = str(candidate.get("factual_evidence") or "").strip()
-    source_fields = [source.get("title") or "", source.get("description") or "", *(source.get("tags") or [])]
+    source_fields = [source.get("title") or "", source.get("description") or "", *source_tags]
     if not quote or not any(isinstance(field, str) and quote in field for field in source_fields):
         return False, "The strategist's factual evidence is not an exact quote from one live metadata field."
     title = str(proposed.get("title") or "")
@@ -98,9 +101,18 @@ def evaluate_metadata_gatekeeper(
     Any missing key, network error, malformed response, or ambiguous critic result
     returns HOLD. The caller must never fail open.
     """
-    eligible, precheck_reason = _deterministic_precheck(
-        candidate, before, proposed, float(min_confidence)
-    )
+    try:
+        eligible, precheck_reason = _deterministic_precheck(
+            candidate, before, proposed, float(min_confidence)
+        )
+    except Exception as error:
+        log.warning("Metadata gatekeeper deterministic precheck failed closed: %s", error)
+        return {
+            "decision": "HOLD",
+            "confidence": 0.0,
+            "reason": f"Deterministic gatekeeper precheck failed: {type(error).__name__}. Held for owner review.",
+            "precheck": False,
+        }
     if not eligible:
         return {"decision": "HOLD", "confidence": 0.0, "reason": precheck_reason, "precheck": False}
     key = str(api_key or os.getenv("GEMINI_API_KEY", "")).strip()
