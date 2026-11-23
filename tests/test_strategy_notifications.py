@@ -101,7 +101,7 @@ class TestStrategyNotifications(unittest.TestCase):
         "DISCORD_TEST_NOTIFICATION": "1",
     }, clear=True)
     @patch("strategy_notifications.send_discord_message")
-    def test_manual_discord_test_mode_sends_without_ntfy_or_supabase(self, send_message):
+    def test_manual_discord_test_mode_sends_without_supabase(self, send_message):
         self.assertEqual(main(), 0)
         send_message.assert_called_once()
 
