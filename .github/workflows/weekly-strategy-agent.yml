@@ -48,13 +48,14 @@ jobs:
         run: python channel_strategy_worker.py --cadence=weekly
 
 
-      - name: Send Android ntfy notifications
+      - name: Send ntfy and Discord notifications
         if: always()
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NTFY_SERVER: "https://ntfy.sh"
           STRATEGY_RUN_STARTED_AT: ${{ steps.strategy_start.outputs.started_at }}
           STRATEGY_WORKFLOW_CONCLUSION: ${{ job.status }}
