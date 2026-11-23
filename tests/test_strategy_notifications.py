@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from core.metadata_gatekeeper import evaluate_metadata_gatekeeper
 from strategy_notifications import build_notifications, main, send_ntfy_message
+from discord_notifications import build_discord_payload, send_discord_message
 
 
 class TestStrategyNotifications(unittest.TestCase):
@@ -88,6 +89,42 @@ class TestStrategyNotifications(unittest.TestCase):
         proposed = {"title": "RAG: Production Guide", "description": before["description"], "tags": ["RAG"]}
         verdict = evaluate_metadata_gatekeeper(candidate, before, proposed, api_key="test")
         self.assertEqual(verdict["decision"], "HOLD")
+
+    def test_discord_payload_uses_priority_color_and_disables_mentions(self):
+        payload = build_discord_payload({
+            "title": "Review required",
+            "message": "Please review this proposal.",
+            "priority": "4",
+            "tags": "warning",
+            "click": "https://example.com/review",
+        })
+        self.assertEqual(payload["allowed_mentions"], {"parse": []})
+        self.assertEqual(payload["embeds"][0]["color"], 0xF1C40F)
+        self.assertEqual(payload["embeds"][0]["url"], "https://example.com/review")
+
+    @patch("discord_notifications.requests.post")
+    def test_discord_sender_posts_embed_to_webhook(self, post):
+        post.return_value = Mock(status_code=204)
+        post.return_value.raise_for_status.return_value = None
+        send_discord_message(
+            {"title": "Test", "message": "Hello", "priority": "5"},
+            webhook_url="https://discord.com/api/webhooks/123456/secret-token",
+        )
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["json"]["embeds"][0]["title"], "Test")
+
+    def test_discord_sender_rejects_non_discord_webhook_urls(self):
+        with self.assertRaises(ValueError):
+            send_discord_message({"message": "x"}, webhook_url="https://example.com/api/webhooks/123/token")
+
+    @patch.dict("os.environ", {
+        "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/123456/secret-token",
+        "DISCORD_TEST_NOTIFICATION": "1",
+    }, clear=True)
+    @patch("strategy_notifications.send_discord_message")
+    def test_manual_discord_test_mode_sends_without_ntfy_or_supabase(self, send_message):
+        self.assertEqual(main(), 0)
+        send_message.assert_called_once()
 
 
 if __name__ == "__main__":
