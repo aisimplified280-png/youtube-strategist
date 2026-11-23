@@ -133,10 +133,14 @@ def _supabase_get(base_url: str, service_key: str, table: str, params: dict) -> 
 
 def main() -> int:
     topic = os.getenv("NTFY_TOPIC", "").strip()
+    test_mode = os.getenv("NTFY_TEST_NOTIFICATION", "").strip() == "1"
     if not topic:
+        if test_mode:
+            log.error("NTFY_TOPIC is required for the explicit notification test.")
+            return 1
         log.info("NTFY_TOPIC is not configured; skipping mobile notifications.")
         return 0
-    if os.getenv("NTFY_TEST_NOTIFICATION", "").strip() == "1":
+    if test_mode:
         try:
             send_ntfy_message({
                 "title": "AI Simplified Lab ntfy test",
