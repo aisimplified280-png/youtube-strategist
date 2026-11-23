@@ -56,8 +56,10 @@ def build_notifications(run: dict | None, actions: list[dict], workflow_conclusi
         lines = []
         for item in failed[:5]:
             label = str(item.get("video_title") or item.get("video_id") or "Video")[:90]
-            detail = str(item.get("error") or item.get("reason") or item.get("status") or "")[:220]
-            lines.append(f"{label}: {detail}")
+            # ntfy topics are public-by-name on the hosted service. Keep raw API
+            # exceptions out of push payloads; point the owner to authenticated logs.
+            state = "verification unavailable" if item.get("status") == "verification_unavailable" else "publish failed"
+            lines.append(f"{label}: {state}. Open the dashboard and GitHub Actions logs for details.")
         messages.append({
             "title": f"Strategist needs attention: {len(failed)} issue(s)",
             "message": "\n".join(lines),
@@ -72,7 +74,7 @@ def build_notifications(run: dict | None, actions: list[dict], workflow_conclusi
         if not failed:
             messages.append({
                 "title": "YouTube Strategist worker failed",
-                "message": str((run or {}).get("error") or f"GitHub Actions concluded: {conclusion or 'failed'}. Check the workflow logs."),
+                "message": f"GitHub Actions concluded: {conclusion or 'failed'}. Open the workflow logs for the private error details.",
                 "priority": "5",
                 "tags": "rotating_light",
                 "click": "https://github.com/aisimplified280-png/youtube-strategist/actions",
