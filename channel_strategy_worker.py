@@ -629,7 +629,10 @@ def _process_candidate(
         min_confidence = 0.85
         strategist_confidence = 0.0
 
-    mode = str(settings.get("automation_mode") or "").strip().lower()
+    mode = str(
+        settings.get("automation_mode")
+        or ("autonomous" if settings.get("autonomous_mode_enabled") else "shadow")
+    ).strip().lower()
     if (
         mode == "autonomous"
         and settings.get("emergency_pause") is not True
