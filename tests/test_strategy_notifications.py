@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core.metadata_gatekeeper import evaluate_metadata_gatekeeper
-from strategy_notifications import build_notifications, send_ntfy_message
+from strategy_notifications import build_notifications, main, send_ntfy_message
 
 
 class TestStrategyNotifications(unittest.TestCase):
@@ -34,6 +34,15 @@ class TestStrategyNotifications(unittest.TestCase):
         send_ntfy_message({"title": "Hello", "message": "World"}, topic="a" * 32)
         post.assert_called_once()
         self.assertIn("/" + "a" * 32, post.call_args.args[0])
+
+    @patch.dict("os.environ", {
+        "NTFY_TOPIC": "a" * 32,
+        "NTFY_TEST_NOTIFICATION": "1",
+    }, clear=True)
+    @patch("strategy_notifications.send_ntfy_message")
+    def test_manual_test_mode_sends_push_without_supabase_credentials(self, send_message):
+        self.assertEqual(main(), 0)
+        send_message.assert_called_once()
 
     def test_ntfy_rejects_guessable_or_invalid_topic(self):
         with self.assertRaises(ValueError):
