@@ -1,0 +1,25 @@
+name: Test Discord notification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  send_test_notification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install notification dependency
+        run: python -m pip install "requests>=2.32,<3"
+      - name: Send test message to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          STRATEGIST_APP_URL: "https://youtube-strategist-gvysp46objgfmgmdemckwe.streamlit.app/"
+        run: python discord_notifications.py
