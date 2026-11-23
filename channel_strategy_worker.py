@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 
 import core.batch_metadata as batch_metadata
 import youtube_analytics_connector as connector
+from core.metadata_gatekeeper import evaluate_metadata_gatekeeper
 from core.channel_strategy_agent import (
     DEFAULT_STRATEGY_FALLBACKS,
     DEFAULT_STRATEGY_MODEL,
@@ -612,6 +613,62 @@ def _process_candidate(
         "fields_to_modify": candidate.get("fields_to_modify", []),
         "factual_evidence": candidate.get("factual_evidence", ""),
     }
+
+    # Independent second-pass gatekeeper. It may promote a high-confidence
+    # strategist review to auto_publish only when deterministic checks and a
+    # separate Gemini critic both pass. Any uncertainty stays in the review queue.
+    gatekeeper_result = {
+        "decision": "SKIPPED",
+        "confidence": 0.0,
+        "reason": "Not eligible for independent autonomous review.",
+    }
+    try:
+        min_confidence = float(settings.get("min_confidence_auto_publish", 0.85))
+        strategist_confidence = float(candidate.get("confidence"))
+    except (TypeError, ValueError):
+        min_confidence = 0.85
+        strategist_confidence = 0.0
+
+    mode = str(settings.get("automation_mode") or "").strip().lower()
+    if (
+        mode == "autonomous"
+        and settings.get("emergency_pause") is not True
+        and str(candidate.get("diagnosis") or "").lower() == "packaging"
+        and str(candidate.get("decision") or "").lower() in {"review", "auto_publish"}
+        and strategist_confidence >= min_confidence
+    ):
+        gatekeeper_result = evaluate_metadata_gatekeeper(
+            candidate,
+            before,
+            proposed,
+            min_confidence=min_confidence,
+        )
+        if gatekeeper_result.get("decision") == "PASS":
+            candidate_decision["decision"] = "auto_publish"
+            candidate_decision["rationale"] = (
+                f"{candidate_decision['rationale']} | Independent gatekeeper PASS "
+                f"({float(gatekeeper_result.get('confidence') or 0):.2f}): "
+                f"{gatekeeper_result.get('reason') or 'All checks passed.'}"
+            )
+        else:
+            candidate_decision["decision"] = "review"
+            candidate_decision["rationale"] = (
+                f"{candidate_decision['rationale']} | Independent gatekeeper "
+                f"{gatekeeper_result.get('decision') or 'HOLD'}: "
+                f"{gatekeeper_result.get('reason') or 'Owner review required.'}"
+            )
+    elif str(candidate.get("diagnosis") or "").lower() == "metadata_quality":
+        gatekeeper_result = {
+            "decision": "HOLD",
+            "confidence": 0.0,
+            "reason": "Metadata-quality audits are permanently review-only.",
+        }
+        candidate_decision["decision"] = "review"
+        candidate_decision["rationale"] = (
+            f"{candidate_decision['rationale']} | {gatekeeper_result['reason']}"
+        )
+
+    candidate["gatekeeper"] = gatekeeper_result
 
     policy_decision, policy_reason, changed_fields = evaluate_autonomous_policy(
         settings,
