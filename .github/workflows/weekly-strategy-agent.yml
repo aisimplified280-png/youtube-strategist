@@ -27,6 +27,9 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Record strategy worker start time
+        id: strategy_start
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Run weekly pattern recognition and upload optimization
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -34,6 +37,7 @@ jobs:
           YOUTUBE_STRATEGIST_STATE_SECRET: ${{ secrets.YOUTUBE_STRATEGIST_STATE_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: "gemini-3.6-flash"
+          GEMINI_GATEKEEPER_MODEL: "gemini-3-flash-preview"
           GEMINI_FALLBACK_MODELS: "gemini-3.5-flash-lite,gemini-flash-lite-latest,gemini-3-flash-preview"
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: "openai/gpt-oss-120b"
@@ -43,3 +47,16 @@ jobs:
           LOG_LEVEL: "INFO"
         run: python channel_strategy_worker.py --cadence=weekly
 
+
+      - name: Send Android ntfy notifications
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          NTFY_SERVER: "https://ntfy.sh"
+          STRATEGY_RUN_STARTED_AT: ${{ steps.strategy_start.outputs.started_at }}
+          STRATEGY_WORKFLOW_CONCLUSION: ${{ job.status }}
+          STRATEGIST_APP_URL: "https://youtube-strategist-gvysp46objgfmgmdemckwe.streamlit.app/"
+        run: python strategy_notifications.py
