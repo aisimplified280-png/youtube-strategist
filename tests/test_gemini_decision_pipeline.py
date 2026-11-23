@@ -294,7 +294,8 @@ class TestGeminiDecisionPipeline(unittest.TestCase):
             "require_approval_for_all_changes": False,
         }
 
-        with patch("channel_strategy_worker._record_live_metadata_snapshot", return_value={"days_since_modification": 14}), \
+        with patch("channel_strategy_worker.evaluate_metadata_gatekeeper", return_value={"decision": "PASS", "confidence": 0.95, "reason": "Unit-test critic approval"}), \
+             patch("channel_strategy_worker._record_live_metadata_snapshot", return_value={"days_since_modification": 14}), \
              patch("channel_strategy_worker._snapshot_allows_publish", return_value=True), \
              patch.object(connector, "apply_approved_dashboard_proposal", return_value={"result": "success", "url": "https://youtu.be/test_vid_auto"}) as mock_apply, \
              patch.object(connector, "fetch_video_snippet", return_value=proposed_meta):
