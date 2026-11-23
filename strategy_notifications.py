@@ -1,11 +1,9 @@
-"""Send mobile-first ntfy alerts for the latest scheduled channel-strategy run."""
+"""Send Discord alerts for the latest scheduled channel-strategy run."""
 
 from __future__ import annotations
 
 import logging
 import os
-import re
-from urllib.parse import quote
 
 import requests
 
@@ -71,8 +69,7 @@ def build_notifications(run: dict | None, actions: list[dict], workflow_conclusi
         lines = []
         for item in failed[:5]:
             label = str(item.get("video_title") or item.get("video_id") or "Video")[:90]
-            # ntfy topics are public-by-name on the hosted service. Keep raw API
-            # exceptions out of push payloads; point the owner to authenticated logs.
+            # Keep raw API exceptions out of notifications; point the owner to authenticated logs.
             state = "verification unavailable" if item.get("status") == "verification_unavailable" else "publish failed"
             lines.append(f"{label}: {state}. Open the dashboard and GitHub Actions logs for details.")
         messages.append({
@@ -105,29 +102,6 @@ def build_notifications(run: dict | None, actions: list[dict], workflow_conclusi
     return messages
 
 
-def send_ntfy_message(message: dict, *, topic: str, server: str = "https://ntfy.sh", token: str = "", timeout_seconds: int = 12) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", topic or ""):
-        raise ValueError("NTFY_TOPIC must be a private, random 16-128 character topic name.")
-    if not str(server).startswith("https://"):
-        raise ValueError("NTFY_SERVER must use HTTPS.")
-    headers = {
-        "Title": str(message.get("title") or "YouTube Strategist")[:180],
-        "Priority": str(message.get("priority") or "3"),
-        "Tags": str(message.get("tags") or "information_source"),
-    }
-    if message.get("click"):
-        headers["Click"] = str(message["click"])
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    response = requests.post(
-        f"{server.rstrip('/')}/{quote(topic, safe='')}",
-        data=str(message.get("message") or "").encode("utf-8"),
-        headers=headers,
-        timeout=timeout_seconds,
-    )
-    response.raise_for_status()
-
-
 def _supabase_get(base_url: str, service_key: str, table: str, params: dict) -> list[dict]:
     response = requests.get(
         f"{base_url.rstrip('/')}/rest/v1/{table}",
@@ -146,38 +120,32 @@ def _supabase_get(base_url: str, service_key: str, table: str, params: dict) -> 
     return payload
 
 
+
 def main() -> int:
-    topic = os.getenv("NTFY_TOPIC", "").strip()
     discord_webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-    ntfy_test_mode = os.getenv("NTFY_TEST_NOTIFICATION", "").strip() == "1"
     discord_test_mode = os.getenv("DISCORD_TEST_NOTIFICATION", "").strip() == "1"
-    if ntfy_test_mode or discord_test_mode:
-        test_message = {
-            "title": "AI Simplified Lab notification test",
-            "message": "Success! This notification channel is connected. Strategy review alerts, publish summaries, and worker failures can now reach you.",
-            "priority": "3",
-            "tags": "white_check_mark",
-            "click": os.getenv("STRATEGIST_APP_URL", DEFAULT_APP_URL),
-        }
+    if not discord_webhook:
+        if discord_test_mode:
+            log.error("DISCORD_WEBHOOK_URL is required for the explicit Discord test.")
+            return 1
+        log.info("DISCORD_WEBHOOK_URL is not configured; skipping Discord notifications.")
+        return 0
+
+    if discord_test_mode:
         try:
-            if ntfy_test_mode:
-                if not topic:
-                    raise ValueError("NTFY_TOPIC is required for the explicit ntfy test.")
-                send_ntfy_message(test_message, topic=topic, server=os.getenv("NTFY_SERVER", "https://ntfy.sh"), token=os.getenv("NTFY_TOKEN", ""))
-                log.info("Sent the requested ntfy test notification.")
-            if discord_test_mode:
-                if not discord_webhook:
-                    raise ValueError("DISCORD_WEBHOOK_URL is required for the explicit Discord test.")
-                send_discord_message(test_message, webhook_url=discord_webhook)
-                log.info("Sent the requested Discord test notification.")
+            send_discord_message({
+                "title": "AI Simplified Lab Discord test",
+                "message": "Success! Your Discord notification channel is connected. Strategy review alerts, publish summaries, and worker failures can now reach you.",
+                "priority": "3",
+                "tags": "white_check_mark",
+                "click": os.getenv("STRATEGIST_APP_URL", DEFAULT_APP_URL),
+            }, webhook_url=discord_webhook)
+            log.info("Sent the requested Discord test notification.")
         except Exception:
-            log.exception("Could not send the requested notification test.")
+            log.exception("Could not send the requested Discord test notification.")
             return 1
         return 0
 
-    if not topic and not discord_webhook:
-        log.info("Neither NTFY_TOPIC nor DISCORD_WEBHOOK_URL is configured; skipping notifications.")
-        return 0
     base_url = os.getenv("SUPABASE_URL", "").strip()
     service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     started_at = os.getenv("STRATEGY_RUN_STARTED_AT", "").strip()
@@ -186,26 +154,18 @@ def main() -> int:
     if not base_url or not service_key:
         log.error("Supabase credentials unavailable; cannot resolve the latest strategy run.")
         if conclusion in {"failure", "cancelled", "timed_out"}:
-            failure_message = {
-                "title": "YouTube Strategist worker failed",
-                "message": "The workflow failed before run details could be loaded. Check GitHub Actions.",
-                "priority": "5", "tags": "rotating_light",
-                "click": "https://github.com/aisimplified280-png/youtube-strategist/actions",
-            }
-            if topic:
-                try:
-                    send_ntfy_message(failure_message, topic=topic, server=os.getenv("NTFY_SERVER", "https://ntfy.sh"), token=os.getenv("NTFY_TOKEN", ""))
-                except Exception:
-                    log.exception("Could not send ntfy failure alert.")
-            if discord_webhook:
-                try:
-                    send_discord_message(failure_message, webhook_url=discord_webhook)
-                except Exception:
-                    log.exception("Could not send Discord failure alert.")
+            try:
+                send_discord_message({
+                    "title": "YouTube Strategist worker failed",
+                    "message": "The workflow failed before run details could be loaded. Check GitHub Actions.",
+                    "priority": "5",
+                    "tags": "rotating_light",
+                    "click": "https://github.com/aisimplified280-png/youtube-strategist/actions",
+                }, webhook_url=discord_webhook)
+            except Exception:
+                log.exception("Could not send Discord failure alert.")
         return 0
 
-    run = None
-    actions = []
     try:
         run_params = {
             "select": "id,status,cadence,started_at,finished_at,result,error,trigger_source",
@@ -221,6 +181,7 @@ def main() -> int:
             if started_at else []
         )
         run = run_rows[0] if run_rows else None
+        actions = []
         if run and run.get("id"):
             actions = _supabase_get(base_url, service_key, "channel_strategy_actions", {
                 "select": "id,video_id,video_title,status,reason,error,confidence,result,created_at",
@@ -229,28 +190,12 @@ def main() -> int:
                 "limit": "30",
             })
         messages = build_notifications(run, actions, conclusion, app_url)
-        if topic:
-            try:
-                for message in messages:
-                    send_ntfy_message(
-                        message,
-                        topic=topic,
-                        server=os.getenv("NTFY_SERVER", "https://ntfy.sh"),
-                        token=os.getenv("NTFY_TOKEN", ""),
-                    )
-                log.info("Sent %s ntfy notification(s).", len(messages))
-            except Exception:
-                log.exception("ntfy delivery failed; Discord delivery will still be attempted.")
-        if discord_webhook:
-            try:
-                for message in messages:
-                    send_discord_message(message, webhook_url=discord_webhook)
-                log.info("Sent %s Discord notification(s) for strategy run %s.", len(messages), (run or {}).get("id") or "unresolved")
-            except Exception:
-                log.exception("Discord delivery failed; the strategy worker result is unchanged.")
+        for message in messages:
+            send_discord_message(message, webhook_url=discord_webhook)
+        log.info("Sent %s Discord notification(s) for strategy run %s.", len(messages), (run or {}).get("id") or "unresolved")
     except Exception:
         # Notification failures must never change the worker's publishing outcome.
-        log.exception("Notification delivery failed; the strategy worker result is unchanged.")
+        log.exception("Discord notification delivery failed; the strategy worker result is unchanged.")
     return 0
 
 
