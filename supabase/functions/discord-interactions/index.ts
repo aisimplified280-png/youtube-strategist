@@ -4,8 +4,10 @@ const encoder = new TextEncoder();
 const EPHEMERAL = 64;
 const MAX_CLOCK_SKEW_SECONDS = 300;
 
-function hexToBytes(value: string): Uint8Array {
-  if (!/^[0-9a-f]{128}$/i.test(value)) throw new Error("Invalid signature encoding");
+function hexToBytes(value: string, expectedHexLength: number): Uint8Array {
+  if (value.length !== expectedHexLength || !/^[0-9a-f]+$/i.test(value)) {
+    throw new Error("Invalid hexadecimal encoding");
+  }
   return new Uint8Array(value.match(/.{2}/g)!.map((part) => parseInt(part, 16)));
 }
 
@@ -18,7 +20,7 @@ async function verifyDiscordRequest(request: Request, rawBody: string, publicKey
   try {
     const key = await crypto.subtle.importKey(
       "raw",
-      hexToBytes(publicKey),
+      hexToBytes(publicKey, 64),
       { name: "Ed25519" },
       false,
       ["verify"],
@@ -26,7 +28,7 @@ async function verifyDiscordRequest(request: Request, rawBody: string, publicKey
     return await crypto.subtle.verify(
       { name: "Ed25519" },
       key,
-      hexToBytes(signature),
+      hexToBytes(signature, 128),
       encoder.encode(timestamp + rawBody),
     );
   } catch {
