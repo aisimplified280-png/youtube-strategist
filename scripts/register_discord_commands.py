@@ -32,7 +32,22 @@ def main() -> None:
             + ". Add them as GitHub Actions secrets and rerun the workflow."
         )
     if not application_id.isdigit():
-        raise SystemExit("DISCORD_APPLICATION_ID must contain only digits.")
+        hint = (
+            " Open Discord Developer Portal -> Applications -> your app -> "
+            "General Information, then copy the numeric 'Application ID'. "
+            "Do not use the Bot Token, Public Key, Client Secret, or OAuth2 URL."
+        )
+        if len(application_id) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in application_id):
+            hint += " This looks like a 64-character Public Key, not the Application ID."
+        elif "." in application_id:
+            hint += " This looks like a token value; keep it in DISCORD_BOT_TOKEN instead."
+        raise SystemExit("DISCORD_APPLICATION_ID must be the numeric Application ID (digits only)." + hint)
+    if not 17 <= len(application_id) <= 20:
+        raise SystemExit(
+            "DISCORD_APPLICATION_ID has an unexpected length. Copy the numeric "
+            "Application ID from Discord Developer Portal -> General Information; "
+            "do not use the Public Key or Bot Token."
+        )
 
     url = f"https://discord.com/api/v10/applications/{application_id}/commands"
     response = requests.put(
