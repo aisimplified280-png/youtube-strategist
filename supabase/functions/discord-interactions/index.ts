@@ -62,7 +62,7 @@ async function resolveSingleActiveOwnerKey(): Promise<string> {
     select: "owner_key",
     limit: "10",
   });
-  const rows = await supabaseRequest(\`owner_oauth_credentials?\${params.toString()}\`);
+  const rows = await supabaseRequest(`owner_oauth_credentials?${params.toString()}`);
   const keys = [...new Set((rows || []).map((row: any) => String(row.owner_key || "")).filter(Boolean))];
   // This Discord app is intentionally single-owner. If the database ever contains
   // multiple active YouTube owners, fail closed rather than guessing which channel.
