@@ -29,9 +29,12 @@ The bot token is needed only when running the command-registration helper locall
 3. Set the secrets listed above in Supabase Edge Function secrets.
 4. In Discord Developer Portal → General Information, set Interactions Endpoint URL to:
    `https://<project-ref>.supabase.co/functions/v1/discord-interactions`
-5. Register the global `/approvals` command:
-   `DISCORD_APPLICATION_ID=... DISCORD_BOT_TOKEN=... python scripts/register_discord_commands.py`
-6. Test with one pending metadata proposal before enabling normal use.
+5. Add these two repository secrets in GitHub → Settings → Secrets and variables → Actions:
+   - `DISCORD_APPLICATION_ID`: Discord Developer Portal → General Information → Application ID.
+   - `DISCORD_BOT_TOKEN`: Discord Developer Portal → Bot → Token.
+   Never paste either value into chat or commit it to Git.
+6. Open GitHub → Actions → **Register Discord slash commands** → **Run workflow**. The workflow registers the global `/approvals` command using those secrets; no local PowerShell command is needed. Global command propagation can take a short while.
+7. Test `/approvals` with one pending metadata proposal before normal use.
 
 ## Security / behaviour
 
