@@ -286,5 +286,72 @@ def main():
         log.exception("Could not process approved metadata editor proposals.")
 
 
+def process_approved_metadata_editor_audits(store, cipher, limit: int = 10) -> int:
+    """Publish only Discord-approved metadata-editor audits."""
+    rows = store._request("GET", "metadata_editor_audits", params={
+        "status": "eq.approved",
+        "result->>source": "eq.discord",
+        "select": "id,owner_key,video_id,video_title,before_metadata,proposed_metadata,approval_digest,result",
+        "order": "created_at.asc",
+        "limit": str(max(1, min(int(limit), 25))),
+    })
+    processed = 0
+    for audit in rows or []:
+        audit_id = str(audit.get("id") or "")
+        owner_key = str(audit.get("owner_key") or "")
+        if not audit_id or not owner_key:
+            continue
+        store.owner_key = owner_key
+        if not store.claim_metadata_editor_audit(audit_id):
+            continue
+        processed += 1
+        try:
+            credentials = _get_owner_credentials(store, owner_key, cipher)
+            youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+            result = apply_approved_resource_proposal(
+                youtube,
+                str(audit.get("video_id") or ""),
+                audit.get("before_metadata") or {},
+                audit.get("proposed_metadata") or {},
+                str(audit.get("approval_digest") or ""),
+            )
+            if result.get("result") != "success":
+                store.update_metadata_editor_audit(audit_id, {
+                    "status": "failed",
+                    "result": result,
+                    "error": "The approved proposal contained no metadata changes.",
+                })
+                continue
+            store.update_metadata_editor_audit(audit_id, {
+                "status": "approved_published",
+                "after_metadata": result.get("resource") or {},
+                "result": {
+                    "result": "success",
+                    "source": "discord",
+                    "updated_parts": result.get("updated_parts") or [],
+                    "video_id": audit.get("video_id"),
+                    "url": f"https://www.youtube.com/watch?v={audit.get('video_id')}",
+                },
+                "error": None,
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            })
+            log.info("Published Discord-approved metadata audit %s", audit_id)
+        except Exception as exc:
+            if isinstance(exc, connector.MetadataVerificationUnavailableError):
+                status = "verification_unavailable"
+            elif isinstance(exc, RuntimeError) and "changed after review" in str(exc).casefold():
+                status = "stale"
+            else:
+                status = "failed"
+            store.update_metadata_editor_audit(audit_id, {
+                "status": status,
+                "error": f"{type(exc).__name__}: {str(exc)[:1200]}",
+                "result": {"source": "discord", "worker": "background-worker"},
+            })
+            log.exception("Discord-approved metadata audit %s ended with status %s", audit_id, status)
+    return processed
+
+
+
 if __name__ == "__main__":
     main()
