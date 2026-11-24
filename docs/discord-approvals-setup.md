@@ -20,7 +20,7 @@ The Edge Function does not hold YouTube OAuth credentials and cannot publish dir
 - `SUPABASE_URL`: existing project URL.
 - `SUPABASE_SERVICE_ROLE_KEY`: service-role key. Keep it server-side only.
 
-The bot token is needed only when running the command-registration helper locally; do not add it to the Edge Function secrets. Never put any credentials in Git.
+The bot token is used only by the GitHub Actions command-registration workflow. Store it as the GitHub Actions secret `DISCORD_BOT_TOKEN`; do not add it to Supabase Edge Function secrets. Never put any credentials in Git.
 
 ## Deploy and configure
 
