@@ -9,7 +9,7 @@ This integration adds an owner-only `/approvals` command to the existing Discord
 3. Only the exact configured Discord user ID is authorised.
 4. `/approvals` lists up to five pending metadata-editor proposals, with video links and proposal-bound Approve & publish / Reject buttons.
 5. A button can transition only its exact pending audit row, matching the digest embedded in the button. A conditional update makes duplicate/concurrent clicks no-ops.
-6. Approve sets the existing audit status to `approved`. The existing scheduled GitHub Actions background worker claims that row, rechecks the exact proposal against live YouTube metadata, writes it using the already-connected owner OAuth grant, and verifies the read-back. Reject never writes to YouTube.
+6. Approve sets the existing audit status to `approved`. The existing GitHub Actions background worker (scheduled every five minutes) claims Discord-sourced approved rows, rechecks the exact proposal against live YouTube metadata, writes it using the already-connected owner OAuth grant, and verifies the read-back. Reject never writes to YouTube.
 
 The Edge Function does not hold YouTube OAuth credentials and cannot publish directly. The publishing worker remains the only component that performs YouTube writes.
 
@@ -38,6 +38,6 @@ The bot token is needed only when running the command-registration helper locall
 - The function resolves the only active YouTube owner credential from the server-side OAuth table and fails closed if it finds zero or multiple active owners. It verifies the signature against the exact raw request body before parsing it.
 - Old signed requests are rejected; the pending-to-approved/rejected status transition prevents repeat decisions, and the interaction ID is retained in the audit result.
 - The button includes the proposal digest prefix and the database update checks the full stored digest.
-- The worker claims only `approved` rows, then rechecks live metadata and the full proposal digest before writing.
+- The worker claims only rows with both `status=approved` and `result.source=discord`; it then rechecks live metadata and the full proposal digest before writing. Existing Streamlit approval execution is not intercepted.
 - No comment-reply actions are exposed. Comment replies remain manual approval only.
 - The existing webhook notification path is not modified.
