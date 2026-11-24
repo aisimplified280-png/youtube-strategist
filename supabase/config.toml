@@ -1,0 +1,4 @@
+# Supabase project configuration.
+# Discord verifies requests with Ed25519 signatures, not Supabase JWTs.
+[functions.discord-interactions]
+verify_jwt = false
