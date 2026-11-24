@@ -22,6 +22,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from core.persistent_store import SupabasePersistentStore
+from core.metadata.resource import apply_approved_resource_proposal
 from strategist_chat import build_batch_metadata_generator
 import core.batch_metadata as batch_metadata
 
@@ -273,6 +274,15 @@ def main():
             time.sleep(idle_seconds)
             # One idle poll is enough for scheduled Actions invocations.
             break
+
+    # Discord approvals enter the same durable metadata audit queue as Streamlit.
+    # The background worker remains the only component that performs YouTube writes.
+    try:
+        approved_count = process_approved_metadata_editor_audits(store, cipher, limit=max_jobs)
+        if approved_count:
+            log.info("Claimed %s approved metadata editor proposal(s).", approved_count)
+    except Exception:
+        log.exception("Could not process approved metadata editor proposals.")
 
 
 if __name__ == "__main__":
