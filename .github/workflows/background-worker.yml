@@ -7,6 +7,8 @@ on:
       - main
     paths:
       - ".github/worker-trigger.json"
+      - "worker.py"
+      - "core/metadata/resource.py"
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
