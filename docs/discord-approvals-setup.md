@@ -17,12 +17,10 @@ The Edge Function does not hold YouTube OAuth credentials and cannot publish dir
 
 - `DISCORD_APPLICATION_PUBLIC_KEY`: Discord Developer Portal → General Information → Public Key.
 - `DISCORD_OWNER_USER_ID`: your personal numeric Discord user ID (not the bot ID).
-- `DISCORD_BOT_TOKEN`: bot token; used only by the command-registration helper if you choose to register commands from this environment. It is not read by the interaction handler.
-- `YOUTUBE_STRATEGIST_OWNER_SUBJECT`: the same stable owner subject used by the Streamlit app to derive the owner-scoped Supabase key.
 - `SUPABASE_URL`: existing project URL.
 - `SUPABASE_SERVICE_ROLE_KEY`: service-role key. Keep it server-side only.
 
-The current function does not use the bot token at runtime; it is listed here only if you prefer to keep all Discord credentials together. Never put any of these values in Git.
+The bot token is needed only when running the command-registration helper locally; do not add it to the Edge Function secrets. Never put any credentials in Git.
 
 ## Deploy and configure
 
@@ -37,7 +35,7 @@ The current function does not use the bot token at runtime; it is listed here on
 
 ## Security / behaviour
 
-- The function verifies the signature against the exact raw request body before parsing it.
+- The function resolves the only active YouTube owner credential from the server-side OAuth table and fails closed if it finds zero or multiple active owners. It verifies the signature against the exact raw request body before parsing it.
 - Old signed requests are rejected; Discord interaction IDs and proposal statuses prevent repeat decisions.
 - The button includes the proposal digest prefix and the database update checks the full stored digest.
 - The worker claims only `approved` rows, then rechecks live metadata and the full proposal digest before writing.
