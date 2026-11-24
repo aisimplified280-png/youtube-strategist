@@ -31,6 +31,7 @@ class DiscordApprovedMetadataWorkerTests(unittest.TestCase):
             count = worker.process_approved_metadata_editor_audits(store, object(), limit=5)
 
         self.assertEqual(count, 1)
+        self.assertEqual(store._request.call_args.kwargs["params"]["result->>source"], "eq.discord")
         store.claim_metadata_editor_audit.assert_called_once_with("audit-1")
         apply.assert_called_once()
         self.assertEqual(store.update_metadata_editor_audit.call_args.args[1]["status"], "approved_published")
