@@ -53,9 +53,19 @@ function interactionMessage(content: string, embeds: unknown[] = [], components:
   };
 }
 
-async function ownerKeyFromSubject(subject: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(subject));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+async function resolveSingleActiveOwnerKey(): Promise<string> {
+  const params = new URLSearchParams({
+    purpose: "eq.youtube",
+    revoked: "eq.false",
+    select: "owner_key",
+    limit: "10",
+  });
+  const rows = await supabaseRequest(\`owner_oauth_credentials?\${params.toString()}\`);
+  const keys = [...new Set((rows || []).map((row: any) => String(row.owner_key || "")).filter(Boolean))];
+  // This Discord app is intentionally single-owner. If the database ever contains
+  // multiple active YouTube owners, fail closed rather than guessing which channel.
+  if (keys.length !== 1) throw new Error("Expected exactly one active YouTube owner credential.");
+  return keys[0];
 }
 
 function discordUserId(payload: any): string {
@@ -203,9 +213,7 @@ Deno.serve(async (request: Request) => {
   }
 
   try {
-    const subject = Deno.env.get("YOUTUBE_STRATEGIST_OWNER_SUBJECT") || "";
-    if (!subject) return jsonResponse(interactionMessage("Owner workspace is not configured yet."), 503);
-    const ownerKey = await ownerKeyFromSubject(subject);
+    const ownerKey = await resolveSingleActiveOwnerKey();
 
     if (payload?.type === 2 && String(payload?.data?.name || "") === "approvals") {
       return jsonResponse(await listApprovals(ownerKey));
