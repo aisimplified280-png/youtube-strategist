@@ -36,7 +36,7 @@ The bot token is needed only when running the command-registration helper locall
 ## Security / behaviour
 
 - The function resolves the only active YouTube owner credential from the server-side OAuth table and fails closed if it finds zero or multiple active owners. It verifies the signature against the exact raw request body before parsing it.
-- Old signed requests are rejected; Discord interaction IDs and proposal statuses prevent repeat decisions.
+- Old signed requests are rejected; the pending-to-approved/rejected status transition prevents repeat decisions, and the interaction ID is retained in the audit result.
 - The button includes the proposal digest prefix and the database update checks the full stored digest.
 - The worker claims only `approved` rows, then rechecks live metadata and the full proposal digest before writing.
 - No comment-reply actions are exposed. Comment replies remain manual approval only.
