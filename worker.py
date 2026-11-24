@@ -3,7 +3,7 @@
 Required environment:
 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, YOUTUBE_STRATEGIST_STATE_SECRET,
 GROQ_API_KEY (primary), GEMINI_API_KEY (batch fallback).
-This worker prepares metadata proposals for owner review. It never publishes batch proposals; approved manual publishing is handled by the separate assistant_publish_worker.
+This worker prepares metadata proposals for owner review and processes explicitly approved full-metadata editor audits. It never publishes unapproved batch proposals.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from googleapiclient.discovery import build
 
 from core.persistent_store import SupabasePersistentStore
 from core.metadata.resource import apply_approved_resource_proposal
+import youtube_analytics_connector as connector
 from strategist_chat import build_batch_metadata_generator
 import core.batch_metadata as batch_metadata
 
