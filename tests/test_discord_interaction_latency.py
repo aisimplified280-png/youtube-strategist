@@ -19,7 +19,7 @@ class DiscordInteractionLatencyTests(unittest.TestCase):
         self.assertIn("EdgeRuntime.waitUntil", command)
 
     def test_component_click_is_deferred_before_owner_lookup(self):
-        component = HANDLER.split("if (payload?.type === 3) {", 1)[1]
+        component = HANDLER.rsplit("if (payload?.type === 3) {", 1)[1]
         ack = component.index("const deferred = jsonResponse({ type: 6 });")
         owner_lookup = component.index("await resolveSingleActiveOwnerKey()")
         self.assertLess(ack, owner_lookup)
