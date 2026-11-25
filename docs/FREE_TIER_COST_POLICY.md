@@ -38,3 +38,13 @@ This project is designed to run on free plans. **It cannot be guaranteed free fo
 - Gemini Developer API offers a limited Free tier for selected models. Consumer Google AI subscriptions do not automatically include API billing credits.
 
 These are provider-controlled policies, not promises of perpetual free service. Re-check their pricing pages before making plan changes.
+
+
+## Provider references (checked 25 November 2026)
+
+- [GitHub Actions billing](https://docs.github.com/en/actions/concepts/billing-and-usage) and [standard hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners): standard runners are free and unlimited for public repositories; larger runners are not covered by that rule.
+- [Streamlit Community Cloud](https://docs.streamlit.io/deploy/streamlit-community-cloud) and [app hibernation/resource limits](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app): free hosting, idle hibernation, and resource caps.
+- [Supabase pricing](https://supabase.com/pricing) and [billing guide](https://supabase.com/docs/guides/platform/billing-on-supabase): Free plan quotas and inactivity pause behavior.
+- [Gemini Developer API pricing](https://ai.google.dev/gemini-api/docs/pricing): free access is limited to selected models; paid tier is usage-based. Check the API project's tier and model eligibility, not just the consumer Google AI subscription.
+- [Groq rate limits](https://console.groq.com/docs/rate-limits): per-model RPM/RPD/TPM/TPD limits; exact limits are account/org specific and can change.
+- [YouTube Data API quota costs](https://developers.google.com/youtube/data/determine_quota_cost): standard projects currently receive 10,000 quota units/day for most endpoints; list reads typically cost one unit, while metadata updates cost 50.
