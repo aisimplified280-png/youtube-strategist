@@ -128,7 +128,7 @@ function proposalEmbed(row: any) {
     fields.push({ name: "Metadata", value: "No title, description or tag difference was found in the stored proposal. Review it in YouTube Strategist before taking action.", inline: false });
   }
   const evidence = row.evidence || {};
-  const confidence = row.confidence ?? evidence.confidence;
+  const confidence = evidence.confidence;
   const rationale = evidence.rationale || evidence.factual_evidence || row.reason || "No additional rationale was recorded.";
   fields.push({ name: "WHY THIS CHANGE", value: clipEmbed(String(rationale), 1000), inline: false });
   if (confidence !== null && confidence !== undefined && confidence !== "") {
@@ -169,7 +169,7 @@ async function sendApprovalReview(payload: any, ownerKey: string) {
       ...common, select: "id,video_id,video_title,before_metadata,proposed_metadata,updated_parts,approval_digest,created_at",
     }).toString()}`),
     supabaseRequest(`channel_strategy_actions?${new URLSearchParams({
-      ...common, select: "id,video_id,video_title,before_metadata,proposed_metadata,approval_digest,created_at,evidence,reason,confidence",
+      ...common, select: "id,video_id,video_title,before_metadata,proposed_metadata,approval_digest,created_at,evidence,reason,classification",
     }).toString()}`),
   ]);
   const rows = [
