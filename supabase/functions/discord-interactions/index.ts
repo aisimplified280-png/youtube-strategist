@@ -276,7 +276,7 @@ async function sendApprovalReview(payload: any, ownerKey: string) {
   if (failedDelivery?.status === "rejected") throw failedDelivery.reason;
 }
 
-async function listApprovals(ownerKey: string) {
+async function listApprovals() {
   return { type: 5, data: { flags: EPHEMERAL } };
 }
 async function approveAllBatch(payload: any, ownerKey: string, actorId: string) {
