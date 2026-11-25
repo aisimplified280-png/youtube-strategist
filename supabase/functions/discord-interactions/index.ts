@@ -100,14 +100,19 @@ function safeText(value: unknown, max = 180): string {
 }
 
 async function listApprovals(ownerKey: string) {
-  const params = new URLSearchParams({
-    owner_key: `eq.${ownerKey}`,
-    status: "eq.pending_review",
-    select: "id,video_id,video_title,updated_parts,approval_digest,created_at",
-    order: "created_at.asc",
-    limit: "5",
-  });
-  const rows = await supabaseRequest(`metadata_editor_audits?${params.toString()}`);
+  const common = { owner_key: `eq.${ownerKey}`, status: "eq.pending_review", order: "created_at.asc", limit: "5" };
+  const [editorRows, strategyRows] = await Promise.all([
+    supabaseRequest(`metadata_editor_audits?${new URLSearchParams({
+      ...common, select: "id,video_id,video_title,updated_parts,approval_digest,created_at",
+    }).toString()}`),
+    supabaseRequest(`channel_strategy_actions?${new URLSearchParams({
+      ...common, select: "id,video_id,video_title,approval_digest,created_at,evidence,reason",
+    }).toString()}`),
+  ]);
+  const rows = [
+    ...(editorRows || []).map((row: any) => ({ ...row, source: "meta" })),
+    ...(strategyRows || []).map((row: any) => ({ ...row, source: "strategy" })),
+  ].sort((a: any, b: any) => String(a.created_at || "").localeCompare(String(b.created_at || ""))).slice(0, 10);
   if (!rows.length) {
     return interactionMessage("There are no pending metadata proposals. Your review queue is clear.");
   }
@@ -115,9 +120,11 @@ async function listApprovals(ownerKey: string) {
     title: safeText(row.video_title || "Untitled video", 240),
     url: `https://www.youtube.com/watch?v=${encodeURIComponent(String(row.video_id || ""))}`,
     description: [
+      `**Source:** ${row.source === "strategy" ? "Channel Strategist" : "Metadata Editor"}`,
       `**Video ID:** ${safeText(row.video_id, 20)}`,
-      `**Changed:** ${(Array.isArray(row.updated_parts) ? row.updated_parts : []).map((v: string) => safeText(v, 40)).join(", ") || "Metadata"}`,
-      "**Review:** Open the video in YouTube if you want to inspect it before approving.",
+      `**Changed:** ${(Array.isArray(row.updated_parts) ? row.updated_parts : (row.evidence?.changed_fields || [])).map((v: string) => safeText(v, 40)).join(", ") || "Metadata"}`,
+      `**Reason:** ${safeText(row.reason || row.evidence?.rationale || "Owner review requested.", 700)}`,
+      "**Review:** Open the video in YouTube to inspect it before approving.",
     ].join("\n"),
     color: 3447003,
   }));
@@ -127,13 +134,13 @@ async function listApprovals(ownerKey: string) {
     return {
       type: 1,
       components: [
-        { type: 2, style: 3, label: "Approve & publish", custom_id: `meta:approve:${row.id}:${token}` },
-        { type: 2, style: 4, label: "Reject", custom_id: `meta:reject:${row.id}:${token}` },
+        { type: 2, style: 3, label: "Approve & publish", custom_id: `${row.source}:approve:${row.id}:${token}` },
+        { type: 2, style: 4, label: "Reject", custom_id: `${row.source}:reject:${row.id}:${token}` },
       ],
     };
   });
   return interactionMessage(
-    "Pending metadata proposals — approving starts the existing verified publishing worker. Rejection does not change YouTube.",
+    "Pending proposals — approving queues the verified publishing worker. Rejection does not change YouTube.",
     embeds,
     components,
   );
@@ -141,40 +148,36 @@ async function listApprovals(ownerKey: string) {
 
 async function decideMetadata(payload: any, ownerKey: string, actorId: string) {
   const customId = String(payload?.data?.custom_id || "");
-  const match = /^meta:(approve|reject):([0-9a-f-]{36}):([0-9a-f]{16})$/i.exec(customId);
+  const match = /^(meta|strategy):(approve|reject):([0-9a-f-]{36}):([0-9a-f]{16})$/i.exec(customId);
   if (!match) return { type: 7, data: { content: "This approval button is invalid or expired.", components: [] } };
-  const [, decision, auditId, digestPrefix] = match;
+  const [, source, decision, auditId, digestPrefix] = match;
+  const table = source === "strategy" ? "channel_strategy_actions" : "metadata_editor_audits";
+  const select = "id,video_id,video_title,approval_digest";
   const params = new URLSearchParams({
-    id: `eq.${auditId}`,
-    owner_key: `eq.${ownerKey}`,
-    status: "eq.pending_review",
-    select: "id,video_id,video_title,approval_digest",
-    limit: "1",
+    id: `eq.${auditId}`, owner_key: `eq.${ownerKey}`,
+    status: "eq.pending_review", select, limit: "1",
   });
-  const rows = await supabaseRequest(`metadata_editor_audits?${params.toString()}`);
+  const rows = await supabaseRequest(`${table}?${params.toString()}`);
   const audit = rows[0];
   if (!audit || !String(audit.approval_digest || "").startsWith(digestPrefix)) {
     return { type: 7, data: { content: "This proposal is no longer pending or has changed. Run /approvals again to refresh.", components: [] } };
   }
   const now = new Date().toISOString();
   const updateParams = new URLSearchParams({
-    id: `eq.${auditId}`,
-    owner_key: `eq.${ownerKey}`,
-    status: "eq.pending_review",
-    approval_digest: `eq.${audit.approval_digest}`,
+    id: `eq.${auditId}`, owner_key: `eq.${ownerKey}`,
+    status: "eq.pending_review", approval_digest: `eq.${audit.approval_digest}`,
   });
-  const result = await supabaseRequest(`metadata_editor_audits?${updateParams.toString()}`, "PATCH", {
+  const result = await supabaseRequest(`${table}?${updateParams.toString()}`, "PATCH", {
     status: decision === "approve" ? "approved" : "rejected",
-    approved_by: decision === "approve" ? ownerKey : null,
-    approved_at: decision === "approve" ? now : null,
+    ...(source === "meta" ? {
+      approved_by: decision === "approve" ? ownerKey : null,
+      approved_at: decision === "approve" ? now : null,
+      error: null,
+    } : {}),
     result: {
-      source: "discord",
-      action: decision,
-      discord_user_id: actorId,
-      discord_interaction_id: String(payload.id || ""),
-      decided_at: now,
+      source: "discord", action: decision, discord_user_id: actorId,
+      discord_interaction_id: String(payload.id || ""), decided_at: now,
     },
-    error: null,
     updated_at: now,
   });
   if (!result.length) {
@@ -182,7 +185,7 @@ async function decideMetadata(payload: any, ownerKey: string, actorId: string) {
   }
   const title = safeText(audit.video_title || audit.video_id || "Metadata proposal", 160);
   const content = decision === "approve"
-    ? `Approved: **${title}**. It is queued for the existing publishing worker, which will re-check the live metadata and verify the YouTube update.`
+    ? `Approved: **${title}**. It is queued for the verified publishing worker.`
     : `Rejected: **${title}**. No YouTube changes were made.`;
   return { type: 7, data: { content, embeds: [], components: [] } };
 }

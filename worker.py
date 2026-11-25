@@ -285,6 +285,91 @@ def main():
     except Exception:
         log.exception("Could not process approved metadata editor proposals.")
 
+    try:
+        strategy_count = process_discord_approved_strategy_actions(store, cipher, limit=max_jobs)
+        if strategy_count:
+            log.info("Claimed %s Discord-approved channel strategy proposal(s).", strategy_count)
+    except Exception:
+        log.exception("Could not process Discord-approved channel strategy proposals.")
+
+
+def process_discord_approved_strategy_actions(store, cipher, limit: int = 10) -> int:
+    """Publish only strategy actions explicitly approved through the Discord interaction."""
+    rows = store._request("GET", "channel_strategy_actions", params={
+        "status": "eq.approved",
+        "result->>source": "eq.discord",
+        "select": "id,owner_key,video_id,video_title,before_metadata,proposed_metadata,approval_digest",
+        "order": "created_at.asc",
+        "limit": str(max(1, min(int(limit), 25))),
+    })
+    processed = 0
+    for action in rows or []:
+        action_id = str(action.get("id") or "")
+        owner_key = str(action.get("owner_key") or "")
+        if not action_id or not owner_key:
+            continue
+        # Compare-and-set claim prevents two scheduled workers from publishing the same action.
+        claimed = store._request("PATCH", "channel_strategy_actions", params={
+            "id": f"eq.{action_id}", "owner_key": f"eq.{owner_key}",
+            "status": "eq.approved", "result->>source": "eq.discord",
+        }, payload={"status": "auto_publishing", "updated_at": datetime.now(timezone.utc).isoformat()},
+           prefer="return=representation")
+        if not claimed:
+            continue
+        processed += 1
+        try:
+            credentials = _get_owner_credentials(store, owner_key, cipher)
+            youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+            result = connector.apply_approved_dashboard_proposal(
+                youtube,
+                str(action.get("video_id") or ""),
+                action.get("before_metadata") or {},
+                action.get("proposed_metadata") or {},
+                str(action.get("approval_digest") or ""),
+                audit_callback=lambda entry: store._request(
+                    "PATCH", "channel_strategy_actions",
+                    params={"id": f"eq.{action_id}", "owner_key": f"eq.{owner_key}",
+                            "status": "eq.auto_publishing"},
+                    payload={"audit_log": entry, "updated_at": datetime.now(timezone.utc).isoformat()},
+                    prefer="return=minimal",
+                ),
+            )
+            if not isinstance(result, dict) or result.get("result") != "success":
+                raise RuntimeError("YouTube did not confirm the approved strategy metadata update.")
+            store._request("PATCH", "channel_strategy_actions", params={
+                "id": f"eq.{action_id}", "owner_key": f"eq.{owner_key}",
+                "status": "eq.auto_publishing",
+            }, payload={
+                "status": "approved_published",
+                "after_metadata": result.get("resource") or {},
+                "result": {"source": "discord", "action": "approve",
+                           "video_id": action.get("video_id"),
+                           "url": f"https://www.youtube.com/watch?v={action.get('video_id')}",
+                           "updated_parts": result.get("updated_parts") or [],
+                           "verified": True},
+                "error": None,
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, prefer="return=minimal")
+        except Exception as exc:
+            if isinstance(exc, connector.MetadataVerificationUnavailableError):
+                status = "verification_unavailable"
+            elif isinstance(exc, RuntimeError) and "changed after review" in str(exc).casefold():
+                status = "skipped"
+            else:
+                status = "failed"
+            store._request("PATCH", "channel_strategy_actions", params={
+                "id": f"eq.{action_id}", "owner_key": f"eq.{owner_key}",
+                "status": "eq.auto_publishing",
+            }, payload={
+                "status": status,
+                "error": f"{type(exc).__name__}: {str(exc)[:1200]}",
+                "result": {"source": "discord", "action": "approve", "verified": False},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, prefer="return=minimal")
+            log.exception("Discord-approved strategy action %s ended with status %s", action_id, status)
+    return processed
+
 
 def process_approved_metadata_editor_audits(store, cipher, limit: int = 10) -> int:
     """Publish only Discord-approved metadata-editor audits."""
