@@ -108,7 +108,7 @@ function displayMetadata(value: any, field: "title" | "description" | "tags"): s
   return raw.trim() || (field === "description" ? "(empty description)" : "(empty title)");
 }
 
-function clipEmbed(value: string, max = 1000): string {
+function clipEmbed(value: string, max = 700): string {
   if (value.length <= max) return value;
   return value.slice(0, max - 18) + "\n… [truncated]";
 }
@@ -130,7 +130,7 @@ function proposalEmbed(row: any) {
   const evidence = row.evidence || {};
   const confidence = evidence.confidence;
   const rationale = evidence.rationale || evidence.factual_evidence || row.reason || "No additional rationale was recorded.";
-  fields.push({ name: "WHY THIS CHANGE", value: clipEmbed(String(rationale), 1000), inline: false });
+  fields.push({ name: "WHY THIS CHANGE", value: clipEmbed(String(rationale), 700), inline: false });
   if (confidence !== null && confidence !== undefined && confidence !== "") {
     const score = Number(confidence);
     fields.push({ name: "MODEL CONFIDENCE", value: Number.isFinite(score) ? `${Math.round(score <= 1 ? score * 100 : score)}%` : safeText(confidence, 40), inline: true });
@@ -143,7 +143,7 @@ function proposalEmbed(row: any) {
     description: [
       `**Source:** ${row.source === "strategy" ? "Channel Strategist" : "Metadata Editor"}`,
       `**Video ID:** ${safeText(row.video_id, 20)}`,
-      `**Review reason:** ${safeText(row.reason || evidence.rationale || "Owner review requested.", 700)}`,
+      `**Review reason:** ${safeText(row.reason || evidence.rationale || "Owner review requested.", 500)}`,
     ].join("\n"),
     fields,
     color: 3447003,
