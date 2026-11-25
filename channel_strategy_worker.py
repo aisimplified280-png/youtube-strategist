@@ -759,6 +759,7 @@ def _process_candidate(
                 "cooldown_reason": cooldown_reason if not cooldown_allowed else "",
                 "factual_evidence": candidate.get("factual_evidence") or "",
                 "rationale": candidate.get("rationale") or "",
+                "confidence": candidate.get("confidence"),
             },
             "before_metadata": before_full,
             "proposed_metadata": proposed_full,
