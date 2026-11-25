@@ -898,6 +898,10 @@ def run_strategy_agent(store, cipher, *, trigger_source: str = "schedule", caden
         cadence = "daily"
 
     owner_key, _ = resolve_channel_owner(store, cipher, OWNER_CHANNEL_ID)
+    # The worker client starts unscoped. Bind the owner only after the OAuth grant
+    # has been verified against the configured channel; learning/history helpers
+    # enforce this owner scope before querying private strategy records.
+    store.owner_key = owner_key
     credentials = _get_owner_credentials(store, owner_key, cipher)
     youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
     analytics = build("youtubeAnalytics", "v2", credentials=credentials, cache_discovery=False)
