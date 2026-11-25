@@ -151,18 +151,68 @@ function proposalEmbed(row: any) {
 }
 
 async function sendFollowup(applicationId: string, token: string, body: unknown) {
-  const response = await fetch(`https://discord.com/api/v10/webhooks/${applicationId}/${token}?wait=true`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...(body as any), flags: EPHEMERAL }),
-  });
-  if (!response.ok) {
+  // Discord returns 429 with retry_after when the interaction webhook is rate limited.
+  // Retry only that explicit response; never retry ambiguous POST failures that could duplicate a card.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const response = await fetch(`https://discord.com/api/v10/webhooks/${applicationId}/${token}?wait=true`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...(body as any), flags: EPHEMERAL }),
+    });
+    if (response.ok) return;
+    if (response.status === 429 && attempt < 3) {
+      const payload = await response.json().catch(() => ({}));
+      const retryAfter = Number(payload?.retry_after ?? response.headers.get("retry-after") ?? 0.5);
+      await new Promise((resolve) => setTimeout(resolve, Math.max(250, Math.min(5000, retryAfter * 1000))));
+      continue;
+    }
     const detail = (await response.text()).slice(0, 300);
     throw new Error(`Discord follow-up failed (${response.status}): ${detail}`);
   }
+  throw new Error("Discord follow-up remained rate limited after retries.");
+}
+
+async function editOriginalResponse(applicationId: string, token: string, body: unknown) {
+  const response = await fetch(
+    `https://discord.com/api/v10/webhooks/${applicationId}/${token}/messages/@original`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 300);
+    throw new Error(`Discord interaction update failed (${response.status}): ${detail}`);
+  }
+}
+
+async function pruneApprovalBatches(ownerKey: string) {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const retentionCutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const expiredParams = new URLSearchParams({
+    owner_key: `eq.${ownerKey}`,
+    status: "eq.pending",
+    expires_at: `lte.${nowIso}`,
+  });
+  const retainedParams = new URLSearchParams({
+    owner_key: `eq.${ownerKey}`,
+    status: "in.(completed,expired)",
+    updated_at: `lt.${retentionCutoff}`,
+  });
+  // Best-effort hygiene only: a cleanup failure must never block an owner review.
+  await Promise.allSettled([
+    supabaseRequest(`discord_approval_batches?${expiredParams.toString()}`, "PATCH", {
+      status: "expired",
+      updated_at: nowIso,
+    }),
+    supabaseRequest(`discord_approval_batches?${retainedParams.toString()}`, "DELETE"),
+  ]);
 }
 
 async function sendApprovalReview(payload: any, ownerKey: string) {
+  await pruneApprovalBatches(ownerKey);
   const common = { owner_key: `eq.${ownerKey}`, status: "eq.pending_review", order: "created_at.asc", limit: "5" };
   const [editorRows, strategyRows] = await Promise.all([
     supabaseRequest(`metadata_editor_audits?${new URLSearchParams({
@@ -198,10 +248,10 @@ async function sendApprovalReview(payload: any, ownerKey: string) {
   const batchId = String(batchRows?.[0]?.id || "");
   if (!batchId) throw new Error("Could not create the approval snapshot for this Discord review.");
 
-  for (const row of rows) {
+  const cardSends = rows.map((row: any) => {
     const digest = String(row.approval_digest || "");
     const customPrefix = `${row.source}:`;
-    await sendFollowup(applicationId, token, {
+    return sendFollowup(applicationId, token, {
       embeds: [proposalEmbed(row)],
       components: [{
         type: 1,
@@ -211,17 +261,22 @@ async function sendApprovalReview(payload: any, ownerKey: string) {
         ],
       }],
     });
-  }
-  await sendFollowup(applicationId, token, {
+  });
+  const bulkSend = sendFollowup(applicationId, token, {
     content: `Review batch: **${rows.length} proposal(s)** shown above. Approve All applies only to these exact proposals, and expires in 15 minutes.`,
     components: [{
       type: 1,
       components: [{ type: 2, style: 3, label: `Approve All ${rows.length}`, custom_id: `batch:approve_all:${batchId}` }],
     }],
   });
+  // The initial interaction has already been acknowledged. Send review cards concurrently
+  // to avoid serial network round-trips while sendFollowup handles explicit Discord 429s.
+  const delivery = await Promise.allSettled([...cardSends, bulkSend]);
+  const failedDelivery = delivery.find((item) => item.status === "rejected");
+  if (failedDelivery?.status === "rejected") throw failedDelivery.reason;
 }
 
-async function listApprovals(ownerKey: string) {
+async function listApprovals() {
   return { type: 5, data: { flags: EPHEMERAL } };
 }
 async function approveAllBatch(payload: any, ownerKey: string, actorId: string) {
@@ -235,22 +290,21 @@ async function approveAllBatch(payload: any, ownerKey: string, actorId: string) 
   }).toString()}`);
   const batch = rows[0];
   if (!batch) return { type: 7, data: { content: "This review batch has expired or was already used. Run /approvals again.", components: [] } };
-  let approved = 0;
-  let skipped = 0;
-  for (const ref of (Array.isArray(batch.proposal_refs) ? batch.proposal_refs : [])) {
-    const table = ref.source === "strategy" ? "channel_strategy_actions" : ref.source === "meta" ? "metadata_editor_audits" : "";
-    if (!table || !ref.id || !ref.digest) { skipped++; continue; }
-    const params = new URLSearchParams({
-      id: `eq.${ref.id}`, owner_key: `eq.${ownerKey}`, status: "eq.pending_review",
-      approval_digest: `eq.${ref.digest}`, select: "id", limit: "1",
-    });
-    const found = await supabaseRequest(`${table}?${params.toString()}`);
-    if (!found.length) { skipped++; continue; }
+  const refs = Array.isArray(batch.proposal_refs) ? batch.proposal_refs : [];
+  const decisions = await Promise.all(refs.map(async (ref: any) => {
+    const table = ref.source === "strategy"
+      ? "channel_strategy_actions"
+      : ref.source === "meta" ? "metadata_editor_audits" : "";
+    if (!table || !ref.id || !ref.digest) return false;
     const now = new Date().toISOString();
     const patchParams = new URLSearchParams({
-      id: `eq.${ref.id}`, owner_key: `eq.${ownerKey}`, status: "eq.pending_review",
+      id: `eq.${ref.id}`,
+      owner_key: `eq.${ownerKey}`,
+      status: "eq.pending_review",
       approval_digest: `eq.${ref.digest}`,
     });
+    // Conditional PATCH is the compare-and-set: only a still-pending proposal with
+    // the exact digest shown to the owner can be approved. A preflight GET is redundant.
     const result = await supabaseRequest(`${table}?${patchParams.toString()}`, "PATCH", {
       status: "approved",
       ...(table === "metadata_editor_audits" ? { approved_by: ownerKey, approved_at: now, error: null } : {}),
@@ -260,8 +314,10 @@ async function approveAllBatch(payload: any, ownerKey: string, actorId: string) 
       },
       updated_at: now,
     });
-    if (result.length) approved++; else skipped++;
-  }
+    return result.length > 0;
+  }));
+  const approved = decisions.filter(Boolean).length;
+  const skipped = decisions.length - approved;
   await supabaseRequest(`discord_approval_batches?id=eq.${batchId}&owner_key=eq.${ownerKey}&status=eq.pending`, "PATCH", {
     status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   });
@@ -339,31 +395,66 @@ Deno.serve(async (request: Request) => {
     return jsonResponse(interactionMessage("You are not authorised to use this bot."));
   }
 
-  try {
-    const ownerKey = await resolveSingleActiveOwnerKey();
-
-    if (payload?.type === 2 && String(payload?.data?.name || "") === "approvals") {
-      const deferred = jsonResponse(await listApprovals(ownerKey));
-      EdgeRuntime.waitUntil(sendApprovalReview(payload, ownerKey).catch(async (error) => {
+  // Acknowledge /approvals before any Supabase lookup. Discord's interaction
+  // deadline is short; the review itself runs in the Edge Function background task.
+  if (payload?.type === 2 && String(payload?.data?.name || "") === "approvals") {
+    const applicationId = String(payload.application_id || "");
+    const token = String(payload.token || "");
+    const deferred = jsonResponse(await listApprovals());
+    EdgeRuntime.waitUntil((async () => {
+      try {
+        const ownerKey = await resolveSingleActiveOwnerKey();
+        await sendApprovalReview(payload, ownerKey);
+      } catch (error) {
         console.error("Could not build Discord approval review:", error instanceof Error ? error.message : "unknown error");
-        const applicationId = String(payload.application_id || "");
-        const token = String(payload.token || "");
         if (applicationId && token) {
-          try { await sendFollowup(applicationId, token, { content: "The review cards could not be loaded safely. Please retry /approvals or use the Streamlit review queue." }); } catch { /* interaction token may have expired */ }
+          try {
+            await sendFollowup(applicationId, token, {
+              content: "The review cards could not be loaded safely. Please retry /approvals or use the Streamlit review queue.",
+            });
+          } catch {
+            // The interaction token may have expired; do not expose internal details.
+          }
         }
-      }));
-      return deferred;
-    }
-    if (payload?.type === 3) {
-      const customId = String(payload?.data?.custom_id || "");
-      if (customId.startsWith("batch:approve_all:")) {
-        return jsonResponse(await approveAllBatch(payload, ownerKey, actorId));
       }
-      return jsonResponse(await decideMetadata(payload, ownerKey, actorId));
-    }
-    return jsonResponse(interactionMessage("Unsupported command. Use /approvals to review metadata proposals."));
-  } catch (error) {
-    console.error("Discord interaction failed:", error instanceof Error ? error.message : "unknown error");
-    return jsonResponse(interactionMessage("The request could not be completed safely. Please retry or open the Streamlit review queue."), 500);
+    })());
+    return deferred;
   }
+
+  // Acknowledge button clicks immediately by deferring the message update. Owner
+  // resolution and the compare-and-set decision then run off the request path.
+  if (payload?.type === 3) {
+    const applicationId = String(payload.application_id || "");
+    const token = String(payload.token || "");
+    if (!applicationId || !token) {
+      return jsonResponse({ type: 4, data: { content: "Discord interaction credentials are unavailable. Please retry.", flags: EPHEMERAL } });
+    }
+    const customId = String(payload?.data?.custom_id || "");
+    const deferred = jsonResponse({ type: 6 });
+    EdgeRuntime.waitUntil((async () => {
+      try {
+        const ownerKey = await resolveSingleActiveOwnerKey();
+        const result = customId.startsWith("batch:approve_all:")
+          ? await approveAllBatch(payload, ownerKey, actorId)
+          : await decideMetadata(payload, ownerKey, actorId);
+        await editOriginalResponse(applicationId, token, result?.data || {
+          content: "The decision was processed. Refresh /approvals for the latest queue.",
+          components: [],
+        });
+      } catch (error) {
+        console.error("Discord approval action failed:", error instanceof Error ? error.message : "unknown error");
+        try {
+          await editOriginalResponse(applicationId, token, {
+            content: "The approval action could not be completed safely. Run /approvals again or use the Streamlit review queue.",
+            components: [],
+          });
+        } catch {
+          // The interaction token may have expired.
+        }
+      }
+    })());
+    return deferred;
+  }
+
+  return jsonResponse(interactionMessage("Unsupported command. Use /approvals to review metadata proposals."));
 });
